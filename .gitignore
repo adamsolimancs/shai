@@ -1,0 +1,27 @@
+node_modules/
+**/node_modules/
+
+# next
+.next/
+out/
+
+# builds
+dist/
+build/
+
+# env
+.env
+.env.local
+*.log
+
+# OS/editor
+.DS_Store
+*.swp
+EOFnode_modules/
+**/node_modules/
+.next/
+**/.next/
+dist/
+**/dist/
+.env
+.DS_Store
