@@ -1,27 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.coverage
+.DS_Store
+
+# Node
 node_modules/
-**/node_modules/
+frontend/.next/
 
-# next
-.next/
-out/
-
-# builds
-dist/
-build/
-
-# env
+# Env
 .env
-.env.local
-*.log
+backend/.env
 
-# OS/editor
-.DS_Store
-*.swp
-EOFnode_modules/
-**/node_modules/
-.next/
-**/.next/
-dist/
-**/dist/
-.env
-.DS_Store
+# Data outputs
+*.csv

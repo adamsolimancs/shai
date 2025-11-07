@@ -21,9 +21,7 @@ const trendingTerms = [
   "Pacers Pace Stats",
   "Giannis Shot Chart",
   "2025 Rookie of the Year",
-  "Kings Beam Watch",
-  "Clippers Closing Lineup",
-  "Spurs Rebuild Tracker",
+  "Spurs Head Coach",
 ];
 
 const normalizeQuery = (input: string) =>

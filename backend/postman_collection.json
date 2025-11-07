@@ -1,0 +1,70 @@
+{
+  "info": {
+    "name": "NBA Data API",
+    "_postman_id": "d82b7f5d-9f62-4d7a-b4bc-d2afc6a932c5",
+    "description": "Sample requests for the NBA Data API wrapper.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Meta",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-api-key",
+            "value": "dev-secret-key"
+          }
+        ],
+        "url": "{{baseUrl}}/v1/meta"
+      }
+    },
+    {
+      "name": "Players Search",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "x-api-key",
+            "value": "dev-secret-key"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/players?season=2024-25&search=lebron",
+          "host": ["{{baseUrl}}"],
+          "path": ["v1", "players"],
+          "query": [
+            { "key": "season", "value": "2024-25" },
+            { "key": "search", "value": "lebron" }
+          ]
+        }
+      }
+    },
+    {
+      "name": "Player Game Log",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "x-api-key", "value": "dev-secret-key" }
+        ],
+        "url": "{{baseUrl}}/v1/players/2544/gamelog?season=2024-25"
+      }
+    },
+    {
+      "name": "Resolve Names",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "x-api-key", "value": "dev-secret-key" }
+        ],
+        "url": "{{baseUrl}}/v1/resolve?player=LeBron%20James"
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    }
+  ]
+}
