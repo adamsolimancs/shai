@@ -1,0 +1,19 @@
+### Metadata
+GET http://localhost:8080/v1/meta
+x-api-key: dev-secret-key
+
+###
+GET http://localhost:8080/v1/players?season=2024-25&search=lebron&page=1&page_size=5
+x-api-key: dev-secret-key
+
+###
+GET http://localhost:8080/v1/players/2544/gamelog?season=2024-25
+x-api-key: dev-secret-key
+
+###
+GET http://localhost:8080/v1/games?season=2024-25&team_abbr=LAL&date_from=2024-10-01&date_to=2024-12-31
+x-api-key: dev-secret-key
+
+###
+GET http://localhost:8080/v1/players/2544/career
+x-api-key: dev-secret-key
