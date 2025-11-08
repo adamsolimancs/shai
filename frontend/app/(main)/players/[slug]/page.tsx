@@ -56,6 +56,10 @@ type TeamStatsRow = {
   wins: number;
   losses: number;
   win_pct: number;
+  steals?: number | null;
+  blocks?: number | null;
+  turnovers?: number | null;
+  plus_minus?: number | null;
 };
 
 type Player = {
@@ -320,50 +324,126 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
       ? "Last Active Season"
       : `${profile.teamAbbreviation ?? "NBA"} · ${activeSeasonId ?? DEFAULT_SEASON}`;
   const seasonRating = "A-";
+  const gradeOptions = ["A+", "A", "A-", "B+", "B"];
+  const mockMatchups = ["vs BOS", "@ LAL", "vs DEN", "@ MIA", "vs DAL", "@ PHX"];
+  const statKeys = ["PTS", "REB", "AST", "STL", "BLK", "3PM"];
+  const randomValueForStat = (label: string) => {
+    switch (label) {
+      case "PTS":
+        return (Math.random() * 25 + 15).toFixed(0);
+      case "REB":
+        return (Math.random() * 6 + 5).toFixed(0);
+      case "AST":
+        return (Math.random() * 5 + 4).toFixed(0);
+      case "STL":
+      case "BLK":
+        return (Math.random() * 2 + 1).toFixed(1);
+      case "3PM":
+        return (Math.random() * 4 + 1).toFixed(1);
+      default:
+        return (Math.random() * 10).toFixed(1);
+    }
+  };
+  const generateMockStats = () => {
+    const shuffled = [...statKeys]
+      .map((label) => ({ label, sort: Math.random() }))
+      .sort((a, b) => a.sort - b.sort)
+      .map(({ label }) => label);
+    return shuffled.slice(0, 3).map((label) => ({
+      label,
+      value: randomValueForStat(label),
+    }));
+  };
+  const topPerformances = Array.from({ length: 3 }, (_, index) => ({
+    game: mockMatchups[index % mockMatchups.length],
+    date: new Date(Date.now() - index * 86400000).toLocaleDateString(),
+    grade: gradeOptions[(Math.floor(Math.random() * gradeOptions.length) + index) % gradeOptions.length],
+    stats: generateMockStats(),
+  }));
 
   return (
     <>
-      <section className="rounded-3xl border border-white/10 bg-linear-to-br from-blue-600/40 via-slate-900/80 to-slate-950/80 px-8 py-10 shadow-2xl shadow-blue-500/40">
-        <div className="flex flex-col gap-10 md:flex-row md:items-center md:justify-between">
-          <div className="space-y-6 text-white">
-            <div>
-              <p className="text-xs uppercase tracking-[0.4em] text-blue-200/70">
-                {eyebrowText}
-              </p>
-              <h1 className="mt-4 text-4xl font-semibold md:text-5xl">
-                {profile.name}
-                <span className="ml-3 text-base font-normal text-white/70">
-                  {profile.teamAbbreviation ? `· ${profile.teamAbbreviation}` : ""}
-                </span>
-              </h1>
+      <div className="grid items-stretch gap-6 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+        <section className="w-full rounded-2xl border border-white/10 bg-linear-to-br from-blue-600/30 via-slate-900/85 to-slate-950/85 px-5 py-5 shadow-xl shadow-blue-500/30">
+          <div className="flex h-full flex-col gap-4 text-white">
+            <div className="flex items-center gap-4">
+              <div className="shrink-0 rounded-full border border-white/20 bg-white/10 p-2 backdrop-blur">
+                <div
+                  className="h-28 w-28 rounded-full border border-white/40 bg-cover bg-center shadow-inner shadow-black/50 md:h-32 md:w-32"
+                  style={{ backgroundImage: `url(${profile.headshot})` }}
+                />
+              </div>
+              <div>
+                <p className="text-[0.65rem] uppercase tracking-[0.45em] text-blue-200/70">
+                  {eyebrowText}
+                </p>
+                <h1 className="mt-2 text-3xl font-semibold md:text-4xl">
+                  {profile.name}
+                  <span className="ml-2 text-base font-normal text-white/70">
+                    {profile.teamAbbreviation ? `· ${profile.teamAbbreviation}` : ""}
+                  </span>
+                </h1>
+              </div>
             </div>
-            <p className="text-sm text-white/70 md:max-w-2xl">{profile.scoutingReport}</p>
-            <div className="grid gap-4 sm:grid-cols-3">
+            <p className="text-sm text-white/70">{profile.scoutingReport}</p>
+            <div className="grid gap-3 sm:grid-cols-3">
               <InfoPill label="Age" value={profile.age ? `${profile.age}` : "—"} />
               <InfoPill label="Experience" value={profile.experience} />
               <InfoPill label="Team record" value={profile.currentSeason?.teamRecord ?? "—"} />
             </div>
-            <div className="flex flex-col gap-4 rounded-3xl border border-white/10 bg-white/5 p-5 md:flex-row md:items-center">
-              <div className="flex-1">
-                <p className="text-xs uppercase tracking-[0.4em] text-white/60">Career rating</p>
-                <p className="text-5xl font-semibold text-white">{profile.rating}</p>
-                <div className="mt-3 h-2 rounded-full bg-white/10">
-                  <div className="h-2 rounded-full bg-blue-400" style={{ width: `${Math.min(profile.rating, 100)}%` }} />
+            <div className="flex items-center gap-4 rounded-2xl border border-white/10 bg-white/5 p-3">
+              <p className="text-[0.65rem] uppercase tracking-[0.4em] text-white/60">Career rating</p>
+              <div className="flex flex-1 items-center gap-3">
+                <p className="text-3xl font-semibold text-white">{profile.rating}</p>
+                <div className="flex-1">
+                  <div className="h-1.5 rounded-full bg-white/10">
+                    <div className="h-1.5 rounded-full bg-blue-400" style={{ width: `${Math.min(profile.rating, 100)}%` }} />
+                  </div>
+                  <p className="mt-1 text-[0.7rem] text-white/60">Per-game impact metric</p>
                 </div>
-                <p className="mt-2 text-xs text-white/60">Derived from per-game production</p>
               </div>
             </div>
           </div>
-          <div className="mx-auto w-full max-w-xs md:mx-0 md:max-w-sm">
-            <div className="rounded-4xl border border-white/20 bg-white/10 p-3 backdrop-blur">
-              <div
-                className="h-60 rounded-[28px] border border-white/30 bg-cover bg-center shadow-inner shadow-black/40"
-                style={{ backgroundImage: `url(${profile.headshot})` }}
-              />
+        </section>
+        <aside className="flex h-full w-full flex-col rounded-2xl border border-white/10 bg-slate-950/80 p-5 text-white shadow-xl shadow-black/30">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-[0.6rem] uppercase tracking-[0.45em] text-white/50">Season</p>
+              <h2 className="text-xl font-semibold">Top Performances</h2>
             </div>
+            <span className="text-xs text-white/60">{profile.currentSeason?.seasonId ?? DEFAULT_SEASON}</span>
           </div>
-        </div>
-      </section>
+          <div className="mt-4 flex-1 space-y-3">
+            {topPerformances.map((perf, index) => (
+              <div
+                key={`${perf.game}-${index}`}
+                className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3"
+              >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.3em] text-white/60">{perf.game}</p>
+                    <p className="text-sm text-white/70">{perf.date}</p>
+                  </div>
+                  <span className="rounded-full border border-white/20 px-3 py-1 text-sm font-semibold text-white/90">
+                    {perf.grade}
+                  </span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2 text-sm">
+                  {perf.stats.map((stat) => (
+                    <span
+                      key={stat.label}
+                      className="rounded-full border border-white/10 bg-white/10 px-3 py-1 text-white/90"
+                    >
+                      <span className="text-white/60">{stat.label}</span>{" "}
+                      <span className="font-semibold">{stat.value}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </aside>
+      </div>
 
       {profile.currentSeason?.stats ? (
         <section className="mt-16">

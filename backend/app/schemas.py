@@ -146,6 +146,10 @@ class TeamStatsRow(BaseModel):
     field_goal_pct: float
     rebounds: float
     assists: float
+    steals: float | None = None
+    blocks: float | None = None
+    turnovers: float | None = None
+    plus_minus: float | None = None
 
 
 class PlayerStatsRow(BaseModel):
