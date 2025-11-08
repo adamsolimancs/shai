@@ -1,95 +1,118 @@
-# NBA Data API
+# NBAi
 
-Production-ready FastAPI service that wraps selected [`nba_api`](https://github.com/swar/nba_api) endpoints with caching, rate limiting, and analytics-friendly schemas.
+Modern basketball companion that blends the official NBA Stats data feed with generated insights, player scouting blurbs, and sleek dashboards.
 
 ## Features
-- **FastAPI + Pydantic** on Python 3.11 with `/docs` + `/redoc`.
-- **API key auth** via `x-api-key` header (default `dev-secret-key`).
-- **Redis caching** with in-process fallback, TTL tiers, and stale-serving on upstream failure.
-- **Rate limiting** (default 60 req/min per API key) and structured JSON logs with request IDs.
-- **Graceful degradation**: retries + exponential backoff and stale cache responses if NBA Stats is slow.
-- **Observability**: `/healthz`, `/readiness`, request logging, configurable CORS, and `/v1/meta`.
-- **Background hot-cache refresh** plus fuzzy name resolution powered by `rapidfuzz`.
-- **Tooling**: ruff, black, mypy, pytest (coverage ≥90%), Docker + docker-compose, GitHub Actions workflow.
+
+- Player pages that mix live season averages, recent game logs, and narrative scouting reports.
+- Team and league explorers with fast search and caching so common lookups stay snappy.
+- Backend service that normalizes data from [`nba_api`](https://github.com/swar/nba_api) and exposes a typed REST interface.
+- Optional ML workspace (see `ml/`) for experimentation with win probability, similarity scores, etc.
+
+## Tech Stack
+
+| Layer     | Tech                                                                 |
+|-----------|----------------------------------------------------------------------|
+| Frontend  | [Next.js 14](https://nextjs.org/) + App Router, Tailwind, TypeScript |
+| Backend   | [FastAPI](https://fastapi.tiangolo.com/), Redis cache (optional)     |
+| Data      | `nba_api` python client + in-memory/redis caching                    |
+| Tooling   | ESLint, Prettier, Jest (Next), Pytest, Docker Compose                |
 
 ## Getting Started
 
+### 1. Prerequisites
+
+- Node.js ≥ 20.x and npm (or Bun/Yarn if you prefer, though the repo ships with `package-lock.json`)
+- Python ≥ 3.11
+- Redis (optional but recommended for caching/rate-limit storage)
+- Docker (optional) for running the full stack via `docker-compose`
+
+### 2. Clone & install deps
+
 ```bash
-cd backend
+git clone git@github.com:adamsolimancs/nbai.git nbai
+cd nbai
+
+# frontend deps
+cd frontend
+npm install
+
+# backend deps
+cd ../backend
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-cp .env.example .env   # adjust values
-uvicorn app.main:app --reload --port 8080
+pip install -r requirements.txt
 ```
 
-### Environment Variables
-| Key | Default | Description |
-| --- | --- | --- |
-| `PORT` | `8080` | HTTP port. |
-| `API_KEY` | `dev-secret-key` | Shared header secret (`x-api-key`). |
-| `REDIS_URL` | `redis://redis:6379/0` | Redis connection string. |
-| `CACHE_DEFAULT_TTL_SECONDS` | `7200` | Fallback TTL. |
-| `RATE_LIMIT_REQUESTS_PER_MINUTE` | `60` | Per API key burst rate. |
-| `LOG_LEVEL` | `INFO` | Log verbosity. |
-| `CORS_ALLOW_ORIGINS` | `*` | Comma-separated whitelist. |
-| `DATABASE_URL` | `sqlite:///./data.db` | Optional future persistence store. |
+### 3. Environment variables
 
-### Docker
+Create the root `.env` or export variables directly. At minimum you need:
+
+```dotenv
+# root .env
+NBA_API_KEY=replace-me          # used by both FE and BE
+NBA_DEFAULT_SEASON=2025-26
+
+# optional overrides
+REDIS_URL=redis://localhost:6379/0
+NEXTAUTH_SECRET=dev-secret
+```
+
+You can also keep service-specific env files in `frontend/.env` and `backend/.env` (examples already exist in the repo). Both services fall back to `NBA_API_KEY` from the root if their local file is missing it.
+
+### 4. Run the stack
+
+#### Frontend (Next.js)
+
+```bash
+cd frontend
+npm run dev
+# http://localhost:3000
+```
+
+#### Backend (FastAPI)
+
+```bash
+cd backend
+uvicorn app.main:app --reload --port 8080
+# http://localhost:8080/v1/...
+```
+
+#### Docker Compose (optional)
 
 ```bash
 docker compose up --build
-# API http://localhost:8080, Redis on 6379
 ```
 
-### Example Requests
+This will start the FastAPI service, Redis, and the Next.js dev server in one go.
+
+## Testing
 
 ```bash
-curl -H "x-api-key: dev-secret-key" \
-  "http://localhost:8080/v1/players?season=2024-25&search=lebron"
-
-curl -H "x-api-key: dev-secret-key" \
-  "http://localhost:8080/v1/players/2544/gamelog?season=2024-25"
-
-curl -H "x-api-key: dev-secret-key" \
-  "http://localhost:8080/v1/players/2544/career"
-```
-
-See `examples/api.http` for additional scenarios plus a Postman collection blueprint.
-
-## Testing & Quality
-
-```bash
+# backend
 cd backend
-ruff check .
-black --check .
-mypy app
 pytest
+
+# frontend
+cd frontend
+npm run lint
 ```
 
-CI (`.github/workflows/ci.yml`) runs lint, type-check, and tests with coverage gates.
-
-## Notes on NBA Stats Terms of Service
-
-This service is designed for **low request volume** analytics workloads, caches aggressively, enforces per-client rate limits, and never redistributes bulk datasets. Please review the latest NBA Stats ToS before deploying publicly; adjust rate limits, cache semantics, and logging as needed for your environment.
-
-## Project Layout
+## Project Structure
 
 ```
-backend/
-├── app/
-│   ├── main.py              # FastAPI entry
-│   ├── schemas.py           # Pydantic models + envelopes
-│   ├── cache.py             # Redis + in-memory cache
-│   ├── rate_limit.py        # Per-key limiter
-│   ├── resolvers.py         # Name → ID fuzzy lookup
-│   ├── services/nba.py      # nba_api adapter
-│   └── ...
-├── tests/                   # pytest suite (mocked nba_api)
-├── Dockerfile
-└── pyproject.toml
+backend/       # FastAPI service wrapping nba_api
+frontend/      # Next.js app (App Router)
+ml/            # Notebooks + experiments
+docker-compose.yml
+README.md
 ```
 
-## TODO / Next Steps
-1. Swap API key auth for JWT or OAuth if needed.
-2. Add persistence (SQLite/Postgres) for snapshotting nightly aggregates.
-3. Expand observability (metrics export, tracing) for production SLOs.
+## Troubleshooting
+
+- **Unexpected server error from NBA API** – ensure `NBA_API_KEY` is valid and that the backend is running (`uvicorn app.main:app ...`). For unsupported seasons the backend returns empty arrays to avoid hard failures.
+- **Rate limit errors** – the backend enforces per-key rate limits. Configure `RATE_LIMIT_REQUESTS_PER_MINUTE` in `backend/.env`.
+- **Cache misses** – Redis is optional. If it is not running the backend falls back to the in-memory cache automatically.
+
+## License
+
+MIT © NBAi Contributors

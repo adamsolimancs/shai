@@ -49,6 +49,16 @@ class ErrorEnvelope(BaseModel):
     error: ErrorDetail
 
 
+class NewsArticle(BaseModel):
+    id: str
+    source: str
+    title: str
+    summary: str
+    url: str
+    published_at: datetime
+    image_url: str | None = None
+
+
 class Team(BaseModel):
     id: int
     abbreviation: str

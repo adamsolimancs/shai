@@ -136,6 +136,17 @@ function formatAverage(value: number | null | undefined, digits = 1): string {
   return value.toFixed(digits);
 }
 
+function formatInteger(value: number | null | undefined): string {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "—";
+  }
+  // If it's a whole number, return without decimals; otherwise show 1 decimal place
+  if (Number.isInteger(value)) {
+    return value.toString();
+  }
+  return value.toFixed(1);
+}
+
 function formatPerGame(
   total: number | null | undefined,
   games: number | null | undefined,
@@ -476,12 +487,12 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
                   <td className="px-4 py-2 font-semibold text-white">{season.season_id}</td>
                   <td className="px-4 py-2">{season.team_abbreviation ?? "—"}</td>
                   <td className="px-4 py-2">{season.games_played}</td>
-                  <td className="px-4 py-2">{formatAverage(season.minutes)}</td>
-                  <td className="px-4 py-2">{formatAverage(season.points)}</td>
-                  <td className="px-4 py-2">{formatAverage(season.rebounds)}</td>
-                  <td className="px-4 py-2">{formatAverage(season.assists)}</td>
-                  <td className="px-4 py-2">{formatAverage(season.steals)}</td>
-                  <td className="px-4 py-2">{formatAverage(season.blocks)}</td>
+                  <td className="px-4 py-2">{formatInteger(season.minutes)}</td>
+                  <td className="px-4 py-2">{formatInteger(season.points)}</td>
+                  <td className="px-4 py-2">{formatInteger(season.rebounds)}</td>
+                  <td className="px-4 py-2">{formatInteger(season.assists)}</td>
+                  <td className="px-4 py-2">{formatInteger(season.steals)}</td>
+                  <td className="px-4 py-2">{formatInteger(season.blocks)}</td>
                 </tr>
               ))}
             </tbody>

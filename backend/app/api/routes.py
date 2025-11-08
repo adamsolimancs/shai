@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from ..auth import require_api_key
 from ..config import Settings
-from ..dependencies import get_nba_client, get_rate_limiter, get_settings_dependency
+from ..dependencies import get_nba_client, get_news_client, get_rate_limiter, get_settings_dependency
 from ..rate_limit import RateLimiter
 from ..schemas import (
     BoxScoreLine,
@@ -25,8 +25,10 @@ from ..schemas import (
     Team,
     TeamGameRow,
     TeamStatsRow,
+    NewsArticle,
 )
 from ..services.nba import NBAStatsClient
+from ..services.news import NewsService
 from ..utils import paginate, parse_date, validate_date_range, validate_season
 from .responses import success
 
@@ -60,6 +62,15 @@ def _apply_pagination_links(
 async def meta(request: Request, client: NBAStatsClient = Depends(get_nba_client)) -> Envelope[MetaResponse]:
     payload = await client.get_meta()
     return success(request, payload)
+
+
+@router.get("/news", response_model=Envelope[list[NewsArticle]])
+async def news(
+    request: Request,
+    client: NewsService = Depends(get_news_client),
+) -> Envelope[list[NewsArticle]]:
+    articles, cache_meta = await client.get_latest()
+    return success(request, articles, cache=cache_meta)
 
 
 @router.get("/teams", response_model=Envelope[list[Team]])
@@ -173,6 +184,39 @@ async def player_shots(
     return success(request, result.data, cache=result.cache)
 
 
+async def _build_team_stats_response(
+    request: Request,
+    *,
+    client: NBAStatsClient,
+    season: str,
+    measure: Literal["Base", "Advanced", "FourFactors"],
+    per_mode: Literal["PerGame", "Totals"],
+    team_filter: int | None,
+) -> Envelope[list[TeamStatsRow]]:
+    result = await client.get_team_stats(season, measure, per_mode)
+    data = result.data if team_filter is None else [row for row in result.data if row.team_id == team_filter]
+    return success(request, data, cache=result.cache)
+
+
+@router.get("/teams/stats", response_model=Envelope[list[TeamStatsRow]])
+async def teams_stats(
+    request: Request,
+    season: str = Query(...),
+    measure: Literal["Base", "Advanced", "FourFactors"] = Query("Base"),
+    per_mode: Literal["PerGame", "Totals"] = Query("PerGame"),
+    team_id: int | None = Query(None),
+    client: NBAStatsClient = Depends(get_nba_client),
+) -> Envelope[list[TeamStatsRow]]:
+    return await _build_team_stats_response(
+        request,
+        client=client,
+        season=season,
+        measure=measure,
+        per_mode=per_mode,
+        team_filter=team_id,
+    )
+
+
 @router.get("/teams/{team_id}/stats", response_model=Envelope[list[TeamStatsRow]])
 async def team_stats(
     request: Request,
@@ -182,9 +226,14 @@ async def team_stats(
     per_mode: Literal["PerGame", "Totals"] = Query("PerGame"),
     client: NBAStatsClient = Depends(get_nba_client),
 ) -> Envelope[list[TeamStatsRow]]:
-    result = await client.get_team_stats(season, measure, per_mode)
-    filtered = [row for row in result.data if row.team_id == team_id]
-    return success(request, filtered, cache=result.cache)
+    return await _build_team_stats_response(
+        request,
+        client=client,
+        season=season,
+        measure=measure,
+        per_mode=per_mode,
+        team_filter=team_id,
+    )
 
 
 @router.get("/players/stats", response_model=Envelope[list[PlayerStatsRow]])

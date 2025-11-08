@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     cors_allow_credentials: bool = False
     cors_allow_methods: Sequence[str] = ("GET",)
     cors_allow_headers: Sequence[str] = ("*",)
+    news_cache_ttl_seconds: int = Field(600, ge=60, description="TTL for scraped news payloads.")
+    news_http_timeout_seconds: float = Field(8.0, ge=0.5, description="Per-request timeout for news scrapers.")
+    news_max_articles: int = Field(40, ge=5, le=200, description="Maximum number of news articles to retain.")
     enable_docs: bool = True
     request_id_header: str = Field("x-request-id")
     readiness_startup_delay_seconds: float = Field(2.0, ge=0.0)

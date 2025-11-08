@@ -12,23 +12,19 @@ type Game = {
   status?: string | null;
 };
 
-type PlayerStatsRow = {
-  player_id: number;
-  player_name: string;
-  team_abbreviation: string | null;
-  points: number;
-  rebounds: number;
-  assists: number;
-};
-
 type StoryAccent = "highlight" | "neutral" | "alert";
 
-type NewsStory = {
+type NewsArticle = {
   id: string;
-  tag: string;
+  source: string;
   title: string;
   summary: string;
-  timestamp: string;
+  url: string;
+  published_at: string;
+  image_url?: string | null;
+};
+
+type NewsStory = NewsArticle & {
   accent: StoryAccent;
 };
 
@@ -40,48 +36,15 @@ type PulseMetric = {
 
 const STORY_DATE = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
 
-function describeResult(game: Game): { descriptor: string; accent: StoryAccent } {
-  const margin = Math.abs(game.home_team_score - game.away_team_score);
-  if (margin <= 3) return { descriptor: "edges", accent: "alert" };
-  if (margin >= 15) return { descriptor: "dominates", accent: "highlight" };
-  return { descriptor: "tops", accent: "neutral" };
-}
-
-function buildGameStories(games: Game[]): NewsStory[] {
-  return games.map((game) => {
-    const winnerIsHome = game.home_team_score >= game.away_team_score;
-    const winner = winnerIsHome ? game.home_team_name : game.away_team_name;
-    const loser = winnerIsHome ? game.away_team_name : game.home_team_name;
-    const { descriptor, accent } = describeResult(game);
-    const margin = Math.abs(game.home_team_score - game.away_team_score);
-    const total = game.home_team_score + game.away_team_score;
-    const timestamp = new Date(game.date).toISOString();
-
-    const scoreline = `${game.away_team_name} ${game.away_team_score} @ ${game.home_team_name} ${game.home_team_score}`;
-
-    return {
-      id: `game-${game.game_id}`,
-      tag: "Game recap",
-      title: `${winner} ${descriptor} ${loser}`,
-      summary: `${scoreline} (${game.status ?? "Final"}). ${winner} ${descriptor} ${loser} by ${margin}. Combined output: ${total} points.`,
-      timestamp,
-      accent,
-    };
-  });
-}
-
-function buildPlayerStories(stats: PlayerStatsRow[]): NewsStory[] {
-  return stats.map((row, index) => {
-    const timestamp = new Date(Date.now() - index * 60 * 60 * 1000).toISOString();
-    return {
-      id: `player-${row.player_id}`,
-      tag: "Player spotlight",
-      title: `${row.player_name} keeps stuffing the sheet`,
-      summary: `${row.player_name} is pacing ${row.points.toFixed(1)} / ${row.rebounds.toFixed(1)} / ${row.assists.toFixed(1)} per night for ${row.team_abbreviation ?? "FA"}.`,
-      timestamp,
-      accent: "highlight",
-    };
-  });
+function deriveAccent(article: NewsArticle): StoryAccent {
+  const haystack = `${article.title} ${article.summary}`.toLowerCase();
+  if (haystack.match(/\b(injury|out|ruled|questionable|sidelined|suspension)\b/)) {
+    return "alert";
+  }
+  if (haystack.match(/\b(win|beats|tops|dominates|career-high|season-high)\b/)) {
+    return "highlight";
+  }
+  return "neutral";
 }
 
 function formatStoryTime(value: string) {
@@ -100,14 +63,18 @@ function accentClasses(accent: StoryAccent) {
 }
 
 export default async function NewsPage() {
-  const [games, stats] = await Promise.all([
+  const [news, games] = await Promise.all([
+    nbaFetch<NewsArticle[]>("/v1/news", { next: { revalidate: 300 } }),
     nbaFetch<Game[]>(`/v1/games?season=${DEFAULT_SEASON}&page_size=24`),
-    nbaFetch<PlayerStatsRow[]>(`/v1/players/stats?season=${DEFAULT_SEASON}&page_size=12`),
   ]);
 
-  const recaps = buildGameStories(games.slice(0, 8));
-  const playerAngles = buildPlayerStories(stats.slice(0, 4));
-  const stories = [...recaps, ...playerAngles].sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1)).slice(0, 10);
+  const stories: NewsStory[] = news
+    .map((article) => ({
+      ...article,
+      accent: deriveAccent(article),
+    }))
+    .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())
+    .slice(0, 10);
 
   const pulseAggregate = games.slice(0, 12).reduce(
     (acc, game) => {
@@ -153,13 +120,13 @@ export default async function NewsPage() {
           <p className="text-xs uppercase tracking-[0.5em] text-blue-300/80">League notebook</p>
           <h1 className="mt-3 text-4xl font-semibold text-white">Newsworthy runs, powered by data</h1>
           <p className="mt-2 max-w-2xl text-sm text-white/70">
-            We turn fresh box scores and league dashboards into story-ready blurbs. Use this feed to brief a broadcast, prep for a
-            podcast hit, or simply keep tabs on trend lines without sifting through dozens of tabs.
+            Real headlines scraped from ESPN, SportsCenter, and CBS Sports alongside tempo metrics from the scoring feeds. Use this
+            feed to brief a broadcast, prep for a podcast hit, or keep tabs on trend lines without hopping between tabs.
           </p>
         </div>
         <div className="flex flex-wrap gap-3 text-xs text-white/60">
           <span className="rounded-full border border-white/10 px-4 py-1">Season {DEFAULT_SEASON}</span>
-          <span className="rounded-full border border-white/10 px-4 py-1">Stories refresh with every API cache update</span>
+          <span className="rounded-full border border-white/10 px-4 py-1">Stories refresh from live scrapers every few minutes</span>
         </div>
       </header>
 
@@ -170,7 +137,7 @@ export default async function NewsPage() {
               <p className="text-xs uppercase tracking-[0.4em] text-white/40">Top stories</p>
               <h2 className="mt-2 text-2xl font-semibold text-white">Instant recaps & talking points</h2>
             </div>
-            <span className="text-xs uppercase tracking-[0.3em] text-white/60">Sourced from /v1/games & /v1/players/stats</span>
+            <span className="text-xs uppercase tracking-[0.3em] text-white/60">Sourced from ESPN · SportsCenter · CBS via /v1/news</span>
           </div>
           {stories.length === 0 ? (
             <div className="rounded-3xl border border-white/10 bg-slate-950/60 p-10 text-center text-white/70">
@@ -180,12 +147,19 @@ export default async function NewsPage() {
             <div className="grid gap-4 md:grid-cols-2">
               {stories.map((story) => (
                 <article key={story.id} className={`rounded-3xl border p-5 transition ${accentClasses(story.accent)}`}>
-                  <p className="text-xs uppercase tracking-[0.4em] text-white/50">{story.tag}</p>
+                  <p className="text-xs uppercase tracking-[0.4em] text-white/50">{story.source}</p>
                   <h3 className="mt-3 text-xl font-semibold text-white">{story.title}</h3>
                   <p className="mt-2 text-sm text-white/70">{story.summary}</p>
                   <div className="mt-4 flex items-center justify-between text-xs text-white/60">
-                    <span>{formatStoryTime(story.timestamp)}</span>
-                    <span>{story.accent === "alert" ? "Tight finish" : story.accent === "highlight" ? "Statement" : "Final"}</span>
+                    <span>{formatStoryTime(story.published_at)}</span>
+                    <a
+                      href={story.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="font-semibold text-blue-300 hover:text-blue-200"
+                    >
+                      Read article
+                    </a>
                   </div>
                 </article>
               ))}
