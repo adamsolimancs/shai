@@ -10,6 +10,7 @@ from .config import Settings, get_settings
 from .rate_limit import RateLimiter
 from .resolvers import NameResolver
 from .services.nba import NBAStatsClient
+from .services.news import NewsService
 
 
 def get_app_state(request: Request) -> dict[str, Any]:
@@ -22,6 +23,10 @@ def get_settings_dependency() -> Settings:
 
 def get_nba_client(request: Request) -> NBAStatsClient:
     return cast(NBAStatsClient, request.app.state.nba_client)
+
+
+def get_news_client(request: Request) -> NewsService:
+    return cast(NewsService, request.app.state.news_client)
 
 
 def get_resolver(request: Request) -> NameResolver:
