@@ -23,17 +23,16 @@ type TeamStatsRow = {
   field_goal_pct: number;
   rebounds: number;
   assists: number;
+  steals?: number | null;
+  blocks?: number | null;
+  turnovers?: number | null;
+  plus_minus?: number | null;
 };
 
 type MetaResponse = {
   service: string;
   version: string;
   supported_seasons: string[];
-};
-
-type Grouped<T> = {
-  key: string;
-  items: T[];
 };
 
 type SearchParams = {
@@ -90,34 +89,6 @@ CURRENT_FRANCHISES.forEach((team, index) => {
 function formatTeamName(team: Team) {
   const fullName = `${team.city} ${team.name}`.trim();
   return fullName || team.abbreviation;
-}
-
-function groupByConference(teams: Team[]): Grouped<Team>[] {
-  const map = new Map<string, Team[]>();
-  teams.forEach((team) => {
-    const key = team.conference ?? "Independent";
-    if (!map.has(key)) {
-      map.set(key, []);
-    }
-    map.get(key)!.push(team);
-  });
-  return [...map.entries()]
-    .map(([key, items]) => ({ key, items: items.sort((a, b) => formatTeamName(a).localeCompare(formatTeamName(b))) }))
-    .sort((a, b) => a.key.localeCompare(b.key));
-}
-
-function groupByDivision(teams: Team[]): Grouped<Team>[] {
-  const map = new Map<string, Team[]>();
-  teams.forEach((team) => {
-    const division = team.division ?? "No Division";
-    if (!map.has(division)) {
-      map.set(division, []);
-    }
-    map.get(division)!.push(team);
-  });
-  return [...map.entries()]
-    .map(([key, items]) => ({ key, items: items.sort((a, b) => formatTeamName(a).localeCompare(formatTeamName(b))) }))
-    .sort((a, b) => a.key.localeCompare(b.key));
 }
 
 function extractParam(params: SearchParams, key: string): string {
@@ -223,24 +194,25 @@ async function fetchTeamStats(season: string, teamIds: number[]): Promise<TeamSt
 
 export default async function TeamsPage({ searchParams = {} }: { searchParams?: SearchParams }) {
   const requestedSeason = extractParam(searchParams, "season");
-  const season = isValidSeason(requestedSeason) ? requestedSeason : DEFAULT_SEASON;
+  const preferredSeason = isValidSeason(requestedSeason) ? requestedSeason : DEFAULT_SEASON;
 
-  const [teams, meta] = await Promise.all([
-    nbaFetch<Team[]>(`/v1/teams?season=${season}`, { next: { revalidate: 1800 } }),
-    nbaFetch<MetaResponse>("/v1/meta", { next: { revalidate: 3600 } }),
-  ]);
+  const meta = await nbaFetch<MetaResponse>("/v1/meta", { next: { revalidate: 3600 } });
+  const advertisedSeasons = meta.supported_seasons ?? [];
+  const fallbackSeason = advertisedSeasons.at(-1) ?? preferredSeason;
+  const activeSeason = advertisedSeasons.includes(preferredSeason) ? preferredSeason : fallbackSeason;
+  const usingFallbackSeason = activeSeason !== preferredSeason;
+
+  const teams = await nbaFetch<Team[]>(`/v1/teams?season=${activeSeason}`, { next: { revalidate: 1800 } });
 
   const currentTeams = teams.filter(isCurrentFranchise).sort(compareByCurrentOrder);
   const teamMap = new Map<number, Team>(currentTeams.map((team) => [team.id, team]));
 
   const teamStats = await fetchTeamStats(
-    season,
+    activeSeason,
     currentTeams.map((team) => team.id),
   );
 
   const sortedTeams = [...currentTeams].sort((a, b) => formatTeamName(a).localeCompare(formatTeamName(b)));
-  const conferences = groupByConference(currentTeams);
-  const divisions = groupByDivision(currentTeams);
 
   const statsByTeamId = new Map<number, TeamStatsRow>();
   teamStats.forEach((row) => {
@@ -261,7 +233,31 @@ export default async function TeamsPage({ searchParams = {} }: { searchParams?: 
       stats: row,
       team: teamMap.get(row.team_id),
     }));
-  const topStandings = standings.slice(0, 10);
+  const buildConferenceRows = (key: string) =>
+    standings
+      .filter(({ team }) => (team?.conference ?? "").toLowerCase() === key)
+      .map((row, index) => ({ ...row, rank: index + 1 }));
+
+  const conferenceStandings = [
+    {
+      id: "east",
+      title: "Eastern Conference",
+      rows: buildConferenceRows("east"),
+    },
+    {
+      id: "west",
+      title: "Western Conference",
+      rows: buildConferenceRows("west"),
+    },
+  ];
+
+  const assistToTurnover = (row: TeamStatsRow) => {
+    const turnovers = row.turnovers ?? 0;
+    if (!turnovers) {
+      return row.assists;
+    }
+    return row.assists / turnovers;
+  };
 
   const leaderboardConfigs = [
     {
@@ -292,6 +288,34 @@ export default async function TeamsPage({ searchParams = {} }: { searchParams?: 
       accessor: (row: TeamStatsRow) => row.field_goal_pct,
       formatter: (value: number) => `${(value * 100).toFixed(1)}%`,
     },
+    {
+      id: "defense",
+      label: "Defensive pressure",
+      metric: "STL",
+      accessor: (row: TeamStatsRow) => row.steals ?? 0,
+      formatter: (value: number) => value.toFixed(1),
+    },
+    {
+      id: "rimProtection",
+      label: "Rim protection",
+      metric: "BLK",
+      accessor: (row: TeamStatsRow) => row.blocks ?? 0,
+      formatter: (value: number) => value.toFixed(1),
+    },
+    {
+      id: "netImpact",
+      label: "Net impact",
+      metric: "+/-",
+      accessor: (row: TeamStatsRow) => row.plus_minus ?? 0,
+      formatter: (value: number) => value.toFixed(1),
+    },
+    {
+      id: "assistToTurnover",
+      label: "Assist-to-turnover",
+      metric: "AST/TOV",
+      accessor: assistToTurnover,
+      formatter: (value: number) => value.toFixed(2),
+    },
   ] as const;
 
   const leaderboards = leaderboardConfigs.map((config) => ({
@@ -301,8 +325,8 @@ export default async function TeamsPage({ searchParams = {} }: { searchParams?: 
       .slice(0, 3),
   }));
 
-  const historicSeasons = [...(meta.supported_seasons ?? [])]
-    .filter((option) => option !== season)
+  const historicSeasons = [...advertisedSeasons]
+    .filter((option) => option !== activeSeason)
     .sort((a, b) => b.localeCompare(a))
     .slice(0, 8);
 
@@ -312,113 +336,84 @@ export default async function TeamsPage({ searchParams = {} }: { searchParams?: 
         <div>
           <p className="text-xs uppercase tracking-[0.4em] text-white/40">Season dashboard</p>
           <h2 className="mt-2 text-2xl font-semibold text-white">Standings and pace-setters</h2>
-          <p className="mt-1 text-sm text-white/60">Wins, losses, and stat leaders for the {season} campaign.</p>
+          <p className="mt-1 text-sm text-white/60">Wins, losses, and stat leaders for the {activeSeason} campaign.</p>
+          {usingFallbackSeason && (
+            <p className="mt-2 text-xs text-amber-200/80">
+              Requested season {preferredSeason} isn&apos;t available yet. Showing {activeSeason} data instead.
+            </p>
+          )}
         </div>
-        <div className="grid gap-6 lg:grid-cols-[1.7fr_1fr]">
-          <article className="rounded-3xl border border-white/10 bg-slate-950/60 p-5">
-            <div className="flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-white">League standings</h3>
-              <span className="text-xs uppercase tracking-[0.3em] text-white/50">Top 10</span>
-            </div>
-            <div className="mt-4 space-y-2 text-sm text-white/80">
-              {topStandings.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-white/10 px-4 py-6 text-center text-white/60">
-                  Standings data isn&apos;t available yet for this season.
-                </div>
-              ) : (
-                topStandings.map(({ rank, stats, team }) => (
-                  <div
-                    key={stats.team_id}
-                    className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3"
-                  >
-                    <div>
-                      <p className="text-xs uppercase tracking-[0.3em] text-white/40">#{rank}</p>
-                      <p className="text-base font-semibold text-white">{team?.name ? formatTeamName(team) : stats.team_name}</p>
-                      <p className="text-white/60">
-                        {formatRecord(stats)} • {team?.conference ?? "—"}
-                      </p>
-                    </div>
-                    <span className="text-2xl font-semibold text-white">{formatPercent(stats.win_pct, 1)}</span>
-                  </div>
-                ))
-              )}
-            </div>
-          </article>
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-1">
-            {leaderboards.map((board) => (
-              <article key={board.id} className="rounded-3xl border border-white/10 bg-slate-950/60 p-5">
-                <p className="text-xs uppercase tracking-[0.4em] text-white/50">{board.label}</p>
-                <ol className="mt-4 space-y-3 text-sm">
-                  {board.rows.length === 0 ? (
-                    <li className="rounded-2xl border border-dashed border-white/10 px-4 py-3 text-center text-xs text-white/60">
-                      Metric offline for now.
-                    </li>
-                  ) : (
-                    board.rows.map((row, index) => (
-                      <li key={row.team_id} className="flex items-center justify-between">
-                        <div>
-                          <p className="text-xs uppercase tracking-[0.3em] text-white/40">#{index + 1}</p>
-                          <p className="text-base font-semibold text-white">{row.team_name}</p>
-                          <p className="text-white/60">{row.team_abbreviation}</p>
-                        </div>
-                        <span className="text-2xl font-semibold text-white">
-                          {board.formatter(board.accessor(row))}
-                        </span>
-                      </li>
-                    ))
-                  )}
-                </ol>
-              </article>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      <section className="space-y-4">
-        <div>
-          <p className="text-xs uppercase tracking-[0.4em] text-white/40">Conference picture</p>
-          <h2 className="mt-2 text-2xl font-semibold text-white">How {season} lines up</h2>
-        </div>
-        <div className="grid gap-5 md:grid-cols-2">
-          {conferences.map((conference) => (
-            <article key={conference.key} className="rounded-3xl border border-white/10 bg-slate-950/60 p-6">
+        <div className="grid gap-6 lg:grid-cols-2">
+          {conferenceStandings.map((conference) => (
+            <article key={conference.id} className="rounded-3xl border border-white/10 bg-slate-950/60 p-5">
               <div className="flex items-center justify-between">
-                <h3 className="text-xl font-semibold text-white">{conference.key} Conference</h3>
-                <span className="text-xs uppercase text-white/60">{conference.items.length} teams</span>
+                <div>
+                  <h3 className="text-lg font-semibold text-white">{conference.title}</h3>
+                </div>
+                <span className="text-xs uppercase tracking-[0.3em] text-white/50">
+                  {conference.rows.length > 0 ? `${conference.rows.length} teams` : "Awaiting data"}
+                </span>
               </div>
-              <ul className="mt-4 space-y-2 text-sm text-white/80">
-                {conference.items.map((team) => (
-                  <li key={team.id} className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3">
-                    <span className="font-medium text-white">{formatTeamName(team)}</span>
-                    <span className="text-white/60">{team.division ?? "—"}</span>
-                  </li>
-                ))}
-              </ul>
+              <div className="mt-4 space-y-2 text-sm text-white/80">
+                {conference.rows.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-white/10 px-4 py-6 text-center text-white/60">
+                    Standings data isn&apos;t available yet for this season.
+                  </div>
+                ) : (
+                  conference.rows.map(({ rank, stats, team }) => (
+                    <div
+                      key={stats.team_id}
+                      className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3"
+                    >
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.3em] text-white/40">#{rank}</p>
+                        <p className="text-base font-semibold text-white">
+                          {team?.name ? formatTeamName(team) : stats.team_name}
+                        </p>
+                        <p className="text-white/60">
+                          {formatRecord(stats)} • {team?.division ?? "—"}
+                        </p>
+                      </div>
+                      <span className="text-2xl font-semibold text-white">{formatPercent(stats.win_pct, 1)}</span>
+                    </div>
+                  ))
+                )}
+              </div>
             </article>
           ))}
         </div>
       </section>
 
-      <section className="space-y-4">
+      <section className="space-y-6">
         <div>
-          <p className="text-xs uppercase tracking-[0.4em] text-white/40">Divisional pods</p>
-          <h2 className="mt-2 text-2xl font-semibold text-white">Six-way breakdown</h2>
+          <p className="text-xs uppercase tracking-[0.4em] text-white/40">Season pulse</p>
+          <h2 className="mt-2 text-2xl font-semibold text-white">Key statistical leaders</h2>
+          <p className="mt-1 text-sm text-white/60">Top-3 teams by scoring, glass work, ball movement, and shooting.</p>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          {divisions.map((division) => (
-            <article key={division.key} className="rounded-3xl border border-white/10 bg-slate-950/60 p-5">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold text-white">{division.key}</h3>
-                <span className="text-xs uppercase text-white/60">{division.items[0]?.conference ?? "—"}</span>
-              </div>
-              <ul className="mt-4 space-y-2 text-sm text-white/80">
-                {division.items.map((team) => (
-                  <li key={team.id} className="flex items-center justify-between">
-                    <span>{team.abbreviation}</span>
-                    <span className="text-white/60">{formatTeamName(team)}</span>
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {leaderboards.map((board) => (
+            <article key={board.id} className="rounded-3xl border border-white/10 bg-slate-950/60 p-5">
+              <p className="text-xs uppercase tracking-[0.4em] text-white/50">{board.label}</p>
+              <ol className="mt-4 space-y-3 text-sm">
+                {board.rows.length === 0 ? (
+                  <li className="rounded-2xl border border-dashed border-white/10 px-4 py-3 text-center text-xs text-white/60">
+                    Metric offline for now.
                   </li>
-                ))}
-              </ul>
+                ) : (
+                  board.rows.map((row, index) => (
+                    <li key={row.team_id} className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.3em] text-white/40">#{index + 1}</p>
+                        <p className="text-base font-semibold text-white">{row.team_name}</p>
+                        <p className="text-white/60">{row.team_abbreviation}</p>
+                      </div>
+                      <span className="text-2xl font-semibold text-white">
+                        {board.formatter(board.accessor(row))}
+                      </span>
+                    </li>
+                  ))
+                )}
+              </ol>
             </article>
           ))}
         </div>
@@ -430,7 +425,7 @@ export default async function TeamsPage({ searchParams = {} }: { searchParams?: 
             <p className="text-xs uppercase tracking-[0.4em] text-white/40">Team directory</p>
             <h2 className="mt-2 text-2xl font-semibold text-white">{sortedTeams.length} quick-reference cards</h2>
           </div>
-          <span className="text-xs uppercase tracking-[0.3em] text-white/60">Updated for {season}</span>
+          <span className="text-xs uppercase tracking-[0.3em] text-white/60">Updated for {activeSeason}</span>
         </div>
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {sortedTeams.length === 0 ? (

@@ -214,8 +214,15 @@ class NBAStatsClient:
             return cast(list[dict[str, Any]], df.to_dict("records"))
 
         rows, cache_meta = await self._cached_call(key, GAMES_TTL, fetch)
-        logs = [self._normalize_player_log(row) for row in rows]
-        return ServiceResult([PlayerGameLog(**item) for item in logs], cache_meta)
+        logs: list[PlayerGameLog] = []
+        for row in rows:
+            try:
+                normalized = self._normalize_player_log(row)
+                logs.append(PlayerGameLog(**normalized))
+            except (KeyError, TypeError, ValueError, ValidationError) as exc:
+                logger.warning("Skipping malformed player log row", extra={"error": str(exc), "row": row})
+                continue
+        return ServiceResult(logs, cache_meta)
 
     async def get_player_career_stats(self, player_id: int) -> ServiceResult:
         key = f"player_career:{player_id}"
@@ -591,6 +598,10 @@ class NBAStatsClient:
             "field_goal_pct": self._safe_float(row.get("FG_PCT")),
             "rebounds": self._safe_float(row.get("REB")),
             "assists": self._safe_float(row.get("AST")),
+            "steals": self._safe_float(row.get("STL")),
+            "blocks": self._safe_float(row.get("BLK")),
+            "turnovers": self._safe_float(row.get("TOV")),
+            "plus_minus": self._safe_float(row.get("PLUS_MINUS")),
         }
 
     def _normalize_player_stats(self, row: dict[str, Any]) -> dict[str, Any]:

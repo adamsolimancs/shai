@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { FormEvent, useMemo, useState } from "react";
 import TextType from "@/components/TextType";
 
 const trendingTerms = [
@@ -22,6 +22,15 @@ const trendingTerms = [
   "Giannis Shot Chart",
   "2025 Rookie of the Year",
   "Spurs Head Coach",
+  "NBA Power Rankings",
+  "Western Conference Standings",
+  "Trade Deadline Rumors",
+  "Playoff Picture",
+  "Clutch Time Leaders",
+  "Best Defensive Teams",
+  "Top Rookie Watch",
+  "Injury Report",
+  "Coach of the Year Race",
 ];
 
 const normalizeQuery = (input: string) =>
@@ -35,6 +44,14 @@ export default function HeroSearch() {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [hasInteracted, setHasInteracted] = useState(false);
+  const randomTrendingTerms = useMemo(() => {
+    const selections = [...trendingTerms];
+    for (let i = selections.length - 1; i > 0; i -= 1) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [selections[i], selections[j]] = [selections[j], selections[i]];
+    }
+    return selections;
+  }, []);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -51,17 +68,23 @@ export default function HeroSearch() {
         Search players
       </label>
       <div className="surface-card--elevated flex items-center gap-3 rounded-full px-6 py-3 focus-within:border-[color:var(--color-app-primary)] focus-within:ring-2 focus-within:ring-[var(--color-app-primary-soft)]">
-        <svg
-          xmlns="http://www.w3.org/2000/svg"
-          fill="none"
-          viewBox="0 0 24 24"
-          strokeWidth={1.5}
-          stroke="currentColor"
-          className="h-5 w-5 text-[color:var(--color-app-primary)]/70"
-          aria-hidden="true"
+        <button
+          type="submit"
+          aria-label="Submit search"
+          className="rounded-full p-1 text-[color:var(--color-app-primary)]/70 transition hover:bg-[color:var(--color-app-primary-soft)]/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-app-primary)]"
         >
-          <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.6-5.4a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
-        </svg>
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            fill="none"
+            viewBox="0 0 24 24"
+            strokeWidth={1.5}
+            stroke="currentColor"
+            className="h-5 w-5"
+            aria-hidden="true"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35m1.6-5.4a7 7 0 1 1-14 0 7 7 0 0 1 14 0Z" />
+          </svg>
+        </button>
         <div className="relative flex-1">
           <input
             id="global-search"
@@ -77,11 +100,11 @@ export default function HeroSearch() {
           />
           {showTypewriter && (
             <TextType
-              text={trendingTerms}
+              text={randomTrendingTerms}
               typingSpeed={55}
               pauseDuration={2500}
               cursorCharacter="_"
-              className="pointer-events-none absolute left-10 top-1/2 -translate-y-1/2 text-base text-[color:var(--color-app-foreground-muted)]"
+              className="pointer-events-none absolute left-7 top-1/2 -translate-y-1/2 text-sm text-[color:var(--color-app-foreground-muted)] sm:left-10 sm:text-base"
             />
           )}
         </div>

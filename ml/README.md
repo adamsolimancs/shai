@@ -124,51 +124,56 @@ Use **Spearman ρ** (rank quality) + **MAE/RMSE**. Keep a **simple baseline** (G
 ### CLI
 ```bash
 # Dry run on synthetic data
-python -m ml.training.train --config ml/training/configs/train.yaml --synthetic 1
+python -m ml.training.src.train --config ml/training/configs/train.yaml --synthetic 1
 
 # Real run on processed season table
-python -m ml.training.train --config ml/training/configs/train.yaml
+python -m ml.training.src.train --config ml/training/configs/train.yaml
 ```
 
 ### `train.yaml` (template)
 ```yaml
-seed: 42
-mode: "season"        # or "game"
-paths:
-  raw: "ml/data/raw"
-  interim: "ml/data/interim"
-  processed: "ml/data/processed"
-  out_dir: "models/player_ratings"
+mode: "game"             # season | game
+data:
+  input_path: "ml/data/processed/game_logs.parquet"
+  synthetic_output_path: "ml/data/processed/game_logs_synth.parquet"
+  timestamp_column: "game_date"
+  id_columns: ["player_id","game_id"]
 features:
-  numeric: ["pts_per36","ast_per36","reb_per36","ts_pct","tov_per36","stl_per36","blk_per36","usg_pct","plus_minus_per36","pace"]
-  categorical: ["position"]
+  per36_base_stats: ["pts","ast","reb","stl","blk","tov","plus_minus"]
+  retain_raw_stats: ["ts_pct","usg_pct","pace"]
+  categorical: ["position","home_away","wl"]
+  minimum_minutes: 8.0
 target:
-  kind: "heuristic"   # heuristic | proxy | synthetic
-  scale: "0_100"      # rescale to 0-100 for UX
-split:
-  method: "time"      # time | season | random
-  val_seasons: ["2023-24"]
-  test_seasons: ["2024-25"]
-model:
-  type: "xgboost"
-  params:
-    n_estimators: 600
-    max_depth: 6
-    learning_rate: 0.05
-    subsample: 0.8
-    colsample_bytree: 0.8
-evaluation:
-  metrics: ["rmse","mae","spearman"]
-export:
-  save_schema: true
-  save_metrics: true
+  type: "heuristic"     # heuristic | proxy | synthetic
+  label_column: "rating"
+  scale_min: 0
+  scale_max: 100
+  weights:
+    pts_per36: 0.4
+    ast_per36: 0.25
+    reb_per36: 0.15
+    stl_per36: 0.07
+    blk_per36: 0.05
+    tov_per36: -0.05
+    plus_minus_per36: 0.2
+    ts_pct: 0.2
+training:
+  test_size: 0.2
+  random_state: 13
+  model_type: "elasticnet"   # elasticnet | random_forest | hist_gbrt
+  model_params:
+    alpha: 0.3
+    l1_ratio: 0.25
+output:
+  dir: "models/player_ratings/game"
+  tag: "dev"
 ```
 
 ### Outputs
-- `models/player_ratings/<run_id>/model.bin`
+- `models/player_ratings/<run_id>/model.joblib`
 - `feature_schema.json` (names, dtypes, normalization)
 - `metrics.json` (train/val/test)
-- `config_used.yaml` (for reproducibility)
+- `config_used.json` (for reproducibility)
 
 ---
 
@@ -275,13 +280,13 @@ Store plots in `models/<run_id>/reports/`.
 
 ```bash
 # 1) Create/prepare data (or generate synthetic)
-python -m ml.training.train --config ml/training/configs/train.yaml --synthetic 1
+python -m ml.training.src.train --config ml/training/configs/train.yaml --synthetic 1
 
 # 2) Train real model (season mode)
-python -m ml.training.train --config ml/training/configs/train.yaml
+python -m ml.training.src.train --config ml/training/configs/train.yaml
 
-# 3) Evaluate saved artifact
-python -m ml.training.eval --model models/player_ratings/<run_id>/model.bin
+# 3) Evaluate saved artifact (CLI coming soon)
+# python -m ml.training.src.eval --model models/player_ratings/<run_id>/model.bin
 ```
 
 Questions to lock down in config:

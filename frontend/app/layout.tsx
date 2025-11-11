@@ -4,6 +4,7 @@ import type { Metadata } from "next";
 import { auth, signOut } from "@/auth";
 import "./globals.css";
 import ShinyText from "@/components/ShinyText";
+import HeaderNavCluster from "@/components/HeaderNavCluster";
 
 export const metadata: Metadata = {
   title: "NBAi - NBA Scores, Stats, and Analysis powered by AI",
@@ -36,63 +37,56 @@ const SiteHeader = async () => {
 
   return (
     <header className="sticky top-0 z-20 border-b border-[color:var(--color-app-border)] bg-[var(--color-app-surface-elevated)] backdrop-blur-md">
-      <div className="relative mx-auto flex w-full max-w-7xl items-center justify-between gap-6 px-6 py-4">
-        <Link href="/" className="flex shrink-0 items-center gap-3">
-          <Image
-            src="/aiball.png"
-            alt="AI Ball logo"
-            width={48}
-            height={48}
-            priority
-            className="h-12 w-12 rounded-full border border-[color:var(--color-app-border)] bg-[#f7f0e8] object-contain p-px shadow-sm"
-          />
-          <span className="text-lg font-bold tracking-[0.10em] text-[var(--color-app-foreground)] md:text-xl">NBAi</span>
-        </Link>
-        <nav className="pointer-events-auto absolute left-1/2 hidden -translate-x-1/2 items-center gap-8 text-sm text-[color:var(--color-app-foreground-muted)] md:flex">
-          <Link href="/teams" className="transition hover:text-[var(--color-app-foreground)]">
-            Teams
-          </Link>
-          <Link href="/players" className="transition hover:text-[var(--color-app-foreground)]">
-            Players
-          </Link>
-          <Link href="/scores" className="transition hover:text-[var(--color-app-foreground)]">
-            Scores
-          </Link>
-          <Link href="/news" className="transition hover:text-[var(--color-app-foreground)]">
-            News
-          </Link>
-        </nav>
-        {user ? (
-          <div className="surface-card--soft flex items-center gap-3 rounded-full px-4 py-2">
-            <span className="text-sm font-medium text-[var(--color-app-foreground-muted)]">Hi, {user.name ?? "there"}!</span>
-            <form
-              action={async () => {
-                "use server";
-                await signOut();
-              }}
-            >
-              <button
-                type="submit"
-                className="rounded-full border border-[color:var(--color-app-border)] px-3 py-1 text-xs font-medium text-[color:var(--color-app-foreground-muted)] transition hover:border-[color:var(--color-app-border-strong)] hover:text-[var(--color-app-foreground)]"
-              >
-                Logout
-              </button>
-            </form>
-          </div>
-        ) : (
-          <Link
-            className="group relative inline-flex items-center justify-center overflow-hidden rounded-full border border-[color:var(--color-app-border)] bg-[var(--color-app-surface-soft)] px-5 py-2 text-sm font-semibold text-[var(--color-app-foreground)] transition hover:border-[color:var(--color-app-border-strong)]"
-            href="/signin"
-          >
-            <span className="absolute inset-0 scale-0 rounded-full bg-[var(--color-app-primary-soft)] transition-transform duration-300 group-hover:scale-100" />
-            <ShinyText
-              text="Sign In"
-              disabled={false}
-              speed={6}
-              className='relative'
+      <div className="relative mx-auto w-full max-w-7xl px-6 py-4">
+        <div className="flex flex-nowrap items-center justify-between gap-4">
+          <Link href="/" className="flex shrink-0 items-center gap-3">
+            <Image
+              src="/aiball.png"
+              alt="AI Ball logo"
+              width={48}
+              height={48}
+              priority
+              className="h-12 w-12 rounded-full border border-[color:var(--color-app-border)] bg-[#f7f0e8] object-contain p-px shadow-sm"
             />
+            <span className="text-lg font-bold tracking-[0.10em] text-[var(--color-app-foreground)] md:text-xl">NBAi</span>
           </Link>
-        )}
+          <div className="flex items-center justify-end">
+            {user ? (
+              <div className="surface-card--soft flex items-center gap-2 rounded-full px-3 py-1.5 text-xs md:gap-3 md:px-4 md:py-2 md:text-sm">
+                <span className="font-medium text-[var(--color-app-foreground-muted)]">Hi, {user.name ?? "there"}!</span>
+                <form
+                  action={async () => {
+                    "use server";
+                    await signOut();
+                  }}
+                >
+                  <button
+                    type="submit"
+                    className="rounded-full border border-[color:var(--color-app-border)] px-3 py-1 text-[0.65rem] font-medium text-[color:var(--color-app-foreground-muted)] transition hover:border-[color:var(--color-app-border-strong)] hover:text-[var(--color-app-foreground)] md:text-xs"
+                  >
+                    Logout
+                  </button>
+                </form>
+              </div>
+            ) : (
+              <Link
+                className="group relative inline-flex items-center justify-center overflow-hidden rounded-full border border-[color:var(--color-app-border)] bg-[var(--color-app-surface-soft)] px-4 py-1.5 text-xs font-semibold text-[var(--color-app-foreground)] transition hover:border-[color:var(--color-app-border-strong)] md:px-5 md:py-2 md:text-sm"
+                href="/signin"
+              >
+                <span className="absolute inset-0 scale-0 rounded-full bg-[var(--color-app-primary-soft)] transition-transform duration-300 group-hover:scale-100" />
+                <ShinyText
+                  text="Sign In"
+                  disabled={false}
+                  speed={6}
+                  className="relative"
+                />
+              </Link>
+            )}
+          </div>
+        </div>
+        <div className="mt-2 md:pointer-events-none md:absolute md:left-1/2 md:top-3 md:w-full md:-translate-x-1/2">
+          <HeaderNavCluster />
+        </div>
       </div>
     </header>
   );

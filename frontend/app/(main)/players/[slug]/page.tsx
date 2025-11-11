@@ -56,6 +56,10 @@ type TeamStatsRow = {
   wins: number;
   losses: number;
   win_pct: number;
+  steals?: number | null;
+  blocks?: number | null;
+  turnovers?: number | null;
+  plus_minus?: number | null;
 };
 
 type Player = {
@@ -96,6 +100,52 @@ type SeasonStats = {
 const HEADSHOT_BASE = "https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190";
 // const HEADSHOT_FALLBACK = "https://images.unsplash.com/photo-1521412644187-c49fa049e84d?auto=format&fit=crop&w=600&q=80";
 
+const CHAMPIONS_BY_SEASON: Record<string, string> = {
+  "2024-25": "OKC",
+  "2023-24": "BOS",
+  "2022-23": "DEN",
+  "2021-22": "GSW",
+  "2020-21": "MIL",
+  "2019-20": "LAL",
+  "2018-19": "TOR",
+  "2017-18": "GSW",
+  "2016-17": "GSW",
+  "2015-16": "CLE",
+  "2014-15": "GSW",
+  "2013-14": "SAS",
+  "2012-13": "MIA",
+  "2011-12": "MIA",
+  "2010-11": "DAL",
+  "2009-10": "LAL",
+  "2008-09": "LAL",
+  "2007-08": "BOS",
+  "2006-07": "SAS",
+  "2005-06": "MIA",
+  "2004-05": "SAS",
+  "2003-04": "DET",
+  "2002-03": "SAS",
+  "2001-02": "LAL",
+  "2000-01": "LAL",
+  "1999-00": "LAL",
+  "1998-99": "SAS",
+  "1997-98": "CHI",
+  "1996-97": "CHI",
+  "1995-96": "CHI",
+  "1994-95": "HOU",
+  "1993-94": "HOU",
+  "1992-93": "CHI",
+  "1991-92": "CHI",
+  "1990-91": "CHI",
+  "1989-90": "DET",
+  "1988-89": "DET",
+  "1987-88": "LAL",
+  "1986-87": "LAL",
+  "1985-86": "BOS",
+};
+
+const MIN_GAMES_FOR_ACCOLADE = 45;
+const PRIME_IMPACT_MIN_GAMES = 50;
+
 function slugify(name: string): string {
   return name
     .toLowerCase()
@@ -118,10 +168,130 @@ function round(value: number | null | undefined, digits = 1): number {
   return Math.round(value * factor) / factor;
 }
 
-function deriveRating(stats?: SeasonStats): number {
-  if (!stats) return 75;
-  const raw = stats.pts * 2 + stats.reb * 1.5 + stats.ast * 1.5 + stats.stl * 1.2 + stats.blk * 1.2;
-  return Math.min(99, Math.round(65 + raw * 0.6));
+function safeAverage(total: number | null | undefined, games: number | null | undefined): number {
+  if (total === null || total === undefined || !games || games <= 0) {
+    return 0;
+  }
+  return total / games;
+}
+
+function computePerGameImpact(stats: SeasonStats): number {
+  const scoring = stats.pts * 1.25;
+  const playmaking = stats.ast * 1.4;
+  const rebounding = stats.reb * 0.95;
+  const defensiveStocks = (stats.stl + stats.blk) * 2.4;
+  const workload = Math.max(0, stats.mins - 26) * 0.7;
+  return scoring + playmaking + rebounding + defensiveStocks + workload;
+}
+
+function isAllStarCaliber(row: PlayerCareerStatsRow): boolean {
+  if (!row.games_played || row.games_played < MIN_GAMES_FOR_ACCOLADE) {
+    return false;
+  }
+  const pts = safeAverage(row.points, row.games_played);
+  const reb = safeAverage(row.rebounds, row.games_played);
+  const ast = safeAverage(row.assists, row.games_played);
+  const stocks = safeAverage(row.steals ?? 0, row.games_played) + safeAverage(row.blocks ?? 0, row.games_played);
+  const impact = pts * 0.85 + reb * 0.45 + ast * 0.55 + stocks * 1.5;
+  return impact >= 28 || pts >= 24 || (pts >= 20 && (reb >= 9 || ast >= 7));
+}
+
+function estimateCareerAccolades(rows?: PlayerCareerStatsRow[]): { allStarSeasons: number; championships: number } {
+  if (!rows?.length) {
+    return { allStarSeasons: 0, championships: 0 };
+  }
+
+  const primaryRows = new Map<string, PlayerCareerStatsRow>();
+  const championSeasons = new Set<string>();
+
+  rows.forEach((row) => {
+    if (!primaryRows.has(row.season_id) || row.team_abbreviation === "TOT") {
+      primaryRows.set(row.season_id, row);
+    }
+    const champion = CHAMPIONS_BY_SEASON[row.season_id];
+    if (
+      champion &&
+      row.team_abbreviation &&
+      row.team_abbreviation !== "TOT" &&
+      champion === row.team_abbreviation
+    ) {
+      championSeasons.add(row.season_id);
+    }
+  });
+
+  let allStarSeasons = 0;
+  for (const row of primaryRows.values()) {
+    if (isAllStarCaliber(row)) {
+      allStarSeasons += 1;
+    }
+  }
+
+  return { allStarSeasons, championships: championSeasons.size };
+}
+
+type CareerImpactSummary = {
+  seasons: number;
+  primeImpactSeasons: number;
+  peakScoring: number;
+};
+
+function summarizeCareerImpact(rows?: PlayerCareerStatsRow[]): CareerImpactSummary {
+  if (!rows?.length) {
+    return { seasons: 0, primeImpactSeasons: 0, peakScoring: 0 };
+  }
+
+  const bySeason = new Map<string, PlayerCareerStatsRow>();
+  rows.forEach((row) => {
+    if (!bySeason.has(row.season_id) || row.team_abbreviation === "TOT") {
+      bySeason.set(row.season_id, row);
+    }
+  });
+
+  let primeImpactSeasons = 0;
+  let peakScoring = 0;
+  const seasons = [...bySeason.values()];
+
+  seasons.forEach((row) => {
+    const games = row.games_played ?? 0;
+    if (!games) {
+      return;
+    }
+    const pts = safeAverage(row.points, games);
+    const ast = safeAverage(row.assists, games);
+    const reb = safeAverage(row.rebounds, games);
+    peakScoring = Math.max(peakScoring, pts);
+    if (
+      games >= PRIME_IMPACT_MIN_GAMES &&
+      (pts >= 24 || (pts >= 20 && ast >= 8) || (pts >= 18 && reb >= 10) || (pts >= 18 && ast >= 10))
+    ) {
+      primeImpactSeasons += 1;
+    }
+  });
+
+  return {
+    seasons: seasons.length,
+    primeImpactSeasons,
+    peakScoring,
+  };
+}
+
+// Harsher rating heuristic that folds in career accomplishments.
+function deriveRating(stats?: SeasonStats, career?: PlayerCareerStatsRow[]): number {
+  const talentScore = stats ? Math.min(36, computePerGameImpact(stats) * 0.5) : 0;
+  const { allStarSeasons, championships } = estimateCareerAccolades(career);
+  const allStarScore = Math.min(9, allStarSeasons * 1.4);
+  const championshipScore = championships === 0 ? 0 : Math.min(12, 6 + (championships - 1) * 2.5);
+  const accoladeScore = allStarScore + championshipScore;
+  const careerImpact = summarizeCareerImpact(career);
+  const experienceBoost = Math.min(14, careerImpact.seasons * 0.4 + careerImpact.primeImpactSeasons);
+  const peakResume = Math.min(7, Math.max(0, careerImpact.peakScoring - 23) * 0.35);
+  const heavyMinutesBonus = stats ? Math.max(0, stats.mins - 34) * 0.2 : 0;
+  const noRingPenalty = championships === 0 ? 3 : 0;
+  const base = (stats ? 59 : 56) + talentScore + accoladeScore + experienceBoost + peakResume + heavyMinutesBonus - noRingPenalty;
+  const ceiling = championships > 0 ? 98 : 95;
+  const bounded = Math.min(ceiling, base);
+  const floor = stats ? 63 : 58;
+  return Math.max(floor, Math.round(bounded));
 }
 
 function formatRecord(stats?: TeamStatsRow): string | undefined {
@@ -242,12 +412,13 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
     : undefined;
 
   const teamRecord = formatRecord(teamStats[0]);
-  const rating = deriveRating(stats);
+  const rating = deriveRating(stats, career);
   const scoutingReport = stats
     ? `${resolution.player?.name ?? query} is pacing ${stats.pts.toFixed(1)} / ${stats.reb.toFixed(1)} / ${stats.ast.toFixed(1)} this season.`
     : `${resolution.player?.name ?? query} career overview.`;
 
-  const experienceSeasons = collapseCareerRows(career).length;
+  const collapsedCareer = collapseCareerRows(career);
+  const experienceSeasons = collapsedCareer.length;
 
   return {
     slug,
@@ -272,7 +443,7 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
         ],
       }
       : undefined,
-    careerSeasons: collapseCareerRows(career),
+    careerSeasons: collapsedCareer,
     recentGames: gamelog.slice(0, 5),
   };
 }
@@ -320,50 +491,126 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
       ? "Last Active Season"
       : `${profile.teamAbbreviation ?? "NBA"} · ${activeSeasonId ?? DEFAULT_SEASON}`;
   const seasonRating = "A-";
+  const gradeOptions = ["A+", "A", "A-", "B+", "B"];
+  const mockMatchups = ["vs BOS", "@ LAL", "vs DEN", "@ MIA", "vs DAL", "@ PHX"];
+  const statKeys = ["PTS", "REB", "AST", "STL", "BLK", "3PM"];
+  const randomValueForStat = (label: string) => {
+    switch (label) {
+      case "PTS":
+        return (Math.random() * 25 + 15).toFixed(0);
+      case "REB":
+        return (Math.random() * 6 + 5).toFixed(0);
+      case "AST":
+        return (Math.random() * 5 + 4).toFixed(0);
+      case "STL":
+      case "BLK":
+        return (Math.random() * 2 + 1).toFixed(1);
+      case "3PM":
+        return (Math.random() * 4 + 1).toFixed(1);
+      default:
+        return (Math.random() * 10).toFixed(1);
+    }
+  };
+  const generateMockStats = () => {
+    const shuffled = [...statKeys]
+      .map((label) => ({ label, sort: Math.random() }))
+      .sort((a, b) => a.sort - b.sort)
+      .map(({ label }) => label);
+    return shuffled.slice(0, 3).map((label) => ({
+      label,
+      value: randomValueForStat(label),
+    }));
+  };
+  const topPerformances = Array.from({ length: 3 }, (_, index) => ({
+    game: mockMatchups[index % mockMatchups.length],
+    date: new Date(Date.now() - index * 86400000).toLocaleDateString(),
+    grade: gradeOptions[(Math.floor(Math.random() * gradeOptions.length) + index) % gradeOptions.length],
+    stats: generateMockStats(),
+  }));
 
   return (
     <>
-      <section className="rounded-3xl border border-white/10 bg-linear-to-br from-blue-600/40 via-slate-900/80 to-slate-950/80 px-8 py-10 shadow-2xl shadow-blue-500/40">
-        <div className="flex flex-col gap-10 md:flex-row md:items-center md:justify-between">
-          <div className="space-y-6 text-white">
-            <div>
-              <p className="text-xs uppercase tracking-[0.4em] text-blue-200/70">
-                {eyebrowText}
-              </p>
-              <h1 className="mt-4 text-4xl font-semibold md:text-5xl">
-                {profile.name}
-                <span className="ml-3 text-base font-normal text-white/70">
-                  {profile.teamAbbreviation ? `· ${profile.teamAbbreviation}` : ""}
-                </span>
-              </h1>
+      <div className="grid items-stretch gap-6 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
+        <section className="w-full rounded-2xl border border-white/10 bg-linear-to-br from-blue-600/30 via-slate-900/85 to-slate-950/85 px-5 py-5 shadow-xl shadow-blue-500/30">
+          <div className="flex h-full flex-col gap-4 text-white">
+            <div className="flex items-center gap-4">
+              <div className="shrink-0 rounded-full border border-white/20 bg-white/10 p-2 backdrop-blur">
+                <div
+                  className="h-28 w-28 rounded-full border border-white/40 bg-cover bg-center shadow-inner shadow-black/50 md:h-32 md:w-32"
+                  style={{ backgroundImage: `url(${profile.headshot})` }}
+                />
+              </div>
+              <div>
+                <p className="text-[0.65rem] uppercase tracking-[0.45em] text-blue-200/70">
+                  {eyebrowText}
+                </p>
+                <h1 className="mt-2 text-3xl font-semibold md:text-4xl">
+                  {profile.name}
+                  <span className="ml-2 text-base font-normal text-white/70">
+                    {profile.teamAbbreviation ? `· ${profile.teamAbbreviation}` : ""}
+                  </span>
+                </h1>
+              </div>
             </div>
-            <p className="text-sm text-white/70 md:max-w-2xl">{profile.scoutingReport}</p>
-            <div className="grid gap-4 sm:grid-cols-3">
+            <p className="text-sm text-white/70">{profile.scoutingReport}</p>
+            <div className="grid gap-3 sm:grid-cols-3">
               <InfoPill label="Age" value={profile.age ? `${profile.age}` : "—"} />
               <InfoPill label="Experience" value={profile.experience} />
               <InfoPill label="Team record" value={profile.currentSeason?.teamRecord ?? "—"} />
             </div>
-            <div className="flex flex-col gap-4 rounded-3xl border border-white/10 bg-white/5 p-5 md:flex-row md:items-center">
-              <div className="flex-1">
-                <p className="text-xs uppercase tracking-[0.4em] text-white/60">Career rating</p>
-                <p className="text-5xl font-semibold text-white">{profile.rating}</p>
-                <div className="mt-3 h-2 rounded-full bg-white/10">
-                  <div className="h-2 rounded-full bg-blue-400" style={{ width: `${Math.min(profile.rating, 100)}%` }} />
+            <div className="flex items-center gap-4 rounded-2xl border border-white/10 bg-white/5 p-3">
+              <p className="text-[0.65rem] uppercase tracking-[0.4em] text-white/60">Career rating</p>
+              <div className="flex flex-1 items-center gap-3">
+                <p className="text-3xl font-semibold text-white">{profile.rating}</p>
+                <div className="flex-1">
+                  <div className="h-1.5 rounded-full bg-white/10">
+                    <div className="h-1.5 rounded-full bg-blue-400" style={{ width: `${Math.min(profile.rating, 100)}%` }} />
+                  </div>
+                  <p className="mt-1 text-[0.7rem] text-white/60">Per-game impact metric</p>
                 </div>
-                <p className="mt-2 text-xs text-white/60">Derived from per-game production</p>
               </div>
             </div>
           </div>
-          <div className="mx-auto w-full max-w-xs md:mx-0 md:max-w-sm">
-            <div className="rounded-4xl border border-white/20 bg-white/10 p-3 backdrop-blur">
-              <div
-                className="h-60 rounded-[28px] border border-white/30 bg-cover bg-center shadow-inner shadow-black/40"
-                style={{ backgroundImage: `url(${profile.headshot})` }}
-              />
+        </section>
+        <aside className="flex h-full w-full flex-col rounded-2xl border border-white/10 bg-slate-950/80 p-5 text-white shadow-xl shadow-black/30">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-[0.6rem] uppercase tracking-[0.45em] text-white/50">Season</p>
+              <h2 className="text-xl font-semibold">Top Performances</h2>
             </div>
+            <span className="text-xs text-white/60">{profile.currentSeason?.seasonId ?? DEFAULT_SEASON}</span>
           </div>
-        </div>
-      </section>
+          <div className="mt-4 flex-1 space-y-3">
+            {topPerformances.map((perf, index) => (
+              <div
+                key={`${perf.game}-${index}`}
+                className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3"
+              >
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs uppercase tracking-[0.3em] text-white/60">{perf.game}</p>
+                    <p className="text-sm text-white/70">{perf.date}</p>
+                  </div>
+                  <span className="rounded-full border border-white/20 px-3 py-1 text-sm font-semibold text-white/90">
+                    {perf.grade}
+                  </span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2 text-sm">
+                  {perf.stats.map((stat) => (
+                    <span
+                      key={stat.label}
+                      className="rounded-full border border-white/10 bg-white/10 px-3 py-1 text-white/90"
+                    >
+                      <span className="text-white/60">{stat.label}</span>{" "}
+                      <span className="font-semibold">{stat.value}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </aside>
+      </div>
 
       {profile.currentSeason?.stats ? (
         <section className="mt-16">
