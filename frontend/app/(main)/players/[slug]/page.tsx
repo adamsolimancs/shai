@@ -100,6 +100,52 @@ type SeasonStats = {
 const HEADSHOT_BASE = "https://ak-static.cms.nba.com/wp-content/uploads/headshots/nba/latest/260x190";
 // const HEADSHOT_FALLBACK = "https://images.unsplash.com/photo-1521412644187-c49fa049e84d?auto=format&fit=crop&w=600&q=80";
 
+const CHAMPIONS_BY_SEASON: Record<string, string> = {
+  "2024-25": "OKC",
+  "2023-24": "BOS",
+  "2022-23": "DEN",
+  "2021-22": "GSW",
+  "2020-21": "MIL",
+  "2019-20": "LAL",
+  "2018-19": "TOR",
+  "2017-18": "GSW",
+  "2016-17": "GSW",
+  "2015-16": "CLE",
+  "2014-15": "GSW",
+  "2013-14": "SAS",
+  "2012-13": "MIA",
+  "2011-12": "MIA",
+  "2010-11": "DAL",
+  "2009-10": "LAL",
+  "2008-09": "LAL",
+  "2007-08": "BOS",
+  "2006-07": "SAS",
+  "2005-06": "MIA",
+  "2004-05": "SAS",
+  "2003-04": "DET",
+  "2002-03": "SAS",
+  "2001-02": "LAL",
+  "2000-01": "LAL",
+  "1999-00": "LAL",
+  "1998-99": "SAS",
+  "1997-98": "CHI",
+  "1996-97": "CHI",
+  "1995-96": "CHI",
+  "1994-95": "HOU",
+  "1993-94": "HOU",
+  "1992-93": "CHI",
+  "1991-92": "CHI",
+  "1990-91": "CHI",
+  "1989-90": "DET",
+  "1988-89": "DET",
+  "1987-88": "LAL",
+  "1986-87": "LAL",
+  "1985-86": "BOS",
+};
+
+const MIN_GAMES_FOR_ACCOLADE = 45;
+const PRIME_IMPACT_MIN_GAMES = 50;
+
 function slugify(name: string): string {
   return name
     .toLowerCase()
@@ -122,10 +168,130 @@ function round(value: number | null | undefined, digits = 1): number {
   return Math.round(value * factor) / factor;
 }
 
-function deriveRating(stats?: SeasonStats): number {
-  if (!stats) return 75;
-  const raw = stats.pts * 2 + stats.reb * 1.5 + stats.ast * 1.5 + stats.stl * 1.2 + stats.blk * 1.2;
-  return Math.min(99, Math.round(65 + raw * 0.6));
+function safeAverage(total: number | null | undefined, games: number | null | undefined): number {
+  if (total === null || total === undefined || !games || games <= 0) {
+    return 0;
+  }
+  return total / games;
+}
+
+function computePerGameImpact(stats: SeasonStats): number {
+  const scoring = stats.pts * 1.25;
+  const playmaking = stats.ast * 1.4;
+  const rebounding = stats.reb * 0.95;
+  const defensiveStocks = (stats.stl + stats.blk) * 2.4;
+  const workload = Math.max(0, stats.mins - 26) * 0.7;
+  return scoring + playmaking + rebounding + defensiveStocks + workload;
+}
+
+function isAllStarCaliber(row: PlayerCareerStatsRow): boolean {
+  if (!row.games_played || row.games_played < MIN_GAMES_FOR_ACCOLADE) {
+    return false;
+  }
+  const pts = safeAverage(row.points, row.games_played);
+  const reb = safeAverage(row.rebounds, row.games_played);
+  const ast = safeAverage(row.assists, row.games_played);
+  const stocks = safeAverage(row.steals ?? 0, row.games_played) + safeAverage(row.blocks ?? 0, row.games_played);
+  const impact = pts * 0.85 + reb * 0.45 + ast * 0.55 + stocks * 1.5;
+  return impact >= 28 || pts >= 24 || (pts >= 20 && (reb >= 9 || ast >= 7));
+}
+
+function estimateCareerAccolades(rows?: PlayerCareerStatsRow[]): { allStarSeasons: number; championships: number } {
+  if (!rows?.length) {
+    return { allStarSeasons: 0, championships: 0 };
+  }
+
+  const primaryRows = new Map<string, PlayerCareerStatsRow>();
+  const championSeasons = new Set<string>();
+
+  rows.forEach((row) => {
+    if (!primaryRows.has(row.season_id) || row.team_abbreviation === "TOT") {
+      primaryRows.set(row.season_id, row);
+    }
+    const champion = CHAMPIONS_BY_SEASON[row.season_id];
+    if (
+      champion &&
+      row.team_abbreviation &&
+      row.team_abbreviation !== "TOT" &&
+      champion === row.team_abbreviation
+    ) {
+      championSeasons.add(row.season_id);
+    }
+  });
+
+  let allStarSeasons = 0;
+  for (const row of primaryRows.values()) {
+    if (isAllStarCaliber(row)) {
+      allStarSeasons += 1;
+    }
+  }
+
+  return { allStarSeasons, championships: championSeasons.size };
+}
+
+type CareerImpactSummary = {
+  seasons: number;
+  primeImpactSeasons: number;
+  peakScoring: number;
+};
+
+function summarizeCareerImpact(rows?: PlayerCareerStatsRow[]): CareerImpactSummary {
+  if (!rows?.length) {
+    return { seasons: 0, primeImpactSeasons: 0, peakScoring: 0 };
+  }
+
+  const bySeason = new Map<string, PlayerCareerStatsRow>();
+  rows.forEach((row) => {
+    if (!bySeason.has(row.season_id) || row.team_abbreviation === "TOT") {
+      bySeason.set(row.season_id, row);
+    }
+  });
+
+  let primeImpactSeasons = 0;
+  let peakScoring = 0;
+  const seasons = [...bySeason.values()];
+
+  seasons.forEach((row) => {
+    const games = row.games_played ?? 0;
+    if (!games) {
+      return;
+    }
+    const pts = safeAverage(row.points, games);
+    const ast = safeAverage(row.assists, games);
+    const reb = safeAverage(row.rebounds, games);
+    peakScoring = Math.max(peakScoring, pts);
+    if (
+      games >= PRIME_IMPACT_MIN_GAMES &&
+      (pts >= 24 || (pts >= 20 && ast >= 8) || (pts >= 18 && reb >= 10) || (pts >= 18 && ast >= 10))
+    ) {
+      primeImpactSeasons += 1;
+    }
+  });
+
+  return {
+    seasons: seasons.length,
+    primeImpactSeasons,
+    peakScoring,
+  };
+}
+
+// Harsher rating heuristic that folds in career accomplishments.
+function deriveRating(stats?: SeasonStats, career?: PlayerCareerStatsRow[]): number {
+  const talentScore = stats ? Math.min(36, computePerGameImpact(stats) * 0.5) : 0;
+  const { allStarSeasons, championships } = estimateCareerAccolades(career);
+  const allStarScore = Math.min(9, allStarSeasons * 1.4);
+  const championshipScore = championships === 0 ? 0 : Math.min(12, 6 + (championships - 1) * 2.5);
+  const accoladeScore = allStarScore + championshipScore;
+  const careerImpact = summarizeCareerImpact(career);
+  const experienceBoost = Math.min(14, careerImpact.seasons * 0.4 + careerImpact.primeImpactSeasons);
+  const peakResume = Math.min(7, Math.max(0, careerImpact.peakScoring - 23) * 0.35);
+  const heavyMinutesBonus = stats ? Math.max(0, stats.mins - 34) * 0.2 : 0;
+  const noRingPenalty = championships === 0 ? 3 : 0;
+  const base = (stats ? 59 : 56) + talentScore + accoladeScore + experienceBoost + peakResume + heavyMinutesBonus - noRingPenalty;
+  const ceiling = championships > 0 ? 98 : 95;
+  const bounded = Math.min(ceiling, base);
+  const floor = stats ? 63 : 58;
+  return Math.max(floor, Math.round(bounded));
 }
 
 function formatRecord(stats?: TeamStatsRow): string | undefined {
@@ -246,12 +412,13 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
     : undefined;
 
   const teamRecord = formatRecord(teamStats[0]);
-  const rating = deriveRating(stats);
+  const rating = deriveRating(stats, career);
   const scoutingReport = stats
     ? `${resolution.player?.name ?? query} is pacing ${stats.pts.toFixed(1)} / ${stats.reb.toFixed(1)} / ${stats.ast.toFixed(1)} this season.`
     : `${resolution.player?.name ?? query} career overview.`;
 
-  const experienceSeasons = collapseCareerRows(career).length;
+  const collapsedCareer = collapseCareerRows(career);
+  const experienceSeasons = collapsedCareer.length;
 
   return {
     slug,
@@ -276,7 +443,7 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
         ],
       }
       : undefined,
-    careerSeasons: collapseCareerRows(career),
+    careerSeasons: collapsedCareer,
     recentGames: gamelog.slice(0, 5),
   };
 }
