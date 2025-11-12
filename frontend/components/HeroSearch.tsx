@@ -34,19 +34,13 @@ const trendingTerms = [
   "Shai Gilgeous-Alexander Stats",
 ];
 
-function hashString(value: string): number {
-  let hash = 0;
-  for (let i = 0; i < value.length; i += 1) {
-    hash = (hash * 31 + value.charCodeAt(i)) >>> 0;
+function shuffleList(list: string[]): string[] {
+  const result = [...list];
+  for (let i = result.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [result[i], result[j]] = [result[j], result[i]];
   }
-  return hash;
-}
-
-function deterministicShuffle(list: string[]): string[] {
-  return [...list]
-    .map((item, index) => ({ item, sort: hashString(`${item}-${index}`) }))
-    .sort((a, b) => a.sort - b.sort)
-    .map(({ item }) => item);
+  return result;
 }
 
 const normalizeQuery = (input: string) =>
@@ -60,7 +54,7 @@ export default function HeroSearch() {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [hasInteracted, setHasInteracted] = useState(false);
-  const randomTrendingTerms = useMemo(() => deterministicShuffle(trendingTerms), []);
+  const randomTrendingTerms = useMemo(() => shuffleList(trendingTerms), []);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

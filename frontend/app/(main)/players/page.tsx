@@ -130,18 +130,26 @@ export default async function PlayersPage({ searchParams = {} }: { searchParams?
             <article key={board.id} className="rounded-3xl border border-white/10 bg-slate-950/60 p-5">
               <p className="text-xs uppercase tracking-[0.4em] text-white/50">{board.label}</p>
               <ol className="mt-4 space-y-3 text-sm">
-                {board.rows.map((row, index) => (
-                  <li key={row.player_id} className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3">
-                    <div>
-                      <p className="text-xs uppercase tracking-[0.3em] text-white/40">#{index + 1}</p>
-                      <p className="text-base font-semibold text-white">{row.player_name}</p>
-                      <p className="text-white/60">{row.team_abbreviation ?? "FA"}</p>
-                    </div>
-                    <span className="text-2xl font-semibold text-white">
-                      {formatNumber(row[board.valueKey])}
-                    </span>
-                  </li>
-                ))}
+                {board.rows.map((row, index) => {
+                  const slug = encodeURIComponent(slugify(row.player_name));
+                  return (
+                    <li key={row.player_id}>
+                      <Link
+                        href={`/players/${slug}`}
+                        className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3 transition hover:bg-white/10"
+                      >
+                        <div>
+                          <p className="text-xs uppercase tracking-[0.3em] text-white/40">#{index + 1}</p>
+                          <p className="text-base font-semibold text-white">{row.player_name}</p>
+                          <p className="text-white/60">{row.team_abbreviation ?? "FA"}</p>
+                        </div>
+                        <span className="text-2xl font-semibold text-white">
+                          {formatNumber(row[board.valueKey])}
+                        </span>
+                      </Link>
+                    </li>
+                  );
+                })}
               </ol>
             </article>
           ))}
