@@ -1,6 +1,5 @@
 import Link from "next/link";
 import Image from "next/image";
-import Script from "next/script";
 import type { Metadata } from "next";
 import { auth, signOut } from "@/auth";
 import "./globals.css";
@@ -8,8 +7,50 @@ import ShinyText from "@/components/ShinyText";
 import HeaderNavCluster, { HeaderSearchBar } from "@/components/HeaderNavCluster";
 
 export const metadata: Metadata = {
-  title: "ShAI - NBA Scores, Stats, and Analysis powered by AI",
-  description: "Real-time intelligence for NBA teams, players, and trends.",
+  metadataBase: new URL("https://www.shaistats.com"),
+  title: {
+    default: "ShAI – NBA Scores, Stats, and AI Insights",
+    template: "%s · ShAI",
+  },
+  description: "Real-time NBA intelligence with AI-generated scouting reports, live scores, and advanced stats.",
+  keywords: ["NBA stats", "basketball analytics", "AI scouting", "ShAI", "NBA scores", "NBA data"],
+  authors: [{ name: "ShAI Team" }],
+  creator: "ShAI",
+  publisher: "ShAI",
+  alternates: {
+    canonical: "https://www.shaistats.com",
+  },
+  openGraph: {
+    title: "ShAI – NBA Scores, Stats, and AI Insights",
+    description: "Track every player and team with real-time data, AI insights, and curated analysis.",
+    url: "https://www.shaistats.com",
+    siteName: "ShAI",
+    images: [
+      {
+        url: "/aiball.png",
+        width: 1200,
+        height: 630,
+        alt: "ShAI dashboard preview",
+      },
+    ],
+    locale: "en_US",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    site: "@ShAIStats",
+    creator: "@ShAIStats",
+    title: "ShAI – NBA Scores, Stats, and AI Insights",
+    description: "Live NBA data, AI-powered scouting reports, and curated analysis.",
+    images: ["/aiball.png"],
+  },
+  robots: {
+    index: true,
+    follow: true,
+  },
+  other: {
+    "google-adsense-account": "ca-pub-2936132092849787",
+  },
 };
 
 export default function RootLayout({
@@ -19,14 +60,6 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <head>
-        <Script
-          async
-          src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2936132092849787"
-          crossOrigin="anonymous"
-          strategy="afterInteractive"
-        />
-      </head>
       <body className="antialiased">
         <main className="app-shell">
           <SiteHeader />
