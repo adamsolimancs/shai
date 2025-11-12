@@ -20,6 +20,18 @@ function normalizeSlug(input: string): string {
 }
 
 export default function HeaderNavCluster() {
+  return (
+    <nav className="flex w-full flex-wrap items-center justify-center gap-6 text-sm text-[color:var(--color-app-foreground-muted)]">
+      {NAV_LINKS.map((link) => (
+        <Link key={link.href} href={link.href} className="transition hover:text-[var(--color-app-foreground)]">
+          {link.label}
+        </Link>
+      ))}
+    </nav>
+  );
+}
+
+export function HeaderSearchBar() {
   const pathname = usePathname() ?? "/";
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -27,7 +39,8 @@ export default function HeaderNavCluster() {
   const segments = useMemo(() => pathname.split("/").filter(Boolean), [pathname]);
   const isPlayerProfile = segments[0] === "players" && segments.length >= 2;
   const queryParam = searchParams?.get("q") ?? "";
-  const showSearch = pathname !== "/" && pathname !== "/players";
+  const showSearch =
+    pathname !== "/" && pathname !== "/players" && pathname !== "/signin" && pathname !== "/signup";
   const derivedQuery = useMemo(() => {
     if (!showSearch) {
       return "";
@@ -56,42 +69,35 @@ export default function HeaderNavCluster() {
     router.push(`/players/${encodeURIComponent(slug)}`);
   };
 
-  const stackSpacing = showSearch ? "gap-2" : "gap-2 pt-4";
+  if (!showSearch) {
+    return null;
+  }
 
   return (
-    <div className={`flex flex-col items-center ${stackSpacing}`}>
-      <nav className="flex w-full flex-wrap items-center justify-center pb-2 gap-6 text-sm text-[color:var(--color-app-foreground-muted)]">
-        {NAV_LINKS.map((link) => (
-          <Link key={link.href} href={link.href} className="transition hover:text-[var(--color-app-foreground)]">
-            {link.label}
-          </Link>
-        ))}
-      </nav>
-      {showSearch && (
-        <form
-          onSubmit={handleSubmit}
-          className="flex w-full max-w-[22rem] items-center gap-2 rounded-full border border-white/10 bg-[color:var(--color-app-surface-soft)] px-4 py-2 text-xs text-white md:max-w-[28rem] md:text-sm"
-          role="search"
+    <div className="flex w-full justify-center">
+      <form
+        onSubmit={handleSubmit}
+        className="flex w-full max-w-[22rem] items-center gap-2 rounded-full border border-white/10 bg-[color:var(--color-app-surface-soft)] px-4 py-2 text-xs text-white md:max-w-[28rem] md:text-sm"
+        role="search"
+      >
+        <label className="sr-only" htmlFor="header-search">
+          Search players
+        </label>
+        <input
+          id="header-search"
+          type="search"
+          placeholder="Search the league (players, teams...)"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          className="flex-1 bg-transparent text-xs text-white placeholder:text-white/60 focus:outline-none md:text-sm"
+        />
+        <button
+          type="submit"
+          className="rounded-full border border-white/30 px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.35em] text-white transition hover:border-white/70 md:px-4 md:py-1.5 md:text-xs"
         >
-          <label className="sr-only" htmlFor="header-search">
-            Search players
-          </label>
-          <input
-            id="header-search"
-            type="search"
-            placeholder="Search the league (players, teams...)"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            className="flex-1 bg-transparent text-xs text-white placeholder:text-white/60 focus:outline-none md:text-sm"
-          />
-          <button
-            type="submit"
-            className="rounded-full border border-white/30 px-3 py-1 text-[0.65rem] font-semibold uppercase tracking-[0.35em] text-white transition hover:border-white/70 md:px-4 md:py-1.5 md:text-xs"
-          >
-            Go
-          </button>
-        </form>
-      )}
+          Go
+        </button>
+      </form>
     </div>
   );
 }
