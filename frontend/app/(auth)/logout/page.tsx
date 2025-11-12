@@ -14,7 +14,7 @@ export default async function LogoutPage() {
     <div className="space-y-8 text-white">
       <div>
         <p className="text-xs uppercase tracking-[0.5em] text-blue-300/70">Secure exit</p>
-        <h1 className="mt-3 text-3xl font-semibold">Sign out of NBAI</h1>
+        <h1 className="mt-3 text-3xl font-semibold">Sign out of ShAI</h1>
         <p className="mt-2 text-sm text-white/70">End your session on this device. You can always sign in again with Google.</p>
       </div>
 

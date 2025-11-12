@@ -47,8 +47,48 @@ type PlayerHighlight = {
   assists: number;
 };
 
+type Franchise = {
+  name: string;
+  abbreviation: string;
+  conference: "East" | "West";
+  aliases?: string[];
+};
+
+const CURRENT_FRANCHISES: Franchise[] = [
+  { name: "Atlanta Hawks", abbreviation: "ATL", conference: "East" },
+  { name: "Boston Celtics", abbreviation: "BOS", conference: "East" },
+  { name: "Brooklyn Nets", abbreviation: "BKN", conference: "East" },
+  { name: "Charlotte Hornets", abbreviation: "CHA", conference: "East" },
+  { name: "Chicago Bulls", abbreviation: "CHI", conference: "East" },
+  { name: "Cleveland Cavaliers", abbreviation: "CLE", conference: "East" },
+  { name: "Detroit Pistons", abbreviation: "DET", conference: "East" },
+  { name: "Indiana Pacers", abbreviation: "IND", conference: "East" },
+  { name: "Miami Heat", abbreviation: "MIA", conference: "East" },
+  { name: "Milwaukee Bucks", abbreviation: "MIL", conference: "East" },
+  { name: "New York Knicks", abbreviation: "NYK", conference: "East" },
+  { name: "Orlando Magic", abbreviation: "ORL", conference: "East" },
+  { name: "Philadelphia 76ers", abbreviation: "PHI", conference: "East" },
+  { name: "Toronto Raptors", abbreviation: "TOR", conference: "East" },
+  { name: "Washington Wizards", abbreviation: "WAS", conference: "East" },
+  { name: "Dallas Mavericks", abbreviation: "DAL", conference: "West" },
+  { name: "Denver Nuggets", abbreviation: "DEN", conference: "West" },
+  { name: "Golden State Warriors", abbreviation: "GSW", conference: "West" },
+  { name: "Houston Rockets", abbreviation: "HOU", conference: "West" },
+  { name: "Los Angeles Clippers", abbreviation: "LAC", conference: "West", aliases: ["LA Clippers"] },
+  { name: "Los Angeles Lakers", abbreviation: "LAL", conference: "West", aliases: ["LA Lakers"] },
+  { name: "Memphis Grizzlies", abbreviation: "MEM", conference: "West" },
+  { name: "Minnesota Timberwolves", abbreviation: "MIN", conference: "West" },
+  { name: "New Orleans Pelicans", abbreviation: "NOP", conference: "West" },
+  { name: "Oklahoma City Thunder", abbreviation: "OKC", conference: "West" },
+  { name: "Phoenix Suns", abbreviation: "PHX", conference: "West" },
+  { name: "Portland Trail Blazers", abbreviation: "POR", conference: "West" },
+  { name: "Sacramento Kings", abbreviation: "SAC", conference: "West" },
+  { name: "San Antonio Spurs", abbreviation: "SAS", conference: "West" },
+  { name: "Utah Jazz", abbreviation: "UTA", conference: "West" },
+];
+
 type ConferenceSnapshot = {
-  conference: string;
+  conference: "East" | "West";
   teams: { name: string; abbreviation: string; division: string | null }[];
 };
 
@@ -84,22 +124,27 @@ async function fetchPlayerHighlights(): Promise<PlayerHighlight[]> {
 
 async function fetchConferenceSnapshot(): Promise<ConferenceSnapshot[]> {
   const seasonTeams = await nbaFetch<Team[]>(`/v1/teams?season=${DEFAULT_SEASON}`, { next: { revalidate: 3600 } });
-  const grouped = new Map<string, ConferenceSnapshot>();
+  const byAbbreviation = new Map<string, Team>();
   seasonTeams.forEach((team) => {
-    const conference = team.conference ?? "Unknown";
-    if (!grouped.has(conference)) {
-      grouped.set(conference, { conference, teams: [] });
+    if (team.abbreviation) {
+      byAbbreviation.set(team.abbreviation.toUpperCase(), team);
     }
-    grouped.get(conference)!.teams.push({
-      name: `${team.city} ${team.name}`,
-      abbreviation: team.abbreviation,
-      division: team.division,
+  });
+
+  const east: ConferenceSnapshot = { conference: "East", teams: [] };
+  const west: ConferenceSnapshot = { conference: "West", teams: [] };
+
+  CURRENT_FRANCHISES.forEach((franchise) => {
+    const apiTeam = byAbbreviation.get(franchise.abbreviation.toUpperCase());
+    const card = franchise.conference === "East" ? east : west;
+    card.teams.push({
+      name: apiTeam ? `${apiTeam.city} ${apiTeam.name}` : franchise.name,
+      abbreviation: franchise.abbreviation,
+      division: apiTeam?.division ?? null,
     });
   });
-  return [...grouped.values()].map((snapshot) => ({
-    ...snapshot,
-    teams: snapshot.teams.slice(0, 4),
-  }));
+
+  return [east, west];
 }
 
 const SectionTitle = ({ title, eyebrow }: { title: string; eyebrow: string }) => (
@@ -112,7 +157,7 @@ const SectionTitle = ({ title, eyebrow }: { title: string; eyebrow: string }) =>
 const HeroSection = () => (
   <section className="flex flex-col gap-10 text-center md:gap-16">
     <div>
-      <h1 className="pb-2 text-5xl tracking-[0.2em] text-blue-300/60">WELCOME TO NBAi</h1>
+      <h1 className="pb-2 text-5xl tracking-[0.2em] text-blue-300/60">WELCOME TO ShAI</h1>
       <p className="mt-4 text-base text-white/70 md:text-lg">
         Track nightly box scores, dive into advanced numbers, and stay ahead with curated metrics powered by the NBA Stats
         service.
@@ -160,7 +205,7 @@ export default async function HomePage() {
       </section>
 
       <section id="players" className="mt-20">
-        <SectionTitle title="Player spotlight" eyebrow="Trending performers" />
+        <SectionTitle title="Player Spotlight" eyebrow="Trending performers" />
         <div className="grid gap-6 md:grid-cols-3">
           {players.map((player) => (
             <article key={player.name} className="rounded-3xl border border-white/10 bg-slate-900/70 p-6 shadow-lg shadow-black/30">
@@ -188,7 +233,7 @@ export default async function HomePage() {
       </section>
 
       <section id="conference" className="mt-20">
-        <SectionTitle title="Conference snapshot" eyebrow="Team directory" />
+        <SectionTitle title="Conference Snapshot" eyebrow="Team directory" />
         <div className="grid gap-6 md:grid-cols-2">
           {conferences.map((snapshot) => (
             <article key={snapshot.conference} className="rounded-3xl border border-white/10 bg-slate-900/60 p-6">
@@ -204,10 +249,6 @@ export default async function HomePage() {
             </article>
           ))}
         </div>
-      </section>
-
-      <section id="meta" className="mt-20">
-        <SectionTitle title="" eyebrow="Powered by nba_api" />
       </section>
     </>
   );

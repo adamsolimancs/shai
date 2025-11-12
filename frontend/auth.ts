@@ -22,7 +22,7 @@ if (hasGoogleOAuthConfigured) {
   );
 } else {
   console.warn(
-    "[NBAI] Google OAuth environment variables are missing. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to enable Google auth.",
+    "[ShAI] Google OAuth environment variables are missing. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to enable Google auth.",
   );
 }
 

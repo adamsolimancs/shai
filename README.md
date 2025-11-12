@@ -1,4 +1,4 @@
-# NBAi
+# ShAI
 
 Modern basketball companion that blends the official NBA Stats data feed with generated insights, player scouting blurbs, and sleek dashboards.
 
@@ -30,8 +30,8 @@ Modern basketball companion that blends the official NBA Stats data feed with ge
 ### 2. Clone & install deps
 
 ```bash
-git clone git@github.com:adamsolimancs/nbai.git nbai
-cd nbai
+git clone git@github.com:adamsolimancs/shai.git shai
+cd shai
 
 # frontend deps
 cd frontend
@@ -115,4 +115,4 @@ README.md
 
 ## License
 
-MIT © NBAi Contributors
+MIT © ShAI Contributors

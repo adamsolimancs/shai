@@ -112,7 +112,7 @@ export default function HeroSearch() {
               typingSpeed={55}
               pauseDuration={2500}
               cursorCharacter="_"
-              className="pointer-events-none absolute left-7 top-1/2 -translate-y-1/2 text-sm text-[color:var(--color-app-foreground-muted)] sm:left-10 sm:text-base"
+              className="pointer-events-none absolute left-1 top-1/2 -translate-y-1/2 text-sm text-[color:var(--color-app-foreground-muted)] sm:left-2 sm:text-base"
             />
           )}
         </div>
