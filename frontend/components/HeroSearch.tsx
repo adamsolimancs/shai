@@ -31,6 +31,7 @@ const trendingTerms = [
   "Top Rookie Watch",
   "Injury Report",
   "Coach of the Year Race",
+  "Shai Gilgeous-Alexander Stats",
 ];
 
 function hashString(value: string): number {

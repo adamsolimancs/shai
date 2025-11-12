@@ -159,8 +159,7 @@ const HeroSection = () => (
     <div>
       <h1 className="pb-2 text-5xl tracking-[0.2em] text-blue-300/60">WELCOME TO ShAI</h1>
       <p className="mt-4 text-base text-white/70 md:text-lg">
-        Track nightly box scores, dive into advanced numbers, and stay ahead with curated metrics powered by the NBA Stats
-        service.
+        AI that speaks basketball: real-time stats, player insights, and predictive analytics powered by AI.
       </p>
     </div>
     <HeroSearch />

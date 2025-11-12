@@ -1,5 +1,6 @@
 import Link from "next/link";
 import Image from "next/image";
+import Script from "next/script";
 import type { Metadata } from "next";
 import { auth, signOut } from "@/auth";
 import "./globals.css";
@@ -18,6 +19,14 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
+      <head>
+        <Script
+          async
+          src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-2936132092849787"
+          crossOrigin="anonymous"
+          strategy="afterInteractive"
+        />
+      </head>
       <body className="antialiased">
         <main className="app-shell">
           <SiteHeader />
@@ -37,7 +46,7 @@ const SiteHeader = async () => {
 
   return (
     <header className="sticky top-0 z-20 border-b border-[color:var(--color-app-border)] bg-[var(--color-app-surface-elevated)] backdrop-blur-md">
-      <div className="relative mx-auto w-full max-w-7xl px-6 pb-4 pt-2">
+      <div className="relative mx-auto w-full max-w-7xl px-6 pb-4 pt-3">
         <div className="flex flex-col gap-3">
           <div className="flex flex-col items-center gap-4 md:flex-row md:items-center md:gap-6">
             <Link href="/" className="flex shrink-0 items-center gap-3">
