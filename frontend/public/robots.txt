@@ -1,0 +1,9 @@
+User-agent: *
+Allow: /
+
+# Disallow server-only routes
+Disallow: /api/
+Disallow: /admin/
+
+# Sitemap reference
+Sitemap: https://www.shaistats.com/sitemap.txt
