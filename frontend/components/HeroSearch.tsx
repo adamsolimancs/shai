@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from "next/navigation";
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useMemo, useState, useTransition } from "react";
 import TextType from "@/components/TextType";
 
 const trendingTerms = [
@@ -54,13 +54,16 @@ export default function HeroSearch() {
   const router = useRouter();
   const [query, setQuery] = useState("");
   const [hasInteracted, setHasInteracted] = useState(false);
+  const [isPending, startTransition] = useTransition();
   const randomTrendingTerms = useMemo(() => shuffleList(trendingTerms), []);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const normalized = normalizeQuery(query);
     if (!normalized) return;
-    router.push(`/players/${encodeURIComponent(normalized)}`);
+    startTransition(() => {
+      router.push(`/players/${encodeURIComponent(normalized)}`);
+    });
   };
 
   const showTypewriter = !hasInteracted && query.length === 0;
@@ -111,8 +114,11 @@ export default function HeroSearch() {
             />
           )}
         </div>
-        <button type="submit" className="btn-primary rounded-full px-5 py-2 text-sm font-semibold">
-          Search
+        <button type="submit" className="btn-primary flex items-center justify-center gap-2 rounded-full px-5 py-2 text-sm font-semibold">
+          {isPending && (
+            <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" aria-hidden="true" />
+          )}
+          <span>{isPending ? "Loading" : "Search"}</span>
         </button>
       </div>
       <div className="mt-4 flex flex-wrap justify-center gap-3 text-xs text-[color:var(--color-app-foreground-muted)]">

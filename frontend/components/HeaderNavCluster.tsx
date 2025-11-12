@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState, useTransition } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 const NAV_LINKS = [
@@ -54,6 +54,7 @@ export function HeaderSearchBar() {
     return "";
   }, [showSearch, queryParam, isPlayerProfile, segments]);
   const [query, setQuery] = useState(derivedQuery);
+  const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
     const id = setTimeout(() => setQuery(derivedQuery), 0);
@@ -66,7 +67,9 @@ export function HeaderSearchBar() {
     if (!slug) {
       return;
     }
-    router.push(`/players/${encodeURIComponent(slug)}`);
+    startTransition(() => {
+      router.push(`/players/${encodeURIComponent(slug)}`);
+    });
   };
 
   if (!showSearch) {
@@ -108,8 +111,14 @@ export function HeaderSearchBar() {
           onChange={(event) => setQuery(event.target.value)}
           className="h-9 flex-1 bg-transparent text-sm text-[var(--color-app-foreground)] placeholder:text-[color:var(--color-app-foreground-muted)] focus:outline-none"
         />
-        <button type="submit" className="btn-primary rounded-full px-4 py-1.5 text-xs font-semibold md:px-5 md:text-sm">
-          Search
+        <button
+          type="submit"
+          className="btn-primary flex items-center justify-center gap-2 rounded-full px-4 py-1.5 text-xs font-semibold md:px-5 md:text-sm"
+        >
+          {isPending && (
+            <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" aria-hidden="true" />
+          )}
+          <span>{isPending ? "Loading" : "Search"}</span>
         </button>
       </form>
     </div>

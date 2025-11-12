@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     redis_url: str = Field("redis://redis:6379/0")
     cache_default_ttl_seconds: int = Field(60 * 60 * 2, description="Fallback TTL when none is specified.")
     cache_stale_ttl_seconds: int = Field(60 * 60 * 24 * 7, description="How long stale cache copies live.")
-    rate_limit_requests_per_minute: int = Field(60, ge=1)
+    rate_limit_requests_per_minute: int = Field(240, ge=1)
     cors_allow_origins: str = Field("*", description="Comma-separated origins or * for all.")
     allowed_docs_origins: str = Field("*")
     upstream_timeout_seconds: float = Field(10.0, ge=0.1)

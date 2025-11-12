@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import HeroSearch from "@/components/HeroSearch";
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
 
@@ -162,7 +163,13 @@ const HeroSection = () => (
         AI that speaks basketball: real-time stats, player insights, and predictive analytics powered by AI.
       </p>
     </div>
-    <HeroSearch />
+    <Suspense
+      fallback={
+        <div className="mx-auto h-[68px] w-full max-w-3xl animate-pulse rounded-full border border-white/10 bg-white/5" aria-hidden="true" />
+      }
+    >
+      <HeroSearch />
+    </Suspense>
   </section>
 );
 

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import type { Metadata } from "next";
+import { Suspense } from "react";
 import { auth, signOut } from "@/auth";
 import "./globals.css";
 import ShinyText from "@/components/ShinyText";
@@ -53,6 +54,10 @@ export const metadata: Metadata = {
   },
 };
 
+const HeaderSearchFallback = () => (
+  <div className="mx-auto h-12 w-full max-w-[30rem] animate-pulse rounded-full border border-white/10 bg-white/5" aria-hidden="true" />
+);
+
 export default function RootLayout({
   children,
 }: Readonly<{
@@ -79,7 +84,7 @@ const SiteHeader = async () => {
 
   return (
     <header className="sticky top-0 z-20 border-b border-[color:var(--color-app-border)] bg-[var(--color-app-surface-elevated)] backdrop-blur-md">
-      <div className="relative mx-auto w-full max-w-7xl px-6 pb-4 pt-3">
+      <div className="relative mx-auto w-full max-w-7xl px-6 py-4">
         <div className="flex flex-col gap-3">
           <div className="flex flex-col items-center gap-4 md:flex-row md:items-center md:gap-6">
             <Link href="/" className="flex shrink-0 items-center gap-3">
@@ -130,7 +135,9 @@ const SiteHeader = async () => {
               )}
             </div>
           </div>
-          <HeaderSearchBar />
+          <Suspense fallback={<HeaderSearchFallback />}>
+            <HeaderSearchBar />
+          </Suspense>
         </div>
       </div>
     </header>
@@ -142,7 +149,7 @@ const SiteFooter = () => {
 
   return (
     <footer className="border-t border-[color:var(--color-app-border)] bg-[var(--color-app-surface-elevated)]">
-      <div className="mx-auto w-full max-w-7xl px-6 py-10">
+      <div className="mx-auto w-full max-w-7xl px-6 py-12">
         <div className="flex flex-col gap-6 text-[color:var(--color-app-foreground-muted)] md:flex-row md:items-center md:justify-between">
           <div className="space-y-2">
             <p className="text-lg font-semibold text-[var(--color-app-foreground)]">ShAI</p>
