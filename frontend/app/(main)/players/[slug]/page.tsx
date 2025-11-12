@@ -175,6 +175,20 @@ function safeAverage(total: number | null | undefined, games: number | null | un
   return total / games;
 }
 
+function createSeededGenerator(seedSource: string): () => number {
+  let seed = 0;
+  for (let i = 0; i < seedSource.length; i += 1) {
+    seed = (seed * 31 + seedSource.charCodeAt(i)) >>> 0;
+  }
+  if (seed === 0) {
+    seed = 1;
+  }
+  return () => {
+    seed = (1664525 * seed + 1013904223) >>> 0;
+    return seed / 2 ** 32;
+  };
+}
+
 function computePerGameImpact(stats: SeasonStats): number {
   const scoring = stats.pts * 1.25;
   const playmaking = stats.ast * 1.4;
@@ -297,13 +311,6 @@ function deriveRating(stats?: SeasonStats, career?: PlayerCareerStatsRow[]): num
 function formatRecord(stats?: TeamStatsRow): string | undefined {
   if (!stats) return undefined;
   return `${stats.wins}-${stats.losses} (${Math.round(stats.win_pct * 100)}% W)`;
-}
-
-function formatAverage(value: number | null | undefined, digits = 1): string {
-  if (value === null || value === undefined || Number.isNaN(value)) {
-    return "—";
-  }
-  return value.toFixed(digits);
 }
 
 function formatInteger(value: number | null | undefined): string {
@@ -494,26 +501,29 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
   const gradeOptions = ["A+", "A", "A-", "B+", "B"];
   const mockMatchups = ["vs BOS", "@ LAL", "vs DEN", "@ MIA", "vs DAL", "@ PHX"];
   const statKeys = ["PTS", "REB", "AST", "STL", "BLK", "3PM"];
+  const mockPerformanceBase = Date.UTC(2024, 0, 20);
+  const seededRandom = createSeededGenerator(`${profile.playerId}-${profile.slug}`);
+  const randomInRange = (min: number, max: number, decimals = 0) => (min + seededRandom() * (max - min)).toFixed(decimals);
   const randomValueForStat = (label: string) => {
     switch (label) {
       case "PTS":
-        return (Math.random() * 25 + 15).toFixed(0);
+        return randomInRange(15, 40, 0);
       case "REB":
-        return (Math.random() * 6 + 5).toFixed(0);
+        return randomInRange(5, 11, 0);
       case "AST":
-        return (Math.random() * 5 + 4).toFixed(0);
+        return randomInRange(4, 9, 0);
       case "STL":
       case "BLK":
-        return (Math.random() * 2 + 1).toFixed(1);
+        return randomInRange(1, 3, 1);
       case "3PM":
-        return (Math.random() * 4 + 1).toFixed(1);
+        return randomInRange(1, 5, 1);
       default:
-        return (Math.random() * 10).toFixed(1);
+        return randomInRange(2, 12, 1);
     }
   };
   const generateMockStats = () => {
     const shuffled = [...statKeys]
-      .map((label) => ({ label, sort: Math.random() }))
+      .map((label) => ({ label, sort: seededRandom() }))
       .sort((a, b) => a.sort - b.sort)
       .map(({ label }) => label);
     return shuffled.slice(0, 3).map((label) => ({
@@ -523,8 +533,8 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
   };
   const topPerformances = Array.from({ length: 3 }, (_, index) => ({
     game: mockMatchups[index % mockMatchups.length],
-    date: new Date(Date.now() - index * 86400000).toLocaleDateString(),
-    grade: gradeOptions[(Math.floor(Math.random() * gradeOptions.length) + index) % gradeOptions.length],
+    date: new Date(mockPerformanceBase - index * 86400000).toLocaleDateString(),
+    grade: gradeOptions[(Math.floor(seededRandom() * gradeOptions.length) + index) % gradeOptions.length],
     stats: generateMockStats(),
   }));
 

@@ -23,28 +23,29 @@ export default function HeaderNavCluster() {
   const pathname = usePathname() ?? "/";
   const searchParams = useSearchParams();
   const router = useRouter();
-  const [query, setQuery] = useState("");
 
   const segments = useMemo(() => pathname.split("/").filter(Boolean), [pathname]);
   const isPlayerProfile = segments[0] === "players" && segments.length >= 2;
   const queryParam = searchParams?.get("q") ?? "";
   const showSearch = pathname !== "/" && pathname !== "/players";
-
-  useEffect(() => {
+  const derivedQuery = useMemo(() => {
     if (!showSearch) {
-      setQuery("");
-      return;
+      return "";
     }
     if (queryParam) {
-      setQuery(queryParam);
-      return;
+      return queryParam;
     }
     if (isPlayerProfile) {
-      setQuery(decodeURIComponent(segments[1] ?? "").replace(/-/g, " "));
-      return;
+      return decodeURIComponent(segments[1] ?? "").replace(/-/g, " ");
     }
-    setQuery("");
+    return "";
   }, [showSearch, queryParam, isPlayerProfile, segments]);
+  const [query, setQuery] = useState(derivedQuery);
+
+  useEffect(() => {
+    const id = setTimeout(() => setQuery(derivedQuery), 0);
+    return () => clearTimeout(id);
+  }, [derivedQuery]);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -58,7 +59,7 @@ export default function HeaderNavCluster() {
   const stackSpacing = showSearch ? "gap-2" : "gap-2 pt-4";
 
   return (
-    <div className={`flex flex-col items-center ${stackSpacing} md:pointer-events-auto`}>
+    <div className={`flex flex-col items-center ${stackSpacing}`}>
       <nav className="flex w-full flex-wrap items-center justify-center pb-2 gap-6 text-sm text-[color:var(--color-app-foreground-muted)]">
         {NAV_LINKS.map((link) => (
           <Link key={link.href} href={link.href} className="transition hover:text-[var(--color-app-foreground)]">
