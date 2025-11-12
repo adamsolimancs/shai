@@ -1,10 +1,5 @@
-const API_BASE_URL =
-  process.env.NBA_API_BASE_URL ||
-  process.env.NEXT_PUBLIC_NBA_API_BASE_URL ||
-  process.env.NEXT_PUBLIC_API_BASE_URL ||
-  "http://localhost:8080";
-
-const API_KEY = process.env.NBA_API_KEY || process.env.NEXT_PUBLIC_NBA_API_KEY || process.env.API_KEY;
+const API_BASE_URL = process.env.NBA_API_BASE_URL || "http://localhost:8080";
+const API_KEY = process.env.NBA_API_KEY;
 
 type Envelope<T> = {
   ok: true;
