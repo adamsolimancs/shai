@@ -18,11 +18,13 @@ type PlayerStatsRow = {
   assists: number;
 };
 
+type PlayerStatMetric = "points" | "rebounds" | "assists";
+
 type Leaderboard = {
   id: string;
   label: string;
   metric: string;
-  valueKey: keyof PlayerStatsRow;
+  valueKey: PlayerStatMetric;
   rows: PlayerStatsRow[];
 };
 
@@ -135,7 +137,9 @@ export default async function PlayersPage({ searchParams = {} }: { searchParams?
                       <p className="text-base font-semibold text-white">{row.player_name}</p>
                       <p className="text-white/60">{row.team_abbreviation ?? "FA"}</p>
                     </div>
-                    <span className="text-2xl font-semibold text-white">{formatNumber(row[board.valueKey])}</span>
+                    <span className="text-2xl font-semibold text-white">
+                      {formatNumber(row[board.valueKey])}
+                    </span>
                   </li>
                 ))}
               </ol>
