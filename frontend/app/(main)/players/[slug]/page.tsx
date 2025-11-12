@@ -470,17 +470,17 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
     const profile = await fetchPlayerProfile(resolvedParams.slug);
     if (!profile) {
       return {
-        title: "Player not found · NBAI",
+        title: "Player not found · ShAI",
         description: "We could not locate that player in the NBA data service.",
       };
     }
     return {
-      title: `${profile.name} · NBAI`,
+      title: `${profile.name} · ShAI`,
       description: `${profile.name} overview powered by nba_api data.`,
     };
   } catch {
     return {
-      title: "NBAI Player Profile",
+      title: "ShAI Player Profile",
     };
   }
 }
