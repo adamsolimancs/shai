@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -622,8 +623,8 @@ class NBAStatsClient:
             "team_id": row.get("TEAM_ID"),
             "team_abbreviation": row.get("TEAM_ABBREVIATION"),
             "player_age": self._safe_float(row.get("PLAYER_AGE")),
-            "games_played": int(row.get("GP", 0)),
-            "games_started": int(row.get("GS", 0)),
+            "games_played": self._safe_int(row.get("GP")),
+            "games_started": self._safe_int(row.get("GS")),
             "minutes": self._safe_float(row.get("MIN")),
             "points": self._safe_float(row.get("PTS")),
             "rebounds": self._safe_float(row.get("REB")),
@@ -647,6 +648,17 @@ class NBAStatsClient:
 
     def _safe_float(self, value: Any) -> float:
         try:
-            return float(value)
+            number = float(value)
         except (TypeError, ValueError):
             return 0.0
+
+        if math.isnan(number) or math.isinf(number):
+            return 0.0
+
+        return number
+
+    def _safe_int(self, value: Any) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return 0
