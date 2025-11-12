@@ -367,92 +367,98 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
   if (!slug) {
     return null;
   }
-  const query = deslugify(slug);
-  if (!query) {
-    return null;
-  }
-  const resolution = await nbaFetch<ResolveResult>(`/v1/resolve?player=${encodeURIComponent(query)}`);
-  const playerId = resolution.player?.id;
-  if (!playerId) {
-    return null;
-  }
 
-  const [career, gamelog] = await Promise.all([
-    nbaFetch<PlayerCareerStatsRow[]>(`/v1/players/${playerId}/career`, { next: { revalidate: 3600 } }),
-    nbaFetch<PlayerGameLog[]>(`/v1/players/${playerId}/gamelog?season=${DEFAULT_SEASON}`, { next: { revalidate: 300 } }),
-  ]);
-
-  if (!career.length) {
-    return null;
-  }
-
-  const seasonRow = selectSeasonRow(career, DEFAULT_SEASON);
-  let teamStats: TeamStatsRow[] = [];
-  if (seasonRow?.team_id != null) {
-    try {
-      teamStats = await nbaFetch<TeamStatsRow[]>(
-        `/v1/teams/${seasonRow.team_id}/stats?season=${DEFAULT_SEASON}&measure=Base&per_mode=PerGame`,
-        { next: { revalidate: 1800 } },
-      );
-    } catch (error) {
-      console.error("Failed to load team stats", error);
-      teamStats = [];
+  try {
+    const query = deslugify(slug);
+    if (!query) {
+      return null;
     }
-  }
-
-  const gamesPlayed = seasonRow?.games_played ?? 0;
-  const perGame = (value: number | null | undefined): number => {
-    if (!seasonRow || !gamesPlayed || value === null || value === undefined) {
-      return 0;
+    const resolution = await nbaFetch<ResolveResult>(`/v1/resolve?player=${encodeURIComponent(query)}`);
+    const playerId = resolution.player?.id;
+    if (!playerId) {
+      return null;
     }
-    return round(value / gamesPlayed);
-  };
-  const stats: SeasonStats | undefined = seasonRow
-    ? {
-        pts: perGame(seasonRow.points),
-        reb: perGame(seasonRow.rebounds),
-        ast: perGame(seasonRow.assists),
-        stl: perGame(seasonRow.steals),
-        blk: perGame(seasonRow.blocks),
-        mins: perGame(seasonRow.minutes),
+
+    const [career, gamelog] = await Promise.all([
+      nbaFetch<PlayerCareerStatsRow[]>(`/v1/players/${playerId}/career`, { next: { revalidate: 3600 } }),
+      nbaFetch<PlayerGameLog[]>(`/v1/players/${playerId}/gamelog?season=${DEFAULT_SEASON}`, { next: { revalidate: 300 } }),
+    ]);
+
+    if (!career.length) {
+      return null;
+    }
+
+    const seasonRow = selectSeasonRow(career, DEFAULT_SEASON);
+    let teamStats: TeamStatsRow[] = [];
+    if (seasonRow?.team_id != null) {
+      try {
+        teamStats = await nbaFetch<TeamStatsRow[]>(
+          `/v1/teams/${seasonRow.team_id}/stats?season=${DEFAULT_SEASON}&measure=Base&per_mode=PerGame`,
+          { next: { revalidate: 1800 } },
+        );
+      } catch (error) {
+        console.error("Failed to load team stats", error);
+        teamStats = [];
       }
-    : undefined;
+    }
 
-  const teamRecord = formatRecord(teamStats[0]);
-  const rating = deriveRating(stats, career);
-  const scoutingReport = stats
-    ? `${resolution.player?.name ?? query} is pacing ${stats.pts.toFixed(1)} / ${stats.reb.toFixed(1)} / ${stats.ast.toFixed(1)} this season.`
-    : `${resolution.player?.name ?? query} career overview.`;
-
-  const collapsedCareer = collapseCareerRows(career);
-  const experienceSeasons = collapsedCareer.length;
-
-  return {
-    slug,
-    playerId,
-    name: resolution.player?.name ?? query,
-    team: teamStats[0]?.team_name ?? seasonRow?.team_abbreviation ?? resolution.player?.abbreviation ?? "Free Agent",
-    teamAbbreviation: seasonRow?.team_abbreviation ?? teamStats[0]?.team_abbreviation ?? null,
-    headshot: `${HEADSHOT_BASE}/${playerId}.png`,
-    rating,
-    scoutingReport,
-    age: seasonRow?.player_age,
-    experience: experienceSeasons ? `${experienceSeasons} season${experienceSeasons === 1 ? "" : "s"}` : "Rookie",
-    currentSeason: stats
+    const gamesPlayed = seasonRow?.games_played ?? 0;
+    const perGame = (value: number | null | undefined): number => {
+      if (!seasonRow || !gamesPlayed || value === null || value === undefined) {
+        return 0;
+      }
+      return round(value / gamesPlayed);
+    };
+    const stats: SeasonStats | undefined = seasonRow
       ? {
-        seasonId: seasonRow?.season_id ?? DEFAULT_SEASON,
-        teamRecord,
-        stats,
-        insights: [
-          { label: "Games played", value: String(seasonRow?.games_played ?? "—") },
-          { label: "Games started", value: String(seasonRow?.games_started ?? "—") },
-          { label: "Wins / Losses", value: teamRecord ?? "—" },
-        ],
-      }
-      : undefined,
-    careerSeasons: collapsedCareer,
-    recentGames: gamelog.slice(0, 5),
-  };
+          pts: perGame(seasonRow.points),
+          reb: perGame(seasonRow.rebounds),
+          ast: perGame(seasonRow.assists),
+          stl: perGame(seasonRow.steals),
+          blk: perGame(seasonRow.blocks),
+          mins: perGame(seasonRow.minutes),
+        }
+      : undefined;
+
+    const teamRecord = formatRecord(teamStats[0]);
+    const rating = deriveRating(stats, career);
+    const scoutingReport = stats
+      ? `${resolution.player?.name ?? query} is pacing ${stats.pts.toFixed(1)} / ${stats.reb.toFixed(1)} / ${stats.ast.toFixed(1)} this season.`
+      : `${resolution.player?.name ?? query} career overview.`;
+
+    const collapsedCareer = collapseCareerRows(career);
+    const experienceSeasons = collapsedCareer.length;
+
+    return {
+      slug,
+      playerId,
+      name: resolution.player?.name ?? query,
+      team: teamStats[0]?.team_name ?? seasonRow?.team_abbreviation ?? resolution.player?.abbreviation ?? "Free Agent",
+      teamAbbreviation: seasonRow?.team_abbreviation ?? teamStats[0]?.team_abbreviation ?? null,
+      headshot: `${HEADSHOT_BASE}/${playerId}.png`,
+      rating,
+      scoutingReport,
+      age: seasonRow?.player_age,
+      experience: experienceSeasons ? `${experienceSeasons} season${experienceSeasons === 1 ? "" : "s"}` : "Rookie",
+      currentSeason: stats
+        ? {
+          seasonId: seasonRow?.season_id ?? DEFAULT_SEASON,
+          teamRecord,
+          stats,
+          insights: [
+            { label: "Games played", value: String(seasonRow?.games_played ?? "—") },
+            { label: "Games started", value: String(seasonRow?.games_started ?? "—") },
+            { label: "Wins / Losses", value: teamRecord ?? "—" },
+          ],
+        }
+        : undefined,
+      careerSeasons: collapsedCareer,
+      recentGames: gamelog.slice(0, 5),
+    };
+  } catch (error) {
+    console.error("Failed to build player profile", { slug, error });
+    throw error;
+  }
 }
 
 export async function generateStaticParams() {
