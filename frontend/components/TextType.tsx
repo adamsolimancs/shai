@@ -9,6 +9,7 @@ import {
   useCallback,
   type ComponentType,
   type HTMLAttributes,
+  type JSX,
 } from "react";
 import { gsap } from "gsap";
 import "./TextType.css";
@@ -19,6 +20,20 @@ type VariableSpeedConfig = {
 };
 
 type PolymorphicComponent = ComponentType<Record<string, unknown>>;
+
+function createDeterministicRandom(seedSource: string): () => number {
+  let seed = 0;
+  for (let i = 0; i < seedSource.length; i += 1) {
+    seed = (seed * 31 + seedSource.charCodeAt(i)) >>> 0;
+  }
+  if (seed === 0) {
+    seed = 1;
+  }
+  return () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 2 ** 32;
+  };
+}
 
 type TextTypeProps = HTMLAttributes<HTMLElement> & {
   text: string | string[];
@@ -71,12 +86,13 @@ const TextType = ({
   const containerRef = useRef<HTMLElement | null>(null);
 
   const textArray = useMemo(() => (Array.isArray(text) ? text : [text]), [text]);
+  const randomGenerator = useMemo(() => createDeterministicRandom(textArray.join("|")), [textArray]);
 
   const getRandomSpeed = useCallback(() => {
     if (!variableSpeed) return typingSpeed;
     const { min, max } = variableSpeed;
-    return Math.random() * (max - min) + min;
-  }, [variableSpeed, typingSpeed]);
+    return randomGenerator() * (max - min) + min;
+  }, [variableSpeed, typingSpeed, randomGenerator]);
 
   const getCurrentTextColor = () => {
     if (textColors.length === 0) return undefined;
