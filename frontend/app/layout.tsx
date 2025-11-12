@@ -7,7 +7,7 @@ import ShinyText from "@/components/ShinyText";
 import HeaderNavCluster, { HeaderSearchBar } from "@/components/HeaderNavCluster";
 
 export const metadata: Metadata = {
-  title: "NBAi - NBA Scores, Stats, and Analysis powered by AI",
+  title: "ShAI - NBA Scores, Stats, and Analysis powered by AI",
   description: "Real-time intelligence for NBA teams, players, and trends.",
 };
 
@@ -39,24 +39,22 @@ const SiteHeader = async () => {
     <header className="sticky top-0 z-20 border-b border-[color:var(--color-app-border)] bg-[var(--color-app-surface-elevated)] backdrop-blur-md">
       <div className="relative mx-auto w-full max-w-7xl px-6 pb-4 pt-2">
         <div className="flex flex-col gap-3">
-          <div className="flex w-full flex-col items-center gap-4 md:flex-row md:items-center md:gap-6">
-            <div className="flex w-full justify-center md:flex-1 md:justify-start">
-              <Link href="/" className="flex shrink-0 items-center gap-3">
-                <Image
-                  src="/aiball.png"
-                  alt="AI Ball logo"
-                  width={48}
-                  height={48}
-                  priority
-                  className="h-12 w-12 rounded-full border border-[color:var(--color-app-border)] bg-[#f7f0e8] object-contain p-px shadow-sm"
-                />
-                <span className="text-lg font-bold tracking-[0.10em] text-[var(--color-app-foreground)] md:text-xl">NBAi</span>
-              </Link>
-            </div>
-            <div className="flex w-full justify-center md:w-auto md:flex-none">
+          <div className="flex flex-col items-center gap-4 md:flex-row md:items-center md:gap-6">
+            <Link href="/" className="flex shrink-0 items-center gap-3">
+              <Image
+                src="/aiball.png"
+                alt="AI Ball logo"
+                width={48}
+                height={48}
+                priority
+                className="h-12 w-12 rounded-full border border-[color:var(--color-app-border)] bg-[#f7f0e8] object-contain p-px shadow-sm"
+              />
+              <span className="text-lg font-bold tracking-[0.10em] text-[var(--color-app-foreground)] md:text-xl">ShAI</span>
+            </Link>
+            <div className="flex w-full justify-center md:flex-1">
               <HeaderNavCluster />
             </div>
-            <div className="flex w-full items-center justify-center md:flex-1 md:justify-end">
+            <div className="flex w-full items-center justify-center md:w-auto md:justify-end">
               {user ? (
                 <div className="surface-card--soft flex items-center gap-2 rounded-full px-3 py-1.5 text-xs md:gap-3 md:px-4 md:py-2 md:text-sm">
                   <span className="font-medium text-[var(--color-app-foreground-muted)]">Hi, {user.name ?? "there"}!</span>
@@ -105,8 +103,8 @@ const SiteFooter = () => {
       <div className="mx-auto w-full max-w-7xl px-6 py-10">
         <div className="flex flex-col gap-6 text-[color:var(--color-app-foreground-muted)] md:flex-row md:items-center md:justify-between">
           <div className="space-y-2">
-            <p className="text-lg font-semibold text-[var(--color-app-foreground)]">NBAi</p>
-            <p className="text-sm">Real-time NBA scores, stats, and AI-powered insights.</p>
+            <p className="text-lg font-semibold text-[var(--color-app-foreground)]">ShAI</p>
+            <p className="text-sm">Real-time NBA scores, stats, and AI-powered insights, powered by nba_api.</p>
           </div>
           <div className="flex flex-wrap gap-4 text-sm">
             <Link href="/teams" className="transition hover:text-[var(--color-app-foreground)]">
@@ -124,7 +122,10 @@ const SiteFooter = () => {
           </div>
         </div>
         <div className="mt-8 flex flex-col gap-3 text-xs text-[color:var(--color-app-foreground-muted)] sm:flex-row sm:items-center sm:justify-between">
-          <p>© {currentYear} NBAi. All rights reserved.</p>
+          <p>© {currentYear} ShAI. All rights reserved.</p>
+          <p>This project is not affiliated with, endorsed by, or associated with the National Basketball Association
+            nor Shai Gilgeous-Alexander.
+          </p>
         </div>
       </div>
     </footer>

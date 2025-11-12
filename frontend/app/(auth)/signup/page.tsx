@@ -13,8 +13,8 @@ export default async function SignUpPage() {
   return (
     <div className="space-y-8 text-[var(--color-app-foreground)]">
       <div>
-        <p className="text-xs uppercase tracking-[0.5em] text-[var(--color-app-primary)]/80">NBAI Beta</p>
-        <h1 className="mt-3 text-3xl font-semibold">Create your NBAI profile</h1>
+        <p className="text-xs uppercase tracking-[0.5em] text-[var(--color-app-primary)]/80">ShAI Beta</p>
+        <h1 className="mt-3 text-3xl font-semibold">Create your ShAI profile</h1>
         <p className="mt-2 text-sm text-[color:var(--color-app-foreground-muted)]">
           Secure your spot for advanced scouting tools, alerting, and shared workspaces. Use Google to keep data synced between devices.
         </p>
@@ -89,7 +89,7 @@ export default async function SignUpPage() {
                 id="email"
                 name="email"
                 type="email"
-                placeholder="you@nbai.app"
+                placeholder="you@shai.app"
                 className="w-full rounded-xl border border-[color:var(--color-app-border)] bg-[var(--color-app-surface)] px-4 py-2.5 text-sm text-[var(--color-app-foreground)] placeholder:text-[color:var(--color-app-foreground-muted)] focus:border-[color:var(--color-app-primary)] focus:outline-none"
                 autoComplete="email"
               />

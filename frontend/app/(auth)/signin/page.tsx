@@ -13,7 +13,7 @@ export default async function SignInPage() {
   return (
     <div className="space-y-8 text-[var(--color-app-foreground)]">
       <div>
-        <p className="text-xs uppercase tracking-[0.5em] text-[var(--color-app-primary)]/80">NBAI access</p>
+        <p className="text-xs uppercase tracking-[0.5em] text-[var(--color-app-primary)]/80">ShAI access</p>
         <h1 className="mt-3 text-3xl font-semibold">Sign in to your locker room</h1>
         <p className="mt-2 text-sm text-[color:var(--color-app-foreground-muted)]">
           Use your Google account to sync watchlists, custom dashboards, and nightly alerts across devices.
@@ -61,7 +61,7 @@ export default async function SignInPage() {
                 id="email"
                 name="email"
                 type="email"
-                placeholder="jalen-brunson@nbai.app"
+                placeholder="jalen-brunson@shai.app"
                 className="w-full rounded-xl border border-[color:var(--color-app-border)] bg-[var(--color-app-surface)] px-4 py-2.5 text-sm text-[var(--color-app-foreground)] placeholder:text-[color:var(--color-app-foreground-muted)] focus:border-[color:var(--color-app-primary)] focus:outline-none"
                 autoComplete="email"
               />
@@ -90,7 +90,7 @@ export default async function SignInPage() {
       )}
 
       <p className="text-sm text-[color:var(--color-app-foreground-muted)]">
-        New to NBAI?{" "}
+        New to ShAI?{" "}
         <Link href="/signup" className="text-[var(--color-app-primary)] hover:text-[var(--color-app-primary-hover)]">
           Create an account
         </Link>
