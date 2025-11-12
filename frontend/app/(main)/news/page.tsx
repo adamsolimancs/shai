@@ -182,17 +182,26 @@ export default async function NewsPage() {
               Coverage window spans {pulseAggregate.dates.size || "n/a"} unique dates from the latest response.
             </p>
           </article>
-          <article className="rounded-3xl border border-white/10 bg-slate-950/60 p-5 space-y-3">
+          <article className="rounded-3xl border border-white/10 bg-slate-950/60 p-5">
             <p className="text-xs uppercase tracking-[0.4em] text-white/40">Keep exploring</p>
-            <Link href="/scores" className="rounded-2xl border border-white/10 px-4 py-3 text-sm font-semibold text-white transition hover:border-white/40">
-              Tonight&apos;s scoreboard →
-            </Link>
-            <Link href="/players" className="rounded-2xl border border-white/10 px-4 py-3 text-sm font-semibold text-white transition hover:border-white/40">
-              Deep dive on players →
-            </Link>
-            <Link href="/teams" className="rounded-2xl border border-white/10 px-4 py-3 text-sm font-semibold text-white transition hover:border-white/40">
-              Team directory →
-            </Link>
+            <div className="mt-4 space-y-3">
+              {[
+                { href: "/scores", label: "Tonight's scoreboard" },
+                { href: "/players", label: "Deep dive on players" },
+                { href: "/teams", label: "Team directory" },
+              ].map((item) => (
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  className="block rounded-2xl border border-white/10 px-4 py-3 text-sm font-semibold text-white transition hover:border-white/40"
+                >
+                  <span className="flex items-center justify-between">
+                    {item.label}
+                    <span aria-hidden="true">→</span>
+                  </span>
+                </Link>
+              ))}
+            </div>
           </article>
         </aside>
       </section>

@@ -1,5 +1,7 @@
 import Link from "next/link";
+import { Suspense } from "react";
 
+import PlayerProfileSearch from "@/components/PlayerProfileSearch";
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
 
 type Player = {
@@ -74,7 +76,7 @@ export default async function PlayersPage({ searchParams = {} }: { searchParams?
   const leaderboards: Leaderboard[] = [
     { id: "points", label: "Scoring leaders", metric: "PTS", valueKey: "points", rows: scoringLeaders },
     { id: "rebounds", label: "Glass cleaners", metric: "REB", valueKey: "rebounds", rows: reboundLeaders },
-    { id: "assists", label: "Table setters", metric: "AST", valueKey: "assists", rows: assistLeaders },
+    { id: "assists", label: "Assist leaders", metric: "AST", valueKey: "assists", rows: assistLeaders },
   ];
 
   const directorySubset = directory.slice(0, DIRECTORY_LIMIT);
@@ -90,32 +92,33 @@ export default async function PlayersPage({ searchParams = {} }: { searchParams?
             or route into individual profile pages for deeper analytics.
           </p>
         </div>
-        <form className="grid gap-4 rounded-3xl border border-white/10 bg-slate-950/40 p-6 md:grid-cols-[2fr_1fr_auto]" method="GET">
-          <label className="sr-only" htmlFor="player-search">
-            Search players
+        <Suspense
+          fallback={
+            <div className="h-[64px] w-full animate-pulse rounded-3xl border border-white/10 bg-white/5" aria-hidden="true" />
+          }
+        >
+          <PlayerProfileSearch initialValue={query} />
+        </Suspense>
+        <form className="flex flex-wrap items-center gap-4 rounded-3xl border border-white/10 bg-slate-950/40 p-4" method="GET">
+          <input type="hidden" name="q" value={query} />
+          <label className="text-xs uppercase tracking-[0.3em] text-white/60" htmlFor="player-active-filter">
+            Roster filter
           </label>
-          <input
-            id="player-search"
-            name="q"
-            type="search"
-            placeholder="Search by player name"
-            defaultValue={query}
-            className="rounded-2xl border border-white/10 bg-transparent px-4 py-2.5 text-sm text-white placeholder:text-white/50 focus:border-white/40 focus:outline-none"
-          />
           <select
+            id="player-active-filter"
             name="active"
             defaultValue={activeParam}
             className="rounded-2xl border border-white/10 bg-transparent px-4 py-2.5 text-sm text-white focus:border-white/40 focus:outline-none"
           >
-            <option value="">Roster status (all)</option>
+            <option value="">All players</option>
             <option value="true">Active roster</option>
             <option value="false">Inactive / alumni</option>
           </select>
           <button
             type="submit"
-            className="btn-primary rounded-2xl px-6 py-2.5 text-sm font-semibold"
+            className="rounded-2xl border border-white/20 px-5 py-2 text-sm font-semibold text-white transition hover:border-white/40"
           >
-            Update
+            Apply
           </button>
         </form>
       </header>
