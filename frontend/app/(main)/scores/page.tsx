@@ -119,6 +119,16 @@ function formatTrendLabel(trend: string) {
   return trend.toUpperCase();
 }
 
+function scoreRowClasses(game: EnhancedGame, team: "home" | "away"): string {
+  if (game.winner === "even") {
+    return "bg-white/5";
+  }
+  if (game.winner === team) {
+    return "border border-emerald-300/30 bg-emerald-400/10";
+  }
+  return "border border-red-400/30 bg-red-500/10";
+}
+
 export default async function ScoresPage() {
   const games = await nbaFetch<Game[]>(`/v1/games?season=${DEFAULT_SEASON}&page_size=36`);
   const enhanced = games.map(enhanceGame);
@@ -135,7 +145,7 @@ export default async function ScoresPage() {
     <div className="space-y-12">
       <header className="space-y-6">
         <div>
-          <p className="text-xs uppercase tracking-[0.5em] text-blue-300/80">Season scoreboard</p>
+          <p className="text-xs uppercase tracking-[0.5em] text-white/60">Season scoreboard</p>
           <h1 className="mt-3 text-4xl font-semibold text-white">Scores, recaps, and nightly context</h1>
           <p className="mt-2 max-w-2xl text-sm text-white/70">
             Catch up on the latest NBA slate powered by the nba_data_api service. We surface live statuses, highlight the loudest
@@ -168,29 +178,21 @@ export default async function ScoresPage() {
               <div key={group.date} className="space-y-4">
                 <div className="flex items-center justify-between">
                   <p className="text-sm font-semibold tracking-[0.3em] text-white/60">{group.label}</p>
-                  <span className="text-xs uppercase text-blue-300/80">{group.games.length} games</span>
+                  <span className="text-xs uppercase text-white/60">{group.games.length} games</span>
                 </div>
                 <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
                   {group.games.map((game) => (
                     <article key={game.id} className="rounded-3xl border border-white/10 bg-slate-950/60 p-5 shadow-lg shadow-black/30">
                       <div className="flex items-center justify-between text-xs uppercase tracking-[0.3em] text-white/40">
                         <span>{game.tipLabel}</span>
-                        <span className="text-blue-300">{game.status}</span>
+                        <span className="text-white/70">{game.status}</span>
                       </div>
                       <div className="mt-5 space-y-4 text-lg font-semibold">
-                        <div
-                          className={`flex items-center justify-between rounded-2xl px-4 py-3 ${
-                            game.winner === "away" ? "border border-blue-400/30 bg-blue-400/10" : "bg-white/5"
-                          }`}
-                        >
+                        <div className={`flex items-center justify-between rounded-2xl px-4 py-3 ${scoreRowClasses(game, "away")}`}>
                           <span className="text-white">{game.away.name}</span>
                           <span className="text-white">{game.away.score}</span>
                         </div>
-                        <div
-                          className={`flex items-center justify-between rounded-2xl px-4 py-3 ${
-                            game.winner === "home" ? "border border-emerald-300/30 bg-emerald-400/10" : "bg-white/5"
-                          }`}
-                        >
+                        <div className={`flex items-center justify-between rounded-2xl px-4 py-3 ${scoreRowClasses(game, "home")}`}>
                           <span className="text-white">{game.home.name}</span>
                           <span className="text-white">{game.home.score}</span>
                         </div>

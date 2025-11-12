@@ -29,8 +29,9 @@ export async function nbaFetch<T>(
   }
 
   const url = path.startsWith("http") ? path : `${API_BASE_URL}${path}`;
-  // TODO: remove in production
-  console.log("NBA Fetch:", url);
+  if (process.env.NODE_ENV !== "production") {
+    console.log("NBA Fetch:", url);
+  }
 
   const response = await fetch(url, {
     ...init,
