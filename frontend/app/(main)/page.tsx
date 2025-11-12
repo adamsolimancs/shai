@@ -29,13 +29,6 @@ type Team = {
   division: string | null;
 };
 
-type MetaResponse = {
-  service: string;
-  version: string;
-  supported_seasons: string[];
-  last_cache_refresh: Record<string, string | null>;
-};
-
 type ScoreCard = {
   id: string;
   away: string;
@@ -109,10 +102,6 @@ async function fetchConferenceSnapshot(): Promise<ConferenceSnapshot[]> {
   }));
 }
 
-async function fetchMetaSnapshot(): Promise<MetaResponse> {
-  return nbaFetch<MetaResponse>("/v1/meta", { next: { revalidate: 3600 } });
-}
-
 const SectionTitle = ({ title, eyebrow }: { title: string; eyebrow: string }) => (
   <div className="mb-8">
     <p className="text-xs uppercase tracking-[0.35em] text-blue-300/80">{eyebrow}</p>
@@ -134,11 +123,10 @@ const HeroSection = () => (
 );
 
 export default async function HomePage() {
-  const [scores, players, conferences, meta] = await Promise.all([
+  const [scores, players, conferences] = await Promise.all([
     fetchRecentGames(),
     fetchPlayerHighlights(),
     fetchConferenceSnapshot(),
-    fetchMetaSnapshot(),
   ]);
 
   return (

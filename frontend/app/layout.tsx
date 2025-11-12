@@ -84,7 +84,7 @@ const SiteHeader = async () => {
             )}
           </div>
         </div>
-        <div className="mt-2 md:pointer-events-none md:absolute md:left-1/2 md:top-3 md:w-full md:-translate-x-1/2">
+        <div className="mt-3">
           <HeaderNavCluster />
         </div>
       </div>
