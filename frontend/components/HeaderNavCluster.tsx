@@ -21,7 +21,7 @@ function normalizeSlug(input: string): string {
 
 export default function HeaderNavCluster() {
   return (
-    <nav className="flex w-full flex-wrap items-center justify-center gap-6 text-sm text-[color:var(--color-app-foreground-muted)]">
+    <nav className="flex w-full flex-wrap items-center justify-center gap-6 text-sm text-[color:var(--color-app-foreground-muted)] md:absolute md:left-1/2 md:top-1/2 md:w-auto md:-translate-x-1/2 md:-translate-y-1/2 md:flex-nowrap">
       {NAV_LINKS.map((link) => (
         <Link key={link.href} href={link.href} className="transition hover:text-[var(--color-app-foreground)]">
           {link.label}
@@ -118,7 +118,7 @@ export function HeaderSearchBar() {
           {isPending && (
             <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-white/40 border-t-white" aria-hidden="true" />
           )}
-          <span>{isPending ? "Loading" : "Search"}</span>
+          <span className="text-background">{isPending ? "Loading" : "Search"}</span>
         </button>
       </form>
     </div>

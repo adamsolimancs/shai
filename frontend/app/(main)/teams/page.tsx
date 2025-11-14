@@ -29,6 +29,21 @@ type TeamStatsRow = {
   plus_minus?: number | null;
 };
 
+type LeagueStanding = {
+  team_id: number;
+  team_name: string;
+  team_city: string;
+  conference?: string | null;
+  conference_rank?: number | null;
+  division?: string | null;
+  division_rank?: number | null;
+  wins: number;
+  losses: number;
+  win_pct: number;
+  streak?: string | null;
+  last_ten?: string | null;
+};
+
 type MetaResponse = {
   service: string;
   version: string;
@@ -124,6 +139,18 @@ function formatPercent(value: number | undefined, digits = 1): string {
   return `${(value * 100).toFixed(digits)}%`;
 }
 
+function formatStandingRecord(standing: LeagueStanding): string {
+  return `${standing.wins}-${standing.losses}`;
+}
+
+function formatStandingTeamName(standing: LeagueStanding, team?: Team): string {
+  if (team) {
+    return formatTeamName(team);
+  }
+  const full = `${standing.team_city ?? ""} ${standing.team_name ?? ""}`.trim();
+  return full || standing.team_name || "—";
+}
+
 function isNotFoundError(error: unknown): boolean {
   return error instanceof Error && (/404/.test(error.message) || /Not Found/i.test(error.message));
 }
@@ -192,6 +219,20 @@ async function fetchTeamStats(season: string, teamIds: number[]): Promise<TeamSt
   return perTeam.filter((row): row is TeamStatsRow => Boolean(row));
 }
 
+async function fetchLeagueStandingsData(season: string): Promise<LeagueStanding[]> {
+  try {
+    return await nbaFetch<LeagueStanding[]>(
+      `/v1/league_standings?season=${season}&league_id=00&season_type=Regular%20Season`,
+      { next: { revalidate: 900 } },
+    );
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return [];
+    }
+    throw error;
+  }
+}
+
 export default async function TeamsPage({ searchParams = {} }: { searchParams?: SearchParams }) {
   const requestedSeason = extractParam(searchParams, "season");
   const preferredSeason = isValidSeason(requestedSeason) ? requestedSeason : DEFAULT_SEASON;
@@ -207,10 +248,13 @@ export default async function TeamsPage({ searchParams = {} }: { searchParams?: 
   const currentTeams = teams.filter(isCurrentFranchise).sort(compareByCurrentOrder);
   const teamMap = new Map<number, Team>(currentTeams.map((team) => [team.id, team]));
 
-  const teamStats = await fetchTeamStats(
-    activeSeason,
-    currentTeams.map((team) => team.id),
-  );
+  const [teamStats, leagueStandings] = await Promise.all([
+    fetchTeamStats(
+      activeSeason,
+      currentTeams.map((team) => team.id),
+    ),
+    fetchLeagueStandingsData(activeSeason),
+  ]);
 
   const sortedTeams = [...currentTeams].sort((a, b) => formatTeamName(a).localeCompare(formatTeamName(b)));
 
@@ -222,21 +266,15 @@ export default async function TeamsPage({ searchParams = {} }: { searchParams?: 
   });
   const filteredStats = [...statsByTeamId.values()];
 
-  const standings = [...filteredStats]
-    .sort((a, b) => {
-      if (b.win_pct !== a.win_pct) return b.win_pct - a.win_pct;
-      if (b.wins !== a.wins) return b.wins - a.wins;
-      return a.losses - b.losses;
-    })
-    .map((row, index) => ({
-      rank: index + 1,
-      stats: row,
-      team: teamMap.get(row.team_id),
-    }));
   const buildConferenceRows = (key: string) =>
-    standings
-      .filter(({ team }) => (team?.conference ?? "").toLowerCase() === key)
-      .map((row, index) => ({ ...row, rank: index + 1 }));
+    leagueStandings
+      .filter((row) => (row.conference ?? "").toLowerCase() === key)
+      .sort((a, b) => (a.conference_rank ?? 99) - (b.conference_rank ?? 99))
+      .map((standing, index) => ({
+        rank: standing.conference_rank ?? index + 1,
+        standing,
+        team: teamMap.get(standing.team_id),
+      }));
 
   const conferenceStandings = [
     {
@@ -360,21 +398,21 @@ export default async function TeamsPage({ searchParams = {} }: { searchParams?: 
                     Standings data isn&apos;t available yet for this season.
                   </div>
                 ) : (
-                  conference.rows.map(({ rank, stats, team }) => (
+                  conference.rows.map(({ rank, standing, team }) => (
                     <div
-                      key={stats.team_id}
+                      key={standing.team_id}
                       className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3"
                     >
                       <div>
                         <p className="text-xs uppercase tracking-[0.3em] text-white/40">#{rank}</p>
                         <p className="text-base font-semibold text-white">
-                          {team?.name ? formatTeamName(team) : stats.team_name}
+                          {formatStandingTeamName(standing, team)}
                         </p>
                         <p className="text-white/60">
-                          {formatRecord(stats)} • {team?.division ?? "—"}
+                          {formatStandingRecord(standing)} • {standing.division ?? team?.division ?? "—"}
                         </p>
                       </div>
-                      <span className="text-2xl font-semibold text-white">{formatPercent(stats.win_pct, 1)}</span>
+                      <span className="text-2xl font-semibold text-white">{formatPercent(standing.win_pct, 1)}</span>
                     </div>
                   ))
                 )}

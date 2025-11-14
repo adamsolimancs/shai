@@ -78,15 +78,23 @@ export default function RootLayout({
   );
 }
 
+const truncateUserName = (value?: string | null) => {
+  if (!value) return "there";
+  const trimmed = value.trim();
+  if (trimmed.length <= 28) return trimmed;
+  return `${trimmed.slice(0, 28)}...`;
+};
+
 const SiteHeader = async () => {
   const session = await auth();
   const user = session?.user;
+  const userName = truncateUserName(user?.name);
 
   return (
     <header className="sticky top-0 z-20 border-b border-[color:var(--color-app-border)] bg-[var(--color-app-surface-elevated)] backdrop-blur-md">
       <div className="relative mx-auto w-full max-w-7xl px-6 py-4">
         <div className="flex flex-col gap-3">
-          <div className="flex flex-col items-center gap-4 md:flex-row md:items-center md:gap-6">
+          <div className="relative flex flex-col items-center gap-4 md:flex-row md:items-center md:gap-6">
             <Link href="/" className="flex shrink-0 items-center gap-3">
               <Image
                 src="/aiball.png"
@@ -98,13 +106,13 @@ const SiteHeader = async () => {
               />
               <span className="text-lg font-bold tracking-[0.10em] text-[var(--color-app-foreground)] md:text-xl">ShAI</span>
             </Link>
-            <div className="flex w-full justify-center md:flex-1">
-              <HeaderNavCluster />
-            </div>
-            <div className="flex w-full items-center justify-center md:w-auto md:justify-end">
+            <HeaderNavCluster />
+            <div className="flex w-full items-center justify-center md:absolute md:right-0 md:top-1/2 md:w-auto md:-translate-y-1/2 md:justify-end">
               {user ? (
-                <div className="surface-card--soft flex items-center gap-2 rounded-full px-3 py-1.5 text-xs md:gap-3 md:px-4 md:py-2 md:text-sm">
-                  <span className="font-medium text-[var(--color-app-foreground-muted)]">Hi, {user.name ?? "there"}!</span>
+                <div className="surface-card--soft app-offwhite-shell flex items-center gap-2 rounded-full px-3 py-1.5 text-xs md:gap-3 md:px-4 md:py-2 md:text-sm">
+                  <span className="rounded-full px-3 py-1 font-medium text-[color:var(--color-app-foreground-muted)] md:text-sm">
+                    Hi, {userName}!
+                  </span>
                   <form
                     action={async () => {
                       "use server";
@@ -113,7 +121,7 @@ const SiteHeader = async () => {
                   >
                     <button
                       type="submit"
-                      className="rounded-full border border-[color:var(--color-app-border)] px-3 py-1 text-[0.65rem] font-medium text-[color:var(--color-app-foreground-muted)] transition hover:border-[color:var(--color-app-border-strong)] hover:text-[var(--color-app-foreground)] md:text-xs"
+                      className="rounded-full border border-[color:var(--color-app-border)] bg-[var(--color-app-background)] px-3 py-1 text-[0.65rem] font-medium text-[color:var(--color-app-foreground-muted)] transition hover:border-[color:var(--color-app-border-strong)] hover:bg-[var(--color-app-background-soft)] hover:text-[var(--color-app-foreground)] md:text-xs"
                     >
                       Logout
                     </button>

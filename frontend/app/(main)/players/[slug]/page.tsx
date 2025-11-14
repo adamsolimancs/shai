@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
+import { containsBannedTerm } from "@/lib/utils";
 
 type ResolutionPayload = {
   id: number;
@@ -363,13 +364,6 @@ function collapseCareerRows(rows: PlayerCareerStatsRow[]): PlayerCareerStatsRow[
   return [...bySeason.values()].sort((a, b) => b.season_id.localeCompare(a.season_id));
 }
 
-const BANNED_TERMS = ["fuck", "shit", "bitch", "cunt", "nigger", "nigga", "faggot", "coon"];
-
-function containsBannedTerm(input: string): boolean {
-  const normalized = input.toLowerCase();
-  return BANNED_TERMS.some((term) => normalized.includes(term));
-}
-
 async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfile | null> {
   if (!slug) {
     return null;
@@ -582,7 +576,7 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
   return (
     <>
       <div className="grid items-stretch gap-6 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
-        <section className="w-full rounded-2xl border border-white/10 bg-linear-to-br from-blue-600/30 via-slate-900/85 to-slate-950/85 px-5 py-5 shadow-xl shadow-blue-500/30">
+        <section className="w-full rounded-2xl border border-[color:var(--color-app-border)] bg-[var(--color-app-background)] px-5 py-5 shadow-lg shadow-[rgba(10,31,68,0.15)]">
           <div className="flex h-full flex-col gap-4 text-white">
             <div className="flex items-center gap-4">
               <div className="shrink-0 rounded-full border border-white/20 bg-white/10 p-2 backdrop-blur">
@@ -727,7 +721,7 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
       <section className="mt-20">
         <SectionHeading eyebrow="Career resume" title="Season-by-season averages" />
         <div className="overflow-x-auto rounded-3xl border border-white/10 bg-slate-950/60">
-          <table className="min-w-full divide-y divide-white/5 text-xs sm:text-sm">
+          <table className="min-w-full divide-y bg-background divide-white/5 text-xs sm:text-sm">
             <thead className="text-left text-[0.65rem] uppercase tracking-[0.35em] text-white/40 sm:text-[0.7rem]">
               <tr>
                 <th className="px-4 py-3">Season</th>
@@ -765,7 +759,7 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
       <section className="mt-12">
         <SectionHeading eyebrow="Career resume" title="Season-by-season totals" />
         <div className="overflow-x-auto rounded-3xl border border-white/10 bg-slate-950/60">
-          <table className="min-w-full divide-y divide-white/5 text-xs sm:text-sm">
+          <table className="min-w-full divide-y bg-background divide-white/5 text-xs sm:text-sm">
             <thead className="text-left text-[0.65rem] uppercase tracking-[0.3em] text-white/40 sm:text-[0.7rem]">
               <tr>
                 <th className="px-4 py-3">Season</th>

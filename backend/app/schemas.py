@@ -88,7 +88,29 @@ class Game(BaseModel):
     away_team_name: str
     away_team_score: int
     season: str
-    status: str | None = None
+    location: str | None = None
+
+
+class LeagueStanding(BaseModel):
+    team_id: int
+    team_name: str
+    team_city: str
+    team_slug: str | None = None
+    team_abbreviation: str | None = None
+    conference: str | None = None
+    conference_rank: int | None = None
+    division: str | None = None
+    division_rank: int | None = None
+    wins: int
+    losses: int
+    win_pct: float
+    games_back: float | None = None
+    division_games_back: float | None = None
+    record: str | None = None
+    home_record: str | None = None
+    road_record: str | None = None
+    last_ten: str | None = None
+    streak: str | None = None
 
 
 class PlayerGameLog(BaseModel):

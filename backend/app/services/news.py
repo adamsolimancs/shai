@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from typing import Any, Iterable, Sequence
+from typing import Any
 from xml.etree import ElementTree
 
 import httpx
@@ -104,9 +105,14 @@ class NewsService:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         aggregated: list[ScrapedArticle] = []
-        for source_name, result in zip(("espn", "sportscenter", "cbs"), results, strict=True):
+        for source_name, result in zip(
+            ("espn", "sportscenter", "cbs"), results, strict=True
+        ):
             if isinstance(result, Exception):
-                logger.warning("news source failed", extra={"source": source_name, "error": str(result)})
+                logger.warning(
+                    "news source failed",
+                    extra={"source": source_name, "error": str(result)},
+                )
                 continue
             aggregated.extend(result)
 

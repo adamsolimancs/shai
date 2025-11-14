@@ -1,6 +1,7 @@
 from datetime import date
 
 import pytest
+from fastapi import HTTPException
 
 from app.utils import paginate, parse_date, validate_date_range, validate_season
 
@@ -10,7 +11,7 @@ def test_validate_season_ok():
 
 
 def test_validate_season_bad():
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         validate_season("2024-24")
 
 
@@ -24,7 +25,7 @@ def test_parse_date_none():
 
 def test_validate_date_range():
     validate_date_range(date(2024, 1, 1), date(2024, 1, 2))
-    with pytest.raises(Exception):
+    with pytest.raises(HTTPException):
         validate_date_range(date(2024, 1, 3), date(2024, 1, 2))
 
 

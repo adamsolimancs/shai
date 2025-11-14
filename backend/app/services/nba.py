@@ -19,6 +19,7 @@ from nba_api.stats.endpoints import (
     leaguedashplayerstats,
     leaguedashteamstats,
     leaguegamefinder,
+    leaguestandingsv3,
     playercareerstats,
     playergamelog,
     shotchartdetail,
@@ -32,6 +33,7 @@ from ..schemas import (
     BoxScoreLine,
     CacheMeta,
     Game,
+    LeagueStanding,
     MetaResponse,
     Player,
     PlayerCareerStatsRow,
@@ -108,7 +110,12 @@ class NBAStatsClient:
                 team_id = row.get("TEAM_ID")
                 if not team_id:
                     continue
-                abbreviation = row.get("TEAM_ABBREVIATION") or row.get("TEAM") or row.get("TEAM_NAME") or ""
+                abbreviation = (
+                    row.get("TEAM_ABBREVIATION")
+                    or row.get("TEAM")
+                    or row.get("TEAM_NAME")
+                    or ""
+                )
                 name = row.get("TEAM_NAME") or abbreviation or "Unknown"
                 rows.append(
                     {
@@ -194,6 +201,43 @@ class NBAStatsClient:
         games = [Game(**row) for row in filtered]
         return ServiceResult(games, cache_meta)
 
+    async def get_league_standings(
+        self,
+        league_id: str,
+        season: str,
+        season_type: str,
+    ) -> ServiceResult:
+        season = validate_season(season)
+        league_id = league_id or "00"
+        season_type = season_type or "Regular Season"
+        key = f"league_standings:{league_id}:{season}:{season_type}"
+
+        def fetch() -> list[dict[str, Any]]:
+            endpoint = leaguestandingsv3.LeagueStandingsV3(
+                league_id=league_id,
+                season=season,
+                season_type=season_type,
+            )
+            df = endpoint.standings.get_data_frame()
+            return cast(list[dict[str, Any]], df.to_dict("records"))
+
+        rows, cache_meta = await self._cached_call(key, AGGREGATE_TTL, fetch)
+        standings: list[LeagueStanding] = []
+        for row in rows:
+            try:
+                normalized = self._normalize_league_standing(row)
+                standings.append(LeagueStanding(**normalized))
+            except (KeyError, TypeError, ValueError, ValidationError) as exc:
+                logger.warning(
+                    "Skipping malformed league standing row",
+                    extra={"error": str(exc), "row": row},
+                )
+                continue
+        standings.sort(
+            key=lambda item: ((item.conference or "").lower(), item.conference_rank or 999)
+        )
+        return ServiceResult(standings, cache_meta)
+
     async def get_player_gamelog(
         self,
         player_id: int,
@@ -221,7 +265,10 @@ class NBAStatsClient:
                 normalized = self._normalize_player_log(row)
                 logs.append(PlayerGameLog(**normalized))
             except (KeyError, TypeError, ValueError, ValidationError) as exc:
-                logger.warning("Skipping malformed player log row", extra={"error": str(exc), "row": row})
+                logger.warning(
+                    "Skipping malformed player log row",
+                    extra={"error": str(exc), "row": row},
+                )
                 continue
         return ServiceResult(logs, cache_meta)
 
@@ -247,7 +294,10 @@ class NBAStatsClient:
         }.get(kind)
 
         if not endpoint_cls:
-            raise HTTPException(status_code=400, detail={"code": "INVALID_KIND", "message": "Invalid boxscore kind."})
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "INVALID_KIND", "message": "Invalid boxscore kind."},
+            )
 
         def fetch() -> list[dict[str, Any]]:
             endpoint = endpoint_cls(game_id=game_id)
@@ -310,7 +360,12 @@ class NBAStatsClient:
         except Exception as exc:  # pragma: no cover - defensive guard for flaky upstream seasons
             logger.warning(
                 "team stats fetch failed; returning empty result",
-                extra={"season": season, "measure": measure, "per_mode": per_mode, "error": str(exc)},
+                extra={
+                    "season": season,
+                    "measure": measure,
+                    "per_mode": per_mode,
+                    "error": str(exc),
+                },
             )
             return ServiceResult([], CacheMeta(hit=False, stale=True))
         stats: list[TeamStatsRow] = []
@@ -319,7 +374,10 @@ class NBAStatsClient:
                 normalized = self._normalize_team_stats(row)
                 stats.append(TeamStatsRow(**normalized))
             except (KeyError, TypeError, ValueError, ValidationError) as exc:
-                logger.warning("Skipping malformed team stats row", extra={"error": str(exc), "row": row})
+                logger.warning(
+                    "Skipping malformed team stats row",
+                    extra={"error": str(exc), "row": row},
+                )
                 continue
         return ServiceResult(stats, cache_meta)
 
@@ -352,8 +410,12 @@ class NBAStatsClient:
         return stats, cache_meta, pagination.model_dump()
 
     async def resolve(self, player: str | None, team: str | None) -> ResolveResult:
-        player_result = self._resolution_payload(self.resolver.resolve_player(player) if player else None)
-        team_result = self._resolution_payload(self.resolver.resolve_team(team) if team else None)
+        player_result = self._resolution_payload(
+            self.resolver.resolve_player(player) if player else None
+        )
+        team_result = self._resolution_payload(
+            self.resolver.resolve_team(team) if team else None
+        )
         return ResolveResult(player=player_result, team=team_result)
 
     async def refresh_hot_keys(self) -> None:
@@ -368,7 +430,11 @@ class NBAStatsClient:
             endpoint = commonallplayers.CommonAllPlayers(season=season, is_only_current_season=0)
             return endpoint.get_data_frames()[0]
         except Exception as exc:
-            logger.warning("CommonAllPlayers failed for %s; retrying without season. err=%s", season, exc)
+            logger.warning(
+                "CommonAllPlayers failed for %s; retrying without season. err=%s",
+                season,
+                exc,
+            )
             fallback = commonallplayers.CommonAllPlayers(is_only_current_season=0)
             return fallback.get_data_frames()[0]
 
@@ -395,7 +461,7 @@ class NBAStatsClient:
     async def _run_with_retry(self, fetcher: Callable[[], TData]) -> TData:
         delay = self.settings.upstream_retry_backoff_seconds
         last_error: Exception | None = None
-        for attempt in range(self.settings.upstream_retry_attempts):
+        for _attempt in range(self.settings.upstream_retry_attempts):
             try:
                 loop = asyncio.get_running_loop()
                 return await loop.run_in_executor(None, fetcher)
@@ -423,6 +489,7 @@ class NBAStatsClient:
                     "game_id": game_id,
                     "date": datetime.strptime(row["GAME_DATE"], "%Y-%m-%d").date(),
                     "season": row.get("SEASON_ID"),
+                    "location": row.get("LOCATION"),
                     "home_team_id": None,
                     "home_team_name": None,
                     "home_team_abbreviation": None,
@@ -431,7 +498,7 @@ class NBAStatsClient:
                     "away_team_name": None,
                     "away_team_abbreviation": None,
                     "away_team_score": None,
-                    "status": row.get("WL"),
+                    "status": row.get("GAME_STATUS_TEXT") or row.get("WL"),
                 },
             )
             matchup = row.get("MATCHUP", "")
@@ -505,6 +572,58 @@ class NBAStatsClient:
                 continue
             filtered.append(row)
         return filtered
+
+    def _normalize_league_standing(self, row: dict[str, Any]) -> dict[str, Any]:
+        def parse_int(value: Any) -> int | None:
+            if value in (None, "", " "):
+                return None
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        def parse_float(value: Any) -> float | None:
+            if value in (None, "", " "):
+                return None
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return None
+            if math.isnan(number) or math.isinf(number):
+                return None
+            return number
+
+        team_city = (row.get("TeamCity") or "").strip()
+        team_name = (row.get("TeamName") or "").strip()
+        full_name = f"{team_city} {team_name}".strip()
+        resolution = self.resolver.resolve_team(full_name) if full_name else None
+        abbreviation = resolution.abbreviation if resolution else None
+        if not abbreviation:
+            slug = row.get("TeamSlug")
+            if isinstance(slug, str) and slug:
+                abbreviation = slug.upper()
+
+        return {
+            "team_id": int(row["TeamID"]),
+            "team_name": team_name or (resolution.name if resolution else ""),
+            "team_city": team_city,
+            "team_slug": row.get("TeamSlug"),
+            "team_abbreviation": abbreviation,
+            "conference": row.get("Conference"),
+            "conference_rank": parse_int(row.get("PlayoffRank") or row.get("LeagueRank")),
+            "division": row.get("Division"),
+            "division_rank": parse_int(row.get("DivisionRank")),
+            "wins": self._safe_int(row.get("WINS")),
+            "losses": self._safe_int(row.get("LOSSES")),
+            "win_pct": self._safe_float(row.get("WinPCT")),
+            "games_back": parse_float(row.get("ConferenceGamesBack")),
+            "division_games_back": parse_float(row.get("DivisionGamesBack")),
+            "record": row.get("Record"),
+            "home_record": row.get("HOME"),
+            "road_record": row.get("ROAD"),
+            "last_ten": row.get("L10"),
+            "streak": row.get("strCurrentStreak") or row.get("CurrentStreak"),
+        }
 
     def _normalize_team_row(self, row: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -631,9 +750,15 @@ class NBAStatsClient:
             "assists": self._safe_float(row.get("AST")),
             "steals": self._safe_float(row.get("STL")),
             "blocks": self._safe_float(row.get("BLK")),
-            "field_goal_pct": self._safe_float(row.get("FG_PCT")) if row.get("FG_PCT") is not None else None,
-            "three_point_pct": self._safe_float(row.get("FG3_PCT")) if row.get("FG3_PCT") is not None else None,
-            "free_throw_pct": self._safe_float(row.get("FT_PCT")) if row.get("FT_PCT") is not None else None,
+            "field_goal_pct": (
+                self._safe_float(row.get("FG_PCT")) if row.get("FG_PCT") is not None else None
+            ),
+            "three_point_pct": (
+                self._safe_float(row.get("FG3_PCT")) if row.get("FG3_PCT") is not None else None
+            ),
+            "free_throw_pct": (
+                self._safe_float(row.get("FT_PCT")) if row.get("FT_PCT") is not None else None
+            ),
         }
 
     def _resolution_payload(self, resolution: Resolution | None) -> ResolutionPayload | None:
