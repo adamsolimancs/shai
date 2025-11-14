@@ -1,7 +1,9 @@
 import Link from "next/link";
 import { Suspense } from "react";
+import { LeagueStandings, type LeagueStandingsConference } from "@/components/LeagueStandings";
 import HeroSearch from "@/components/HeroSearch";
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
+import { slugifySegment } from "@/lib/utils";
 
 type Game = {
   game_id: string;
@@ -110,6 +112,7 @@ type LeagueStanding = {
   road_record?: string | null;
   last_ten?: string | null;
   streak?: string | null;
+  eliminated_conference?: boolean | number | null;
 };
 
 async function fetchRecentGames(): Promise<ScoreCard[]> {
@@ -163,7 +166,7 @@ function formatWinPercent(value?: number): string {
   if (typeof value !== "number" || Number.isNaN(value)) {
     return "—";
   }
-  return `${(value * 100).toFixed(1)}%`;
+  return value.toFixed(3);
 }
 
 function buildConferenceBuckets(rows: LeagueStanding[]) {
@@ -206,7 +209,30 @@ export default async function HomePage() {
     fetchPlayerHighlights(),
     fetchLeagueStandings(),
   ]);
-  const conferences = buildConferenceBuckets(leagueStandings);
+  const conferenceBuckets = buildConferenceBuckets(leagueStandings);
+  const conferences: LeagueStandingsConference[] = conferenceBuckets.map((bucket) => ({
+    id: bucket.conference.toLowerCase(),
+    title: `${bucket.conference} Conference`,
+    subtitle: bucket.teams.length === 0 ? "Awaiting data" : undefined,
+    teams: bucket.teams.map((team, index) => {
+      const rank = team.conference_rank ?? index + 1;
+      const name = formatStandingTeamName(team);
+      const slug = slugifySegment(name);
+      return {
+        id: team.team_id,
+        name,
+        record: formatStandingRecord(team),
+        standing: String(rank),
+        rank,
+        winPct: formatWinPercent(team.win_pct),
+        streak: team.streak ?? null,
+        lastTen: team.last_ten ?? null,
+        eliminatedConference: Boolean(team.eliminated_conference),
+        href: slug ? `/teams/${slug}` : undefined,
+      };
+    }),
+    emptyLabel: "Standings data unavailable.",
+  }));
 
   return (
     <>
@@ -272,47 +298,7 @@ export default async function HomePage() {
 
       <section id="conference" className="mt-20">
         <SectionTitle title="League Standings" eyebrow="Team directory" />
-        <div className="grid gap-6 md:grid-cols-2">
-          {conferences.map((snapshot) => (
-            <article key={snapshot.conference} className="rounded-3xl border border-white/10 bg-slate-900/60 p-6">
-              <p className="text-xs uppercase tracking-[0.35em] text-white/50">{snapshot.conference} Conference</p>
-              <ul className="mt-4 space-y-3 text-sm text-white/80">
-                {snapshot.teams.length === 0 ? (
-                  <li className="rounded-2xl border border-dashed border-white/10 px-4 py-6 text-center text-white/60">
-                    Standings data unavailable.
-                  </li>
-                ) : (
-                  snapshot.teams.map((team, index) => (
-                    <li
-                      key={team.team_id}
-                      className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3"
-                    >
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.3em] text-white/40">
-                          #{team.conference_rank ?? index + 1}
-                        </p>
-                        <p className="text-base font-semibold text-white">{formatStandingTeamName(team)}</p>
-                        <p className="text-white/60">
-                          {formatStandingRecord(team)} • {team.division ?? "—"}
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <span className="text-2xl font-semibold text-white">
-                          {formatWinPercent(team.win_pct)}
-                        </span>
-                        {team.streak ? (
-                          <p className="text-xs text-white/60">{team.streak}</p>
-                        ) : team.last_ten ? (
-                          <p className="text-xs text-white/60">L10: {team.last_ten}</p>
-                        ) : null}
-                      </div>
-                    </li>
-                  ))
-                )}
-              </ul>
-            </article>
-          ))}
-        </div>
+        <LeagueStandings conferences={conferences} />
       </section>
     </>
   );

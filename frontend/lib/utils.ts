@@ -11,3 +11,26 @@ export function containsBannedTerm(input: string): boolean {
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
+
+export function slugifySegment(value?: string): string {
+  if (!value) {
+    return "";
+  }
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)+/g, "");
+}
+
+export function unslugifySegment(value?: string): string {
+  if (!value) {
+    return "";
+  }
+  return value
+    .trim()
+    .split("-")
+    .filter(Boolean)
+    .map((chunk) => chunk.charAt(0).toUpperCase() + chunk.slice(1))
+    .join(" ");
+}
