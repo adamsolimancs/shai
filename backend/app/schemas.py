@@ -88,7 +88,29 @@ class Game(BaseModel):
     away_team_name: str
     away_team_score: int
     season: str
-    status: str | None = None
+    location: str | None = None
+
+
+class LeagueStanding(BaseModel):
+    team_id: int
+    team_name: str
+    team_city: str
+    team_slug: str | None = None
+    team_abbreviation: str | None = None
+    conference: str | None = None
+    conference_rank: int | None = None
+    division: str | None = None
+    division_rank: int | None = None
+    wins: int
+    losses: int
+    win_pct: float
+    games_back: float | None = None
+    division_games_back: float | None = None
+    record: str | None = None
+    home_record: str | None = None
+    road_record: str | None = None
+    last_ten: str | None = None
+    streak: str | None = None
 
 
 class PlayerGameLog(BaseModel):
@@ -179,6 +201,40 @@ class PlayerCareerStatsRow(BaseModel):
     field_goal_pct: float | None = None
     three_point_pct: float | None = None
     free_throw_pct: float | None = None
+
+
+class PlayerAward(BaseModel):
+    season: str
+    description: str
+    team: str | None = None
+    conference: str | None = None
+    award_type: str | None = None
+    subtype1: str | None = None
+    subtype2: str | None = None
+    subtype3: str | None = None
+    month: str | None = None
+    week: str | None = None
+    all_nba_team_number: int | None = None
+
+
+class TeamDetail(BaseModel):
+    team_id: int
+    abbreviation: str | None = None
+    nickname: str | None = None
+    city: str | None = None
+    year_founded: int | None = None
+    arena: str | None = None
+    arena_capacity: int | None = None
+    owner: str | None = None
+    general_manager: str | None = None
+    head_coach: str | None = None
+    dleague_affiliation: str | None = None
+    championships: list[str]
+    conference_titles: list[str]
+    division_titles: list[str]
+    hall_of_famers: list[str]
+    retired_numbers: list[str]
+    social_sites: dict[str, str]
 
 
 class ResolveRequest(BaseModel):

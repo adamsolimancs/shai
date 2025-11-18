@@ -1,6 +1,9 @@
+import Link from "next/link";
 import { Suspense } from "react";
+import { LeagueStandings, type LeagueStandingsConference } from "@/components/LeagueStandings";
 import HeroSearch from "@/components/HeroSearch";
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
+import { slugifySegment } from "@/lib/utils";
 
 type Game = {
   game_id: string;
@@ -10,6 +13,7 @@ type Game = {
   away_team_name: string;
   away_team_score: number;
   status?: string | null;
+  location?: string | null;
 };
 
 type PlayerStatsRow = {
@@ -21,15 +25,6 @@ type PlayerStatsRow = {
   assists: number;
 };
 
-type Team = {
-  id: number;
-  city: string;
-  name: string;
-  abbreviation: string;
-  conference: string | null;
-  division: string | null;
-};
-
 type ScoreCard = {
   id: string;
   away: string;
@@ -38,6 +33,7 @@ type ScoreCard = {
   homeScore: number;
   status: string;
   tip: string;
+  location: string;
 };
 
 type PlayerHighlight = {
@@ -48,49 +44,75 @@ type PlayerHighlight = {
   assists: number;
 };
 
-type Franchise = {
+type FranchiseLocation = {
   name: string;
-  abbreviation: string;
-  conference: "East" | "West";
+  location: string;
   aliases?: string[];
 };
 
-const CURRENT_FRANCHISES: Franchise[] = [
-  { name: "Atlanta Hawks", abbreviation: "ATL", conference: "East" },
-  { name: "Boston Celtics", abbreviation: "BOS", conference: "East" },
-  { name: "Brooklyn Nets", abbreviation: "BKN", conference: "East" },
-  { name: "Charlotte Hornets", abbreviation: "CHA", conference: "East" },
-  { name: "Chicago Bulls", abbreviation: "CHI", conference: "East" },
-  { name: "Cleveland Cavaliers", abbreviation: "CLE", conference: "East" },
-  { name: "Detroit Pistons", abbreviation: "DET", conference: "East" },
-  { name: "Indiana Pacers", abbreviation: "IND", conference: "East" },
-  { name: "Miami Heat", abbreviation: "MIA", conference: "East" },
-  { name: "Milwaukee Bucks", abbreviation: "MIL", conference: "East" },
-  { name: "New York Knicks", abbreviation: "NYK", conference: "East" },
-  { name: "Orlando Magic", abbreviation: "ORL", conference: "East" },
-  { name: "Philadelphia 76ers", abbreviation: "PHI", conference: "East" },
-  { name: "Toronto Raptors", abbreviation: "TOR", conference: "East" },
-  { name: "Washington Wizards", abbreviation: "WAS", conference: "East" },
-  { name: "Dallas Mavericks", abbreviation: "DAL", conference: "West" },
-  { name: "Denver Nuggets", abbreviation: "DEN", conference: "West" },
-  { name: "Golden State Warriors", abbreviation: "GSW", conference: "West" },
-  { name: "Houston Rockets", abbreviation: "HOU", conference: "West" },
-  { name: "Los Angeles Clippers", abbreviation: "LAC", conference: "West", aliases: ["LA Clippers"] },
-  { name: "Los Angeles Lakers", abbreviation: "LAL", conference: "West", aliases: ["LA Lakers"] },
-  { name: "Memphis Grizzlies", abbreviation: "MEM", conference: "West" },
-  { name: "Minnesota Timberwolves", abbreviation: "MIN", conference: "West" },
-  { name: "New Orleans Pelicans", abbreviation: "NOP", conference: "West" },
-  { name: "Oklahoma City Thunder", abbreviation: "OKC", conference: "West" },
-  { name: "Phoenix Suns", abbreviation: "PHX", conference: "West" },
-  { name: "Portland Trail Blazers", abbreviation: "POR", conference: "West" },
-  { name: "Sacramento Kings", abbreviation: "SAC", conference: "West" },
-  { name: "San Antonio Spurs", abbreviation: "SAS", conference: "West" },
-  { name: "Utah Jazz", abbreviation: "UTA", conference: "West" },
+const TEAM_LOCATIONS: FranchiseLocation[] = [
+  { name: "Atlanta Hawks", location: "Atlanta, GA" },
+  { name: "Boston Celtics", location: "Boston, MA" },
+  { name: "Brooklyn Nets", location: "Brooklyn, NY" },
+  { name: "Charlotte Hornets", location: "Charlotte, NC" },
+  { name: "Chicago Bulls", location: "Chicago, IL" },
+  { name: "Cleveland Cavaliers", location: "Cleveland, OH" },
+  { name: "Dallas Mavericks", location: "Dallas, TX" },
+  { name: "Denver Nuggets", location: "Denver, CO" },
+  { name: "Detroit Pistons", location: "Detroit, MI" },
+  { name: "Golden State Warriors", location: "San Francisco, CA" },
+  { name: "Houston Rockets", location: "Houston, TX" },
+  { name: "Indiana Pacers", location: "Indianapolis, IN" },
+  { name: "Los Angeles Clippers", aliases: ["LA Clippers"], location: "Los Angeles, CA" },
+  { name: "Los Angeles Lakers", aliases: ["LA Lakers"], location: "Los Angeles, CA" },
+  { name: "Memphis Grizzlies", location: "Memphis, TN" },
+  { name: "Miami Heat", location: "Miami, FL" },
+  { name: "Milwaukee Bucks", location: "Milwaukee, WI" },
+  { name: "Minnesota Timberwolves", location: "Minneapolis, MN" },
+  { name: "New Orleans Pelicans", location: "New Orleans, LA" },
+  { name: "New York Knicks", location: "New York, NY" },
+  { name: "Oklahoma City Thunder", location: "Oklahoma City, OK" },
+  { name: "Orlando Magic", location: "Orlando, FL" },
+  { name: "Philadelphia 76ers", location: "Philadelphia, PA" },
+  { name: "Phoenix Suns", location: "Phoenix, AZ" },
+  { name: "Portland Trail Blazers", location: "Portland, OR" },
+  { name: "Sacramento Kings", location: "Sacramento, CA" },
+  { name: "San Antonio Spurs", location: "San Antonio, TX" },
+  { name: "Toronto Raptors", location: "Toronto, ON" },
+  { name: "Utah Jazz", location: "Salt Lake City, UT" },
+  { name: "Washington Wizards", location: "Washington, DC" },
 ];
 
-type ConferenceSnapshot = {
-  conference: "East" | "West";
-  teams: { name: string; abbreviation: string; division: string | null }[];
+const TEAM_LOCATION_LOOKUP = TEAM_LOCATIONS.reduce((map, team) => {
+  map.set(team.name.toLowerCase(), team.location);
+  team.aliases?.forEach((alias) => map.set(alias.toLowerCase(), team.location));
+  return map;
+}, new Map<string, string>());
+
+function fallbackLocationForTeam(name?: string | null): string | undefined {
+  if (!name) return undefined;
+  return TEAM_LOCATION_LOOKUP.get(name.toLowerCase());
+}
+
+type LeagueStanding = {
+  team_id: number;
+  team_name: string;
+  team_city: string;
+  team_slug?: string | null;
+  team_abbreviation?: string | null;
+  conference?: string | null;
+  conference_rank?: number | null;
+  division?: string | null;
+  division_rank?: number | null;
+  wins: number;
+  losses: number;
+  win_pct: number;
+  record?: string | null;
+  home_record?: string | null;
+  road_record?: string | null;
+  last_ten?: string | null;
+  streak?: string | null;
+  eliminated_conference?: boolean | number | null;
 };
 
 async function fetchRecentGames(): Promise<ScoreCard[]> {
@@ -103,6 +125,7 @@ async function fetchRecentGames(): Promise<ScoreCard[]> {
     homeScore: game.home_team_score ?? 0,
     status: game.status ?? "Final",
     tip: new Date(game.date).toLocaleDateString(),
+    location: game.location ?? fallbackLocationForTeam(game.home_team_name) ?? "Venue TBA",
   }));
 }
 
@@ -123,29 +146,36 @@ async function fetchPlayerHighlights(): Promise<PlayerHighlight[]> {
     }));
 }
 
-async function fetchConferenceSnapshot(): Promise<ConferenceSnapshot[]> {
-  const seasonTeams = await nbaFetch<Team[]>(`/v1/teams?season=${DEFAULT_SEASON}`, { next: { revalidate: 3600 } });
-  const byAbbreviation = new Map<string, Team>();
-  seasonTeams.forEach((team) => {
-    if (team.abbreviation) {
-      byAbbreviation.set(team.abbreviation.toUpperCase(), team);
-    }
-  });
+async function fetchLeagueStandings(): Promise<LeagueStanding[]> {
+  return nbaFetch<LeagueStanding[]>(
+    `/v1/league_standings?season=${DEFAULT_SEASON}&league_id=00&season_type=Regular%20Season`,
+    { next: { revalidate: 900 } },
+  );
+}
 
-  const east: ConferenceSnapshot = { conference: "East", teams: [] };
-  const west: ConferenceSnapshot = { conference: "West", teams: [] };
+function formatStandingRecord(row: LeagueStanding): string {
+  return `${row.wins}-${row.losses}`;
+}
 
-  CURRENT_FRANCHISES.forEach((franchise) => {
-    const apiTeam = byAbbreviation.get(franchise.abbreviation.toUpperCase());
-    const card = franchise.conference === "East" ? east : west;
-    card.teams.push({
-      name: apiTeam ? `${apiTeam.city} ${apiTeam.name}` : franchise.name,
-      abbreviation: franchise.abbreviation,
-      division: apiTeam?.division ?? null,
-    });
-  });
+function formatStandingTeamName(row: LeagueStanding): string {
+  const full = `${row.team_city ?? ""} ${row.team_name ?? ""}`.trim();
+  return full || row.team_name || row.team_abbreviation || "—";
+}
 
-  return [east, west];
+function formatWinPercent(value?: number): string {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "—";
+  }
+  return value.toFixed(3);
+}
+
+function buildConferenceBuckets(rows: LeagueStanding[]) {
+  return ["East", "West"].map((label) => ({
+    conference: label,
+    teams: rows
+      .filter((row) => (row.conference ?? "").toLowerCase() === label.toLowerCase())
+      .sort((a, b) => (a.conference_rank ?? 99) - (b.conference_rank ?? 99)),
+  }));
 }
 
 const SectionTitle = ({ title, eyebrow }: { title: string; eyebrow: string }) => (
@@ -158,8 +188,8 @@ const SectionTitle = ({ title, eyebrow }: { title: string; eyebrow: string }) =>
 const HeroSection = () => (
   <section className="flex flex-col gap-10 text-center md:gap-16">
     <div>
-      <h1 className="pb-2 text-5xl tracking-[0.2em] text-blue-300/60">WELCOME TO ShAI</h1>
-      <p className="mt-4 text-base text-white/70 md:text-lg">
+      <h1 className="pb-2 text-5xl tracking-[0.2em] text-(--foreground)">WELCOME TO ShAI</h1>
+      <p className="mt-4 text-base text-(--foreground-muted)/70 md:text-lg">
         AI that speaks basketball: real-time stats, player insights, and predictive analytics powered by AI.
       </p>
     </div>
@@ -174,11 +204,35 @@ const HeroSection = () => (
 );
 
 export default async function HomePage() {
-  const [scores, players, conferences] = await Promise.all([
+  const [scores, players, leagueStandings] = await Promise.all([
     fetchRecentGames(),
     fetchPlayerHighlights(),
-    fetchConferenceSnapshot(),
+    fetchLeagueStandings(),
   ]);
+  const conferenceBuckets = buildConferenceBuckets(leagueStandings);
+  const conferences: LeagueStandingsConference[] = conferenceBuckets.map((bucket) => ({
+    id: bucket.conference.toLowerCase(),
+    title: `${bucket.conference} Conference`,
+    subtitle: bucket.teams.length === 0 ? "Awaiting data" : undefined,
+    teams: bucket.teams.map((team, index) => {
+      const rank = team.conference_rank ?? index + 1;
+      const name = formatStandingTeamName(team);
+      const slug = slugifySegment(name);
+      return {
+        id: team.team_id,
+        name,
+        record: formatStandingRecord(team),
+        standing: String(rank),
+        rank,
+        winPct: formatWinPercent(team.win_pct),
+        streak: team.streak ?? null,
+        lastTen: team.last_ten ?? null,
+        eliminatedConference: Boolean(team.eliminated_conference),
+        href: slug ? `/teams/${slug}` : undefined,
+      };
+    }),
+    emptyLabel: "Standings data unavailable.",
+  }));
 
   return (
     <>
@@ -188,24 +242,30 @@ export default async function HomePage() {
         <SectionTitle title="Recent Games" eyebrow="Live scores" />
         <div className="grid gap-4 md:grid-cols-3">
           {scores.map((game) => (
-            <article
+            <Link
               key={game.id}
-              className="rounded-3xl border border-white/10 bg-linear-to-br from-slate-900/80 to-slate-950/60 p-5 shadow-lg shadow-black/30"
+              href={`/boxscore/${game.id}`}
+              className="group block rounded-3xl border border-[color:var(--color-app-border)] bg-linear-to-br from-[color:var(--color-app-background-soft)] via-[color:var(--color-app-surface)] to-[color:var(--color-app-surface-soft)] p-5 text-[color:var(--color-app-foreground)] shadow-lg shadow-black/5 transition-all hover:border-[color:var(--color-app-border-strong)] hover:from-[color:rgba(var(--color-app-primary-rgb)_/_0.05)] hover:via-[color:rgba(var(--color-app-primary-rgb)_/_0.08)] hover:to-[color:rgba(var(--color-app-primary-light-rgb)_/_0.12)] hover:shadow-black/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-app-primary-soft)]"
             >
-              <div className="flex items-center justify-between text-xs uppercase tracking-[0.3em] text-white/40">
-                <span>{game.tip}</span>
+              <div className="flex flex-col gap-1 text-[0.65rem] uppercase tracking-[0.3em] text-[color:var(--color-app-foreground-muted)] sm:flex-row sm:items-center sm:justify-between">
+                <span className="text-base font-semibold normal-case tracking-normal text-[color:var(--color-app-foreground)]">
+                  {game.tip}
+                </span>
+                <p className="text-[0.65rem] font-medium uppercase tracking-[0.2em] text-[color:var(--color-app-foreground-muted)]">
+                  {game.location}
+                </p>
               </div>
               <div className="mt-4 space-y-3 text-lg font-semibold">
-                <div className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3">
+                <div className="flex items-center justify-between rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-soft)] px-4 py-3 transition group-hover:border-[color:var(--color-app-border-strong)] group-hover:bg-[color:var(--color-app-background-soft)]">
                   <span>{game.away}</span>
                   <span>{game.awayScore}</span>
                 </div>
-                <div className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3">
+                <div className="flex items-center justify-between rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-soft)] px-4 py-3 transition group-hover:border-[color:var(--color-app-border-strong)] group-hover:bg-[color:var(--color-app-background-soft)]">
                   <span>{game.home}</span>
                   <span>{game.homeScore}</span>
                 </div>
               </div>
-            </article>
+            </Link>
           ))}
         </div>
       </section>
@@ -239,22 +299,8 @@ export default async function HomePage() {
       </section>
 
       <section id="conference" className="mt-20">
-        <SectionTitle title="Conference Snapshot" eyebrow="Team directory" />
-        <div className="grid gap-6 md:grid-cols-2">
-          {conferences.map((snapshot) => (
-            <article key={snapshot.conference} className="rounded-3xl border border-white/10 bg-slate-900/60 p-6">
-              <p className="text-xs uppercase tracking-[0.35em] text-white/50">{snapshot.conference} Conference</p>
-              <ul className="mt-4 space-y-3 text-sm text-white/80">
-                {snapshot.teams.map((team) => (
-                  <li key={team.abbreviation} className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3">
-                    <span className="font-semibold text-white">{team.name}</span>
-                    <span className="text-white/60">{team.division ?? "—"}</span>
-                  </li>
-                ))}
-              </ul>
-            </article>
-          ))}
-        </div>
+        <SectionTitle title="League Standings" eyebrow="Team directory" />
+        <LeagueStandings conferences={conferences} />
       </section>
     </>
   );

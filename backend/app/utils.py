@@ -21,7 +21,11 @@ def validate_season(season: str) -> str:
     if not match:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={"code": "INVALID_SEASON", "message": "Season must be formatted as YYYY-YY.", "retryable": False},
+            detail={
+                "code": "INVALID_SEASON",
+                "message": "Season must be formatted as YYYY-YY.",
+                "retryable": False,
+            },
         )
     start_year = int(match.group("start"))
     end_suffix = int(match.group("end"))

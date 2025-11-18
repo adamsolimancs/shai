@@ -1,6 +1,8 @@
 import Link from "next/link";
 
+import { LeagueStandings, type LeagueStandingsConference } from "@/components/LeagueStandings";
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
+import { slugifySegment } from "@/lib/utils";
 
 type Team = {
   id: number;
@@ -27,6 +29,22 @@ type TeamStatsRow = {
   blocks?: number | null;
   turnovers?: number | null;
   plus_minus?: number | null;
+};
+
+type LeagueStanding = {
+  team_id: number;
+  team_name: string;
+  team_city: string;
+  conference?: string | null;
+  conference_rank?: number | null;
+  division?: string | null;
+  division_rank?: number | null;
+  wins: number;
+  losses: number;
+  win_pct: number;
+  streak?: string | null;
+  last_ten?: string | null;
+  eliminated_conference?: boolean | number | null;
 };
 
 type MetaResponse = {
@@ -124,6 +142,25 @@ function formatPercent(value: number | undefined, digits = 1): string {
   return `${(value * 100).toFixed(digits)}%`;
 }
 
+function formatWinRatio(value: number | undefined, digits = 3): string {
+  if (value === undefined || Number.isNaN(value)) {
+    return "—";
+  }
+  return value.toFixed(digits);
+}
+
+function formatStandingRecord(standing: LeagueStanding): string {
+  return `${standing.wins}-${standing.losses}`;
+}
+
+function formatStandingTeamName(standing: LeagueStanding, team?: Team): string {
+  if (team) {
+    return formatTeamName(team);
+  }
+  const full = `${standing.team_city ?? ""} ${standing.team_name ?? ""}`.trim();
+  return full || standing.team_name || "—";
+}
+
 function isNotFoundError(error: unknown): boolean {
   return error instanceof Error && (/404/.test(error.message) || /Not Found/i.test(error.message));
 }
@@ -192,6 +229,20 @@ async function fetchTeamStats(season: string, teamIds: number[]): Promise<TeamSt
   return perTeam.filter((row): row is TeamStatsRow => Boolean(row));
 }
 
+async function fetchLeagueStandingsData(season: string): Promise<LeagueStanding[]> {
+  try {
+    return await nbaFetch<LeagueStanding[]>(
+      `/v1/league_standings?season=${season}&league_id=00&season_type=Regular%20Season`,
+      { next: { revalidate: 900 } },
+    );
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return [];
+    }
+    throw error;
+  }
+}
+
 export default async function TeamsPage({ searchParams = {} }: { searchParams?: SearchParams }) {
   const requestedSeason = extractParam(searchParams, "season");
   const preferredSeason = isValidSeason(requestedSeason) ? requestedSeason : DEFAULT_SEASON;
@@ -207,10 +258,13 @@ export default async function TeamsPage({ searchParams = {} }: { searchParams?: 
   const currentTeams = teams.filter(isCurrentFranchise).sort(compareByCurrentOrder);
   const teamMap = new Map<number, Team>(currentTeams.map((team) => [team.id, team]));
 
-  const teamStats = await fetchTeamStats(
-    activeSeason,
-    currentTeams.map((team) => team.id),
-  );
+  const [teamStats, leagueStandings] = await Promise.all([
+    fetchTeamStats(
+      activeSeason,
+      currentTeams.map((team) => team.id),
+    ),
+    fetchLeagueStandingsData(activeSeason),
+  ]);
 
   const sortedTeams = [...currentTeams].sort((a, b) => formatTeamName(a).localeCompare(formatTeamName(b)));
 
@@ -222,23 +276,17 @@ export default async function TeamsPage({ searchParams = {} }: { searchParams?: 
   });
   const filteredStats = [...statsByTeamId.values()];
 
-  const standings = [...filteredStats]
-    .sort((a, b) => {
-      if (b.win_pct !== a.win_pct) return b.win_pct - a.win_pct;
-      if (b.wins !== a.wins) return b.wins - a.wins;
-      return a.losses - b.losses;
-    })
-    .map((row, index) => ({
-      rank: index + 1,
-      stats: row,
-      team: teamMap.get(row.team_id),
-    }));
   const buildConferenceRows = (key: string) =>
-    standings
-      .filter(({ team }) => (team?.conference ?? "").toLowerCase() === key)
-      .map((row, index) => ({ ...row, rank: index + 1 }));
+    leagueStandings
+      .filter((row) => (row.conference ?? "").toLowerCase() === key)
+      .sort((a, b) => (a.conference_rank ?? 99) - (b.conference_rank ?? 99))
+      .map((standing, index) => ({
+        rank: standing.conference_rank ?? index + 1,
+        standing,
+        team: teamMap.get(standing.team_id),
+      }));
 
-  const conferenceStandings = [
+  const conferenceStandings: LeagueStandingsConference[] = [
     {
       id: "east",
       title: "Eastern Conference",
@@ -249,7 +297,31 @@ export default async function TeamsPage({ searchParams = {} }: { searchParams?: 
       title: "Western Conference",
       rows: buildConferenceRows("west"),
     },
-  ];
+  ].map((group) => {
+    const subtitle = group.rows.length === 0 ? "Awaiting data" : undefined;
+    return {
+      id: group.id,
+      title: group.title,
+      subtitle,
+      teams: group.rows.map(({ rank, standing, team }) => {
+        const name = formatStandingTeamName(standing, team);
+        const slug = slugifySegment(name);
+        return {
+          id: standing.team_id,
+          name,
+          record: formatStandingRecord(standing),
+          standing: String(rank),
+          rank,
+          winPct: formatWinRatio(standing.win_pct),
+          streak: standing.streak ?? null,
+          lastTen: standing.last_ten ?? null,
+          eliminatedConference: Boolean(standing.eliminated_conference),
+          href: slug ? `/teams/${slug}` : undefined,
+        };
+      }),
+      emptyLabel: "Standings data isn't available yet for this season.",
+    };
+  });
 
   const assistToTurnover = (row: TeamStatsRow) => {
     const turnovers = row.turnovers ?? 0;
@@ -335,53 +407,14 @@ export default async function TeamsPage({ searchParams = {} }: { searchParams?: 
       <section className="space-y-6">
         <div>
           <p className="text-xs uppercase tracking-[0.4em] text-white/40">Season dashboard</p>
-          <h2 className="mt-2 text-2xl font-semibold text-white">Standings and pace-setters</h2>
-          <p className="mt-1 text-sm text-white/60">Wins, losses, and stat leaders for the {activeSeason} campaign.</p>
+          <h2 className="mt-2 text-2xl font-semibold text-white">{activeSeason} Standings</h2>
           {usingFallbackSeason && (
             <p className="mt-2 text-xs text-amber-200/80">
               Requested season {preferredSeason} isn&apos;t available yet. Showing {activeSeason} data instead.
             </p>
           )}
         </div>
-        <div className="grid gap-6 lg:grid-cols-2">
-          {conferenceStandings.map((conference) => (
-            <article key={conference.id} className="rounded-3xl border border-white/10 bg-slate-950/60 p-5">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h3 className="text-lg font-semibold text-white">{conference.title}</h3>
-                </div>
-                <span className="text-xs uppercase tracking-[0.3em] text-white/50">
-                  {conference.rows.length > 0 ? `${conference.rows.length} teams` : "Awaiting data"}
-                </span>
-              </div>
-              <div className="mt-4 space-y-2 text-sm text-white/80">
-                {conference.rows.length === 0 ? (
-                  <div className="rounded-2xl border border-dashed border-white/10 px-4 py-6 text-center text-white/60">
-                    Standings data isn&apos;t available yet for this season.
-                  </div>
-                ) : (
-                  conference.rows.map(({ rank, stats, team }) => (
-                    <div
-                      key={stats.team_id}
-                      className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3"
-                    >
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.3em] text-white/40">#{rank}</p>
-                        <p className="text-base font-semibold text-white">
-                          {team?.name ? formatTeamName(team) : stats.team_name}
-                        </p>
-                        <p className="text-white/60">
-                          {formatRecord(stats)} • {team?.division ?? "—"}
-                        </p>
-                      </div>
-                      <span className="text-2xl font-semibold text-white">{formatPercent(stats.win_pct, 1)}</span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </article>
-          ))}
-        </div>
+        <LeagueStandings conferences={conferenceStandings} className="lg:grid-cols-2" />
       </section>
 
       <section className="space-y-6">

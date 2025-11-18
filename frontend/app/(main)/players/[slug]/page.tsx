@@ -3,6 +3,8 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
+import { containsBannedTerm } from "@/lib/utils";
+import AwardsAccordion from "@/components/AwardsAccordion";
 
 type ResolutionPayload = {
   id: number;
@@ -67,6 +69,20 @@ type Player = {
   full_name: string;
 };
 
+type PlayerAward = {
+  season: string;
+  description: string;
+  team?: string | null;
+  conference?: string | null;
+  award_type?: string | null;
+  subtype1?: string | null;
+  subtype2?: string | null;
+  subtype3?: string | null;
+  month?: string | null;
+  week?: string | null;
+  all_nba_team_number?: number | null;
+};
+
 type PlayerProfile = {
   slug: string;
   playerId: number;
@@ -86,6 +102,8 @@ type PlayerProfile = {
   };
   careerSeasons: PlayerCareerStatsRow[];
   recentGames: PlayerGameLog[];
+  awards: PlayerAward[];
+  rings: number;
 };
 
 type SeasonStats = {
@@ -188,6 +206,64 @@ function createSeededGenerator(seedSource: string): () => number {
     return seed / 2 ** 32;
   };
 }
+
+const normalizeAwardSummary = (awards: PlayerAward[], ringCount: number) => {
+  const summary = {
+    allStar: 0,
+    allNba: 0,
+    allDefense: 0,
+    mvp: 0,
+    cpoy: 0,
+  };
+
+  awards.forEach((award) => {
+    const haystack = `${award.description ?? ""} ${award.award_type ?? ""}`.toLowerCase();
+    if (haystack.match(/all[-\s]?star/)) {
+      summary.allStar += 1;
+    }
+    if (haystack.match(/all[-\s]?nba/)) {
+      summary.allNba += 1;
+    }
+    if (haystack.match(/all[-\s]?(defense|defensive)/)) {
+      summary.allDefense += 1;
+    }
+    if (haystack.includes("clutch") || haystack.includes("cpoy")) {
+      summary.cpoy += 1;
+    }
+    const isFinals = haystack.includes("finals");
+    if ((haystack.includes("mvp") || haystack.includes("most valuable player")) && !isFinals) {
+      summary.mvp += 1;
+    }
+  });
+
+  const items: { label: string; count: number }[] = [];
+  if (summary.allStar) items.push({ label: "All-Star", count: summary.allStar });
+  if (summary.allNba) items.push({ label: "All-NBA", count: summary.allNba });
+  if (summary.allDefense) items.push({ label: "All-Defense", count: summary.allDefense });
+  if (summary.mvp) items.push({ label: "MVP", count: summary.mvp });
+  if (summary.cpoy) items.push({ label: "CPOY", count: summary.cpoy });
+  if (ringCount) items.push({ label: "Rings", count: ringCount });
+  return items;
+};
+
+const filterAwards = (awards: PlayerAward[]) =>
+  awards.filter((award) => {
+    const haystack = `${award.description ?? ""} ${award.award_type ?? ""}`.toLowerCase();
+    return !haystack.match(/player of the (week|month)|potw|potm/);
+  });
+
+const extractAllStarSeasons = (awards: PlayerAward[]) => {
+  const set = new Set<string>();
+  awards.forEach((award) => {
+    const haystack = `${award.description ?? ""} ${award.award_type ?? ""}`.toLowerCase();
+    if (haystack.match(/all[-\s]?star/)) {
+      if (award.season) {
+        set.add(award.season);
+      }
+    }
+  });
+  return set;
+};
 
 function computePerGameImpact(stats: SeasonStats): number {
   const scoring = stats.pts * 1.25;
@@ -363,13 +439,6 @@ function collapseCareerRows(rows: PlayerCareerStatsRow[]): PlayerCareerStatsRow[
   return [...bySeason.values()].sort((a, b) => b.season_id.localeCompare(a.season_id));
 }
 
-const BANNED_TERMS = ["fuck", "shit", "bitch", "cunt", "nigger", "nigga", "faggot", "coon"];
-
-function containsBannedTerm(input: string): boolean {
-  const normalized = input.toLowerCase();
-  return BANNED_TERMS.some((term) => normalized.includes(term));
-}
-
 async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfile | null> {
   if (!slug) {
     return null;
@@ -388,9 +457,19 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
       return null;
     }
 
-    const [career, gamelog] = await Promise.all([
+    const [career, gamelog, awards] = await Promise.all([
       nbaFetch<PlayerCareerStatsRow[]>(`/v1/players/${playerId}/career`, { next: { revalidate: 3600 } }),
       nbaFetch<PlayerGameLog[]>(`/v1/players/${playerId}/gamelog?season=${DEFAULT_SEASON}`, { next: { revalidate: 300 } }),
+      (async () => {
+        try {
+          return await nbaFetch<PlayerAward[]>(`/v1/players/${playerId}/awards`, { next: { revalidate: 3600 } });
+        } catch (awardError) {
+          if (process.env.NODE_ENV !== "production") {
+            console.error("Failed to load player awards", awardError);
+          }
+          return [] as PlayerAward[];
+        }
+      })(),
     ]);
 
     if (!career.length) {
@@ -398,11 +477,12 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
     }
 
     const seasonRow = selectSeasonRow(career, DEFAULT_SEASON);
+    const statsSeasonId = seasonRow?.season_id ?? DEFAULT_SEASON;
     let teamStats: TeamStatsRow[] = [];
     if (seasonRow?.team_id != null) {
       try {
         teamStats = await nbaFetch<TeamStatsRow[]>(
-          `/v1/teams/${seasonRow.team_id}/stats?season=${DEFAULT_SEASON}&measure=Base&per_mode=PerGame`,
+          `/v1/teams/${seasonRow.team_id}/stats?season=${statsSeasonId}&measure=Base&per_mode=PerGame`,
           { next: { revalidate: 1800 } },
         );
       } catch (error) {
@@ -442,6 +522,7 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
 
     const collapsedCareer = collapseCareerRows(career);
     const experienceSeasons = collapsedCareer.length;
+    const { championships } = estimateCareerAccolades(career);
 
     return {
       slug,
@@ -456,7 +537,7 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
       experience: experienceSeasons ? `${experienceSeasons} season${experienceSeasons === 1 ? "" : "s"}` : "Rookie",
       currentSeason: stats
         ? {
-          seasonId: seasonRow?.season_id ?? DEFAULT_SEASON,
+          seasonId: statsSeasonId,
           teamRecord,
           stats,
           insights: [
@@ -468,6 +549,8 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
         : undefined,
       careerSeasons: collapsedCareer,
       recentGames: gamelog.slice(0, 5),
+      awards: filterAwards(awards),
+      rings: championships,
     };
   } catch (error) {
     if (process.env.NODE_ENV !== "production") {
@@ -508,13 +591,13 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
 }
 
 const MissingPlayer = ({ name }: { name: string }) => (
-  <div className="flex min-h-[60vh] flex-col items-center justify-center space-y-4 text-center text-white">
-    <p className="text-xs uppercase tracking-[0.5em] text-white/40">Player lookup</p>
+  <div className="flex min-h-[60vh] flex-col items-center justify-center space-y-4 text-center text-[color:var(--color-app-foreground)]">
+    <p className="text-xs uppercase tracking-[0.5em] text-[color:rgba(var(--color-app-foreground-rgb),0.45)]">Player lookup</p>
     <h1 className="text-3xl font-semibold">Sorry, this player doesn&apos;t exist.</h1>
-    <p className="text-sm text-white/60">We couldn&apos;t locate a profile for &quot;{name}&quot;. Double-check the spelling or try another search.</p>
+    <p className="text-sm text-[color:var(--color-app-foreground-muted)]">We couldn&apos;t locate a profile for &quot;{name}&quot;. Double-check the spelling or try another search.</p>
     <Link
       href="/players"
-      className="rounded-full border border-white/20 px-5 py-2 text-sm font-semibold text-white transition hover:border-white/60"
+      className="rounded-full border border-[color:var(--color-app-border)] px-5 py-2 text-sm font-semibold text-[color:var(--color-app-foreground)] transition hover:border-[color:var(--color-app-border-strong)] hover:bg-[color:rgba(var(--color-app-foreground-rgb),0.05)]"
     >
       Back to player index
     </Link>
@@ -578,71 +661,113 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
     grade: gradeOptions[(Math.floor(seededRandom() * gradeOptions.length) + index) % gradeOptions.length],
     stats: generateMockStats(),
   }));
+  const awardSummary = normalizeAwardSummary(profile.awards, profile.rings);
+  const allStarSeasons = extractAllStarSeasons(profile.awards);
+  const renderSeasonLabel = (seasonId: string) => (
+    <span className="inline-flex items-center gap-1">
+      {seasonId}
+      {allStarSeasons.has(seasonId) ? (
+        <span className="text-[color:var(--color-app-primary)]" aria-label="All-Star season" title="All-Star season">
+          ★
+        </span>
+      ) : null}
+    </span>
+  );
 
   return (
     <>
       <div className="grid items-stretch gap-6 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
-        <section className="w-full rounded-2xl border border-white/10 bg-linear-to-br from-blue-600/30 via-slate-900/85 to-slate-950/85 px-5 py-5 shadow-xl shadow-blue-500/30">
-          <div className="flex h-full flex-col gap-4 text-white">
+        <section className="w-full rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface)] px-5 py-5 shadow-lg shadow-[rgba(10,31,68,0.08)]">
+          <div className="flex h-full flex-col gap-4 text-[color:var(--color-app-foreground)]">
             <div className="flex items-center gap-4">
-              <div className="shrink-0 rounded-full border border-white/20 bg-white/10 p-2 backdrop-blur">
+              <div className="shrink-0 rounded-full border border-[color:rgba(var(--color-app-foreground-rgb),0.15)] bg-[color:rgba(var(--color-app-foreground-rgb),0.08)] p-2 backdrop-blur">
                 <div
-                  className="h-28 w-28 rounded-full border border-white/40 bg-cover bg-center shadow-inner shadow-black/50 md:h-32 md:w-32"
+                  className="h-28 w-28 rounded-full border border-[color:rgba(var(--color-app-foreground-rgb),0.35)] bg-cover bg-center shadow-inner shadow-black/40 md:h-32 md:w-32"
                   style={{ backgroundImage: `url(${profile.headshot})` }}
                 />
               </div>
               <div>
-                <p className="text-[0.65rem] uppercase tracking-[0.45em] text-blue-200/70">
+                <p className="text-[0.65rem] uppercase tracking-[0.45em] text-[color:rgba(var(--color-app-primary-rgb),0.65)]">
                   {eyebrowText}
                 </p>
                 <h1 className="mt-2 text-3xl font-semibold md:text-4xl">
                   {profile.name}
-                  <span className="ml-2 text-base font-normal text-white/70">
+                  <span className="ml-2 text-base font-normal text-[color:rgba(var(--color-app-foreground-rgb),0.65)]">
                     {profile.teamAbbreviation ? `· ${profile.teamAbbreviation}` : ""}
                   </span>
                 </h1>
               </div>
             </div>
-            <p className="text-sm text-white/70">{profile.scoutingReport}</p>
+            <p className="text-sm text-[color:var(--color-app-foreground-muted)]">{profile.scoutingReport}</p>
             <div className="grid gap-3 sm:grid-cols-3">
               <InfoPill label="Age" value={profile.age ? `${profile.age}` : "—"} />
               <InfoPill label="Experience" value={profile.experience} />
               <InfoPill label="Team record" value={profile.currentSeason?.teamRecord ?? "—"} />
             </div>
-            <div className="flex items-center gap-4 rounded-2xl border border-white/10 bg-white/5 p-3">
-              <p className="text-[0.65rem] uppercase tracking-[0.4em] text-white/60">Career rating</p>
+            <div className="flex items-center gap-4 rounded-2xl border border-[color:var(--color-app-border)] bg-[color:rgba(var(--color-app-foreground-rgb),0.05)] p-3">
+              <p className="text-[0.65rem] uppercase tracking-[0.4em] text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">Career rating</p>
               <div className="flex flex-1 items-center gap-3">
-                <p className="text-3xl font-semibold text-white">{profile.rating}</p>
+                <p className="text-3xl font-semibold text-[color:var(--color-app-foreground)]">{profile.rating}</p>
                 <div className="flex-1">
-                  <div className="h-1.5 rounded-full bg-white/10">
-                    <div className="h-1.5 rounded-full bg-blue-400" style={{ width: `${Math.min(profile.rating, 100)}%` }} />
+                  <div className="h-1.5 rounded-full bg-[color:rgba(var(--color-app-foreground-rgb),0.15)]">
+                    <div className="h-1.5 rounded-full bg-[color:var(--color-app-primary)]" style={{ width: `${Math.min(profile.rating, 100)}%` }} />
                   </div>
-                  <p className="mt-1 text-[0.7rem] text-white/60">Per-game impact metric</p>
+                  <p className="mt-1 text-[0.7rem] text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">Per-game impact metric</p>
                 </div>
               </div>
             </div>
+            <div className="rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-background-soft)] p-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[0.65rem] uppercase tracking-[0.4em] text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">
+                  Career awards
+                </p>
+                {profile.awards.length > 0 ? (
+                  <span className="text-xs font-semibold text-[color:var(--color-app-foreground-muted)]">
+                    {profile.awards.length}
+                  </span>
+                ) : null}
+              </div>
+              {awardSummary.length > 0 ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {awardSummary.map((item) => (
+                    <span
+                      key={item.label}
+                      className="inline-flex items-center gap-1 rounded-full border border-[color:rgba(var(--color-app-foreground-rgb),0.15)] bg-[color:rgba(var(--color-app-foreground-rgb),0.05)] px-3 py-1 text-[0.75rem] font-medium text-[color:var(--color-app-foreground)]"
+                    >
+                      {item.label}
+                      <span className="text-[color:var(--color-app-foreground-muted)]">x{item.count}</span>
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+              {profile.awards.length === 0 ? (
+                <p className="mt-2 text-sm text-[color:var(--color-app-foreground-muted)]">No official league awards recorded.</p>
+              ) : (
+                <AwardsAccordion awards={profile.awards} />
+              )}
+            </div>
           </div>
         </section>
-        <aside className="flex h-full w-full flex-col rounded-2xl border border-white/10 bg-slate-950/80 p-5 text-white shadow-xl shadow-black/30">
+        <aside className="flex h-full w-full flex-col rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-elevated)] p-5 text-[color:var(--color-app-foreground)] shadow-xl shadow-[rgba(10,31,68,0.15)]">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-[0.6rem] uppercase tracking-[0.45em] text-white/50">Season</p>
+              <p className="text-[0.6rem] uppercase tracking-[0.45em] text-[color:rgba(var(--color-app-foreground-rgb),0.55)]">Season</p>
               <h2 className="text-xl font-semibold">Top Performances</h2>
             </div>
-            <span className="text-xs text-white/60">{profile.currentSeason?.seasonId ?? DEFAULT_SEASON}</span>
+            <span className="text-xs text-[color:rgba(var(--color-app-foreground-rgb),0.65)]">{profile.currentSeason?.seasonId ?? DEFAULT_SEASON}</span>
           </div>
           <div className="mt-4 flex-1 space-y-3">
             {topPerformances.map((perf, index) => (
               <div
                 key={`${perf.game}-${index}`}
-                className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3"
+                className="rounded-2xl border border-[color:var(--color-app-border)] bg-[color:rgba(var(--color-app-foreground-rgb),0.05)] px-4 py-3"
               >
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-xs uppercase tracking-[0.3em] text-white/60">{perf.game}</p>
-                    <p className="text-sm text-white/70">{perf.date}</p>
+                    <p className="text-xs uppercase tracking-[0.3em] text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">{perf.game}</p>
+                    <p className="text-sm text-[color:var(--color-app-foreground-muted)]">{perf.date}</p>
                   </div>
-                  <span className="rounded-full border border-white/20 px-3 py-1 text-sm font-semibold text-white/90">
+                  <span className="rounded-full border border-[color:rgba(var(--color-app-foreground-rgb),0.25)] px-3 py-1 text-sm font-semibold text-[color:var(--color-app-foreground)]">
                     {perf.grade}
                   </span>
                 </div>
@@ -650,9 +775,9 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
                   {perf.stats.map((stat) => (
                     <span
                       key={stat.label}
-                      className="rounded-full border border-white/10 bg-white/10 px-3 py-1 text-white/90"
+                      className="rounded-full border border-[color:rgba(var(--color-app-foreground-rgb),0.15)] bg-[color:rgba(var(--color-app-foreground-rgb),0.08)] px-3 py-1 text-[color:var(--color-app-foreground)]"
                     >
-                      <span className="text-white/60">{stat.label}</span>{" "}
+                      <span className="text-[color:var(--color-app-foreground-muted)]">{stat.label}</span>{" "}
                       <span className="font-semibold">{stat.value}</span>
                     </span>
                   ))}
@@ -669,9 +794,9 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
             eyebrow={eyebrowText}
             title={`${profile.currentSeason.seasonId} production`}
             rightSlot={
-              <div className="text-right text-white">
-                <p className="text-[0.6rem] uppercase tracking-[0.45em] text-white/60">Season rating</p>
-                <p className="text-5xl font-black leading-none text-white">{seasonRating}</p>
+              <div className="text-right text-[color:var(--color-app-foreground)]">
+                <p className="text-[0.6rem] uppercase tracking-[0.45em] text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">Season rating</p>
+                <p className="text-5xl font-black leading-none">{seasonRating}</p>
               </div>
             }
           />
@@ -684,22 +809,22 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
             <StatCard label="Minutes" value={profile.currentSeason.stats.mins} suffix="MPG" />
           </div>
           <div className="mt-10 grid gap-6 lg:grid-cols-2">
-            <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-6">
-              <p className="text-xs uppercase tracking-[0.4em] text-white/50">Recent games</p>
+            <div className="rounded-3xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface)] p-6">
+              <p className="text-xs uppercase tracking-[0.4em] text-[color:rgba(var(--color-app-foreground-rgb),0.55)]">Recent games</p>
               <div className="mt-4 space-y-4">
                 {profile.recentGames.length === 0 ? (
-                  <p className="text-sm text-white/60">No game logs yet for {DEFAULT_SEASON}.</p>
+                  <p className="text-sm text-[color:var(--color-app-foreground-muted)]">No game logs yet for {DEFAULT_SEASON}.</p>
                 ) : (
                   profile.recentGames.map((game) => (
                     <div
                       key={game.game_id}
-                      className="flex items-center justify-between rounded-2xl border border-white/5 bg-white/5 px-4 py-3 text-sm text-white/80"
+                      className="flex items-center justify-between rounded-2xl border border-[color:rgba(var(--color-app-foreground-rgb),0.12)] bg-[color:rgba(var(--color-app-foreground-rgb),0.04)] px-4 py-3 text-sm text-[color:var(--color-app-foreground)]"
                     >
                       <div>
-                        <p className="font-semibold text-white">{game.matchup}</p>
-                        <p className="text-xs text-white/50">{new Date(game.game_date).toLocaleDateString()}</p>
+                        <p className="font-semibold">{game.matchup}</p>
+                        <p className="text-xs text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">{new Date(game.game_date).toLocaleDateString()}</p>
                       </div>
-                      <div className="flex gap-4 text-right text-white">
+                      <div className="flex gap-4 text-right">
                         <span>{game.points} pts</span>
                         <span>{game.rebounds} reb</span>
                         <span>{game.assists} ast</span>
@@ -709,13 +834,13 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
                 )}
               </div>
             </div>
-            <div className="rounded-3xl border border-white/10 bg-slate-900/70 p-6">
-              <p className="text-xs uppercase tracking-[0.4em] text-white/50">Season insights</p>
+            <div className="rounded-3xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface)] p-6">
+              <p className="text-xs uppercase tracking-[0.4em] text-[color:rgba(var(--color-app-foreground-rgb),0.55)]">Season insights</p>
               <div className="mt-4 grid gap-4">
                 {profile.currentSeason.insights.map((insight) => (
-                  <div key={insight.label} className="rounded-2xl border border-white/5 bg-white/5 px-4 py-3">
-                    <p className="text-xs uppercase tracking-[0.3em] text-white/50">{insight.label}</p>
-                    <p className="mt-1 text-xl font-semibold text-white">{insight.value}</p>
+                  <div key={insight.label} className="rounded-2xl border border-[color:rgba(var(--color-app-foreground-rgb),0.12)] bg-[color:rgba(var(--color-app-foreground-rgb),0.04)] px-4 py-3">
+                    <p className="text-xs uppercase tracking-[0.3em] text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">{insight.label}</p>
+                    <p className="mt-1 text-xl font-semibold text-[color:var(--color-app-foreground)]">{insight.value}</p>
                   </div>
                 ))}
               </div>
@@ -726,9 +851,9 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
 
       <section className="mt-20">
         <SectionHeading eyebrow="Career resume" title="Season-by-season averages" />
-        <div className="overflow-x-auto rounded-3xl border border-white/10 bg-slate-950/60">
-          <table className="min-w-full divide-y divide-white/5 text-xs sm:text-sm">
-            <thead className="text-left text-[0.65rem] uppercase tracking-[0.35em] text-white/40 sm:text-[0.7rem]">
+        <div className="overflow-x-auto rounded-3xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-elevated)]">
+          <table className="min-w-full divide-y divide-[color:rgba(var(--color-app-foreground-rgb),0.08)] bg-[color:var(--color-app-surface)] text-xs text-[color:var(--color-app-foreground)] sm:text-sm">
+            <thead className="text-left text-[0.65rem] uppercase tracking-[0.35em] text-[color:rgba(var(--color-app-foreground-rgb),0.5)] sm:text-[0.7rem]">
               <tr>
                 <th className="px-4 py-3">Season</th>
                 <th className="px-4 py-3">Team</th>
@@ -742,10 +867,10 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
                 <th className="px-4 py-3">FT%</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-white/5 text-white/80">
+            <tbody className="divide-y divide-[color:rgba(var(--color-app-foreground-rgb),0.08)] text-[color:var(--color-app-foreground)]">
               {profile.careerSeasons.map((season) => (
-                <tr key={`avg-${season.season_id}-${season.team_abbreviation ?? "tot"}`} className="hover:bg-white/5">
-                  <td className="px-4 py-2 font-semibold text-white">{season.season_id}</td>
+                <tr key={`avg-${season.season_id}-${season.team_abbreviation ?? "tot"}`} className="hover:bg-[color:rgba(var(--color-app-foreground-rgb),0.04)]">
+                  <td className="px-4 py-2 font-semibold">{renderSeasonLabel(season.season_id)}</td>
                   <td className="px-4 py-2">{season.team_abbreviation ?? "—"}</td>
                   <td className="px-4 py-2">{formatPerGame(season.points, season.games_played)}</td>
                   <td className="px-4 py-2">{formatPerGame(season.rebounds, season.games_played)}</td>
@@ -764,9 +889,9 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
 
       <section className="mt-12">
         <SectionHeading eyebrow="Career resume" title="Season-by-season totals" />
-        <div className="overflow-x-auto rounded-3xl border border-white/10 bg-slate-950/60">
-          <table className="min-w-full divide-y divide-white/5 text-xs sm:text-sm">
-            <thead className="text-left text-[0.65rem] uppercase tracking-[0.3em] text-white/40 sm:text-[0.7rem]">
+        <div className="overflow-x-auto rounded-3xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-elevated)]">
+          <table className="min-w-full divide-y divide-[color:rgba(var(--color-app-foreground-rgb),0.08)] bg-[color:var(--color-app-surface)] text-xs text-[color:var(--color-app-foreground)] sm:text-sm">
+            <thead className="text-left text-[0.65rem] uppercase tracking-[0.3em] text-[color:rgba(var(--color-app-foreground-rgb),0.5)] sm:text-[0.7rem]">
               <tr>
                 <th className="px-4 py-3">Season</th>
                 <th className="px-4 py-3">Team</th>
@@ -779,10 +904,10 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
                 <th className="px-4 py-3">BLK</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-white/5 text-white/80">
+            <tbody className="divide-y divide-[color:rgba(var(--color-app-foreground-rgb),0.08)]">
               {profile.careerSeasons.map((season) => (
-                <tr key={`tot-${season.season_id}-${season.team_abbreviation ?? "tot"}`} className="hover:bg-white/5">
-                  <td className="px-4 py-2 font-semibold text-white">{season.season_id}</td>
+                <tr key={`tot-${season.season_id}-${season.team_abbreviation ?? "tot"}`} className="hover:bg-[color:rgba(var(--color-app-foreground-rgb),0.04)]">
+                  <td className="px-4 py-2 font-semibold">{renderSeasonLabel(season.season_id)}</td>
                   <td className="px-4 py-2">{season.team_abbreviation ?? "—"}</td>
                   <td className="px-4 py-2">{season.games_played}</td>
                   <td className="px-4 py-2">{formatInteger(season.minutes)}</td>
@@ -804,26 +929,26 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
 const SectionHeading = ({ eyebrow, title, rightSlot }: { eyebrow: string; title: string; rightSlot?: ReactNode }) => (
   <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
     <div>
-      <p className="text-xs uppercase tracking-[0.35em] text-blue-300/80">{eyebrow}</p>
-      <h2 className="mt-2 text-2xl font-semibold text-white">{title}</h2>
+      <p className="text-xs uppercase tracking-[0.35em] text-[color:rgba(var(--color-app-primary-rgb),0.65)]">{eyebrow}</p>
+      <h2 className="mt-2 text-2xl font-semibold text-[color:var(--color-app-foreground)]">{title}</h2>
     </div>
     {rightSlot ? <div className="flex-shrink-0">{rightSlot}</div> : null}
   </div>
 );
 
 const StatCard = ({ label, value, suffix }: { label: string; value: number; suffix: string }) => (
-  <article className="rounded-3xl border border-white/10 bg-slate-900/70 p-5 shadow-lg shadow-black/30">
-    <p className="text-xs uppercase tracking-[0.3em] text-white/50">{label}</p>
-    <p className="mt-3 text-3xl font-semibold text-white">
+  <article className="rounded-3xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface)] p-5 shadow-lg shadow-[rgba(10,31,68,0.1)]">
+    <p className="text-xs uppercase tracking-[0.3em] text-[color:rgba(var(--color-app-foreground-rgb),0.55)]">{label}</p>
+    <p className="mt-3 text-3xl font-semibold text-[color:var(--color-app-foreground)]">
       {value.toFixed(1)}
-      <span className="ml-1 text-sm text-white/60">{suffix}</span>
+      <span className="ml-1 text-sm text-[color:var(--color-app-foreground-muted)]">{suffix}</span>
     </p>
   </article>
 );
 
 const InfoPill = ({ label, value }: { label: string; value: string }) => (
-  <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/70">
-    <p className="text-xs uppercase tracking-[0.3em] text-white/50">{label}</p>
-    <p className="mt-1 text-base font-semibold text-white">{value}</p>
+  <div className="rounded-2xl border border-[color:var(--color-app-border)] bg-[color:rgba(var(--color-app-foreground-rgb),0.04)] px-4 py-3 text-sm text-[color:var(--color-app-foreground-muted)]">
+    <p className="text-xs uppercase tracking-[0.3em] text-[color:rgba(var(--color-app-foreground-rgb),0.55)]">{label}</p>
+    <p className="mt-1 text-base font-semibold text-[color:var(--color-app-foreground)]">{value}</p>
   </div>
 );

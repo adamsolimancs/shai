@@ -119,14 +119,6 @@ export default async function NewsPage() {
         <div>
           <p className="text-xs uppercase tracking-[0.5em] text-blue-300/80">League notebook</p>
           <h1 className="mt-3 text-4xl font-semibold text-white">Newsworthy runs, powered by data</h1>
-          <p className="mt-2 max-w-2xl text-sm text-white/70">
-            Real headlines scraped from ESPN, SportsCenter, and CBS Sports alongside tempo metrics from the scoring feeds. Use this
-            feed to brief a broadcast, prep for a podcast hit, or keep tabs on trend lines without hopping between tabs.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-3 text-xs text-white/60">
-          <span className="rounded-full border border-white/10 px-4 py-1">Season {DEFAULT_SEASON}</span>
-          <span className="rounded-full border border-white/10 px-4 py-1">Stories refresh from live scrapers every few minutes</span>
         </div>
       </header>
 
@@ -137,7 +129,6 @@ export default async function NewsPage() {
               <p className="text-xs uppercase tracking-[0.4em] text-white/40">Top stories</p>
               <h2 className="mt-2 text-2xl font-semibold text-white">Instant recaps & talking points</h2>
             </div>
-            <span className="text-xs uppercase tracking-[0.3em] text-white/60">Sourced from ESPN · SportsCenter · CBS via /v1/news</span>
           </div>
           {stories.length === 0 ? (
             <div className="rounded-3xl border border-white/10 bg-slate-950/60 p-10 text-center text-white/70">
@@ -167,21 +158,6 @@ export default async function NewsPage() {
           )}
         </div>
         <aside className="space-y-6">
-          <article className="rounded-3xl border border-white/10 bg-slate-950/60 p-5">
-            <p className="text-xs uppercase tracking-[0.4em] text-white/40">League pulse</p>
-            <ul className="mt-4 space-y-4 text-sm text-white/80">
-              {pulseMetrics.map((metric) => (
-                <li key={metric.label} className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                  <p className="text-xs uppercase tracking-[0.3em] text-white/50">{metric.label}</p>
-                  <p className="mt-2 text-2xl font-semibold text-white">{metric.value}</p>
-                  <p className="text-xs text-white/60">{metric.detail}</p>
-                </li>
-              ))}
-            </ul>
-            <p className="mt-4 text-xs text-white/60">
-              Coverage window spans {pulseAggregate.dates.size || "n/a"} unique dates from the latest response.
-            </p>
-          </article>
           <article className="rounded-3xl border border-white/10 bg-slate-950/60 p-5">
             <p className="text-xs uppercase tracking-[0.4em] text-white/40">Keep exploring</p>
             <div className="mt-4 space-y-3">

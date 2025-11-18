@@ -118,7 +118,7 @@ export default function HeroSearch() {
           {isPending && (
             <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" aria-hidden="true" />
           )}
-          <span>{isPending ? "Loading" : "Search"}</span>
+          <span className="text-background">{isPending ? "Loading" : "Search"}</span>
         </button>
       </div>
       <div className="mt-4 flex flex-wrap justify-center gap-3 text-xs text-[color:var(--color-app-foreground-muted)]">
