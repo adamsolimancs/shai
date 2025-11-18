@@ -245,20 +245,22 @@ export default async function HomePage() {
             <Link
               key={game.id}
               href={`/boxscore/${game.id}`}
-              className="group block rounded-3xl border border-white/10 bg-linear-to-br from-[var(--color-app-background)] via-[var(--color-app-surface)] to-[var(--color-app-surface-soft)] p-5 shadow-lg shadow-black/10 transition-all hover:border-[color:var(--color-app-border-strong)] hover:from-[color:rgba(var(--color-app-primary-rgb)_/_0.08)] hover:via-[color:rgba(var(--color-app-primary-rgb)_/_0.12)] hover:to-[color:rgba(var(--color-app-primary-light-rgb)_/_0.15)] hover:shadow-black/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-app-primary-soft)]"
+              className="group block rounded-3xl border border-[color:var(--color-app-border)] bg-linear-to-br from-[color:var(--color-app-background-soft)] via-[color:var(--color-app-surface)] to-[color:var(--color-app-surface-soft)] p-5 text-[color:var(--color-app-foreground)] shadow-lg shadow-black/5 transition-all hover:border-[color:var(--color-app-border-strong)] hover:from-[color:rgba(var(--color-app-primary-rgb)_/_0.05)] hover:via-[color:rgba(var(--color-app-primary-rgb)_/_0.08)] hover:to-[color:rgba(var(--color-app-primary-light-rgb)_/_0.12)] hover:shadow-black/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-app-primary-soft)]"
             >
-              <div className="flex items-center justify-between text-xs uppercase tracking-[0.3em] text-white/40">
-                <span className="text-foreground">{game.tip}</span>
-                <p className="mt-1 text-xs font-medium uppercase tracking-[0.2em] text-[color:var(--color-app-foreground-muted)]">
+              <div className="flex flex-col gap-1 text-[0.65rem] uppercase tracking-[0.3em] text-[color:var(--color-app-foreground-muted)] sm:flex-row sm:items-center sm:justify-between">
+                <span className="text-base font-semibold normal-case tracking-normal text-[color:var(--color-app-foreground)]">
+                  {game.tip}
+                </span>
+                <p className="text-[0.65rem] font-medium uppercase tracking-[0.2em] text-[color:var(--color-app-foreground-muted)]">
                   {game.location}
                 </p>
               </div>
               <div className="mt-4 space-y-3 text-lg font-semibold">
-                <div className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3 transition group-hover:bg-white/10">
+                <div className="flex items-center justify-between rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-soft)] px-4 py-3 transition group-hover:border-[color:var(--color-app-border-strong)] group-hover:bg-[color:var(--color-app-background-soft)]">
                   <span>{game.away}</span>
                   <span>{game.awayScore}</span>
                 </div>
-                <div className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3 transition group-hover:bg-white/10">
+                <div className="flex items-center justify-between rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-soft)] px-4 py-3 transition group-hover:border-[color:var(--color-app-border-strong)] group-hover:bg-[color:var(--color-app-background-soft)]">
                   <span>{game.home}</span>
                   <span>{game.homeScore}</span>
                 </div>

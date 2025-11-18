@@ -203,6 +203,40 @@ class PlayerCareerStatsRow(BaseModel):
     free_throw_pct: float | None = None
 
 
+class PlayerAward(BaseModel):
+    season: str
+    description: str
+    team: str | None = None
+    conference: str | None = None
+    award_type: str | None = None
+    subtype1: str | None = None
+    subtype2: str | None = None
+    subtype3: str | None = None
+    month: str | None = None
+    week: str | None = None
+    all_nba_team_number: int | None = None
+
+
+class TeamDetail(BaseModel):
+    team_id: int
+    abbreviation: str | None = None
+    nickname: str | None = None
+    city: str | None = None
+    year_founded: int | None = None
+    arena: str | None = None
+    arena_capacity: int | None = None
+    owner: str | None = None
+    general_manager: str | None = None
+    head_coach: str | None = None
+    dleague_affiliation: str | None = None
+    championships: list[str]
+    conference_titles: list[str]
+    division_titles: list[str]
+    hall_of_famers: list[str]
+    retired_numbers: list[str]
+    social_sites: dict[str, str]
+
+
 class ResolveRequest(BaseModel):
     player: str | None = None
     team: str | None = None

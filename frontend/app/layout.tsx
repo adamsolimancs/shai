@@ -6,6 +6,7 @@ import { auth, signOut } from "@/auth";
 import "./globals.css";
 import ShinyText from "@/components/ShinyText";
 import HeaderNavCluster, { HeaderSearchBar } from "@/components/HeaderNavCluster";
+import ThemeToggle from "@/components/ThemeToggle";
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://www.shaistats.com"),
@@ -28,7 +29,7 @@ export const metadata: Metadata = {
     siteName: "ShAI",
     images: [
       {
-        url: "/aiball.png",
+        url: "/shai-logo.png",
         width: 1200,
         height: 630,
         alt: "ShAI dashboard preview",
@@ -43,7 +44,7 @@ export const metadata: Metadata = {
     creator: "@ShAIStats",
     title: "ShAI – NBA Scores, Stats, and AI Insights",
     description: "Live NBA data, AI-powered scouting reports, and curated analysis.",
-    images: ["/aiball.png"],
+    images: ["/shai-logo.png"],
   },
   robots: {
     index: true,
@@ -102,7 +103,7 @@ const SiteHeader = async () => {
                 width={48}
                 height={48}
                 priority
-                className="h-12 w-12 rounded-full border border-[color:var(--color-app-border)] bg-[#f7f0e8] object-contain p-px shadow-sm"
+                className="h-12 w-12 rounded-full border border-[color:var(--color-app-border)] bg-[color:var(--color-app-logo-badge)] object-contain p-px shadow-sm"
               />
               <span className="text-lg font-bold tracking-[0.10em] text-[var(--color-app-foreground)] md:text-xl">ShAI</span>
             </Link>
@@ -178,11 +179,14 @@ const SiteFooter = () => {
             </Link>
           </div>
         </div>
-        <div className="mt-8 flex flex-col gap-3 text-xs text-[color:var(--color-app-foreground-muted)] sm:flex-row sm:items-center sm:justify-between">
-          <p>© {currentYear} ShAI. All rights reserved.</p>
-          <p>This project is not affiliated with, endorsed by, or associated with the National Basketball Association
-            nor Shai Gilgeous-Alexander.
-          </p>
+        <div className="mt-8 flex flex-col gap-4 text-xs text-[color:var(--color-app-foreground-muted)] sm:flex-row sm:items-center sm:justify-between">
+          <div className="space-y-1">
+            <p>© {currentYear} ShAI. All rights reserved.</p>
+            <p>
+              This project is not affiliated with, endorsed by, or associated with the National Basketball Association nor Shai Gilgeous-Alexander.
+            </p>
+          </div>
+          <ThemeToggle />
         </div>
       </div>
     </footer>

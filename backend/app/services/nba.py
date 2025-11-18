@@ -20,9 +20,11 @@ from nba_api.stats.endpoints import (
     leaguedashteamstats,
     leaguegamefinder,
     leaguestandingsv3,
+    playerawards,
     playercareerstats,
     playergamelog,
     shotchartdetail,
+    teamdetails,
 )
 from pydantic import ValidationError
 
@@ -36,6 +38,7 @@ from ..schemas import (
     LeagueStanding,
     MetaResponse,
     Player,
+    PlayerAward,
     PlayerCareerStatsRow,
     PlayerGameLog,
     PlayerStatsRow,
@@ -44,6 +47,7 @@ from ..schemas import (
     ShotLocation,
     Team,
     TeamGameRow,
+    TeamDetail,
     TeamStatsRow,
 )
 from ..utils import paginate, validate_season
@@ -283,6 +287,88 @@ class NBAStatsClient:
         rows, cache_meta = await self._cached_call(key, AGGREGATE_TTL, fetch)
         stats = [self._normalize_career_row(row) for row in rows]
         return ServiceResult([PlayerCareerStatsRow(**item) for item in stats], cache_meta)
+
+    async def get_player_awards(self, player_id: int) -> ServiceResult:
+        key = f"player_awards:{player_id}"
+
+        def fetch() -> list[dict[str, Any]]:
+            endpoint = playerawards.PlayerAwards(player_id=player_id)
+            df = endpoint.get_data_frames()[0]
+            return cast(list[dict[str, Any]], df.to_dict("records"))
+
+        rows, cache_meta = await self._cached_call(key, AGGREGATE_TTL, fetch)
+        awards: list[PlayerAward] = []
+        for row in rows:
+            try:
+                normalized = self._normalize_player_award(row)
+                awards.append(PlayerAward(**normalized))
+            except (KeyError, TypeError, ValueError, ValidationError) as exc:
+                logger.warning(
+                    "Skipping malformed player award row",
+                    extra={"error": str(exc), "row": row},
+                )
+                continue
+        return ServiceResult(awards, cache_meta)
+
+    async def get_team_details(self, team_id: int) -> ServiceResult:
+        key = f"team_details:{team_id}"
+
+        def fetch() -> dict[str, list[dict[str, Any]]]:
+            endpoint = teamdetails.TeamDetails(team_id=team_id)
+            return {
+                "background": self._dataset_to_rows(endpoint.team_background),
+                "championships": self._dataset_to_rows(endpoint.team_awards_championships),
+                "conference": self._dataset_to_rows(endpoint.team_awards_conf),
+                "division": self._dataset_to_rows(endpoint.team_awards_div),
+                "hof": self._dataset_to_rows(endpoint.team_hof),
+                "retired": self._dataset_to_rows(endpoint.team_retired),
+                "social": self._dataset_to_rows(endpoint.team_social_sites),
+            }
+
+        data, cache_meta = await self._cached_call(key, AGGREGATE_TTL, fetch)
+        background = data.get("background", [])
+        info = background[0] if background else {}
+
+        def format_award_rows(rows: list[dict[str, Any]]) -> list[str]:
+            formatted = []
+            for row in rows:
+                year = str(row.get("YEARAWARDED") or row.get("YEAR") or "").strip()
+                opponent = (row.get("OPPOSITETEAM") or "").strip()
+                formatted.append(year if not opponent else f"{year} vs {opponent}")
+            return [item for item in formatted if item.strip()]
+
+        detail = TeamDetail(
+            team_id=int(team_id),
+            abbreviation=info.get("ABBREVIATION"),
+            nickname=info.get("NICKNAME"),
+            city=info.get("CITY"),
+            year_founded=self._safe_int(info.get("YEARFOUNDED")) or None,
+            arena=info.get("ARENA"),
+            arena_capacity=self._safe_int(info.get("ARENACAPACITY")) or None,
+            owner=info.get("OWNER"),
+            general_manager=info.get("GENERALMANAGER"),
+            head_coach=info.get("HEADCOACH"),
+            dleague_affiliation=info.get("DLEAGUEAFFILIATION"),
+            championships=format_award_rows(data.get("championships", [])),
+            conference_titles=format_award_rows(data.get("conference", [])),
+            division_titles=format_award_rows(data.get("division", [])),
+            hall_of_famers=[row.get("PLAYER") for row in data.get("hof", []) if row.get("PLAYER")],
+            retired_numbers=[
+                "{}{}".format(
+                    (row.get("PLAYER") or "").strip(),
+                    f" #{row.get('JERSEY')}" if row.get("JERSEY") else "",
+                ).strip()
+                for row in data.get("retired", [])
+                if row.get("PLAYER")
+            ],
+            social_sites={
+                str((row.get("ACCOUNTTYPE") or "").lower()): row.get("WEBSITE_LINK")
+                for row in data.get("social", [])
+                if row.get("WEBSITE_LINK")
+            },
+        )
+
+        return ServiceResult(detail, cache_meta)
 
     async def get_boxscore(self, game_id: str, kind: str) -> ServiceResult:
         key = f"boxscore:{kind}:{game_id}"
@@ -760,6 +846,48 @@ class NBAStatsClient:
                 self._safe_float(row.get("FT_PCT")) if row.get("FT_PCT") is not None else None
             ),
         }
+
+    def _normalize_player_award(self, row: dict[str, Any]) -> dict[str, Any]:
+        season = (row.get("SEASON") or "").strip()
+        description = (row.get("DESCRIPTION") or "").strip()
+        if not season or not description:
+            raise ValueError("Player award row missing season or description")
+
+        def clean(value: Any) -> str | None:
+            if value in (None, "", " "):
+                return None
+            text = str(value).strip()
+            return text or None
+
+        def clean_int(value: Any) -> int | None:
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                return None
+            return parsed
+
+        return {
+            "season": season,
+            "description": description,
+            "team": clean(row.get("TEAM")),
+            "conference": clean(row.get("CONFERENCE")),
+            "award_type": clean(row.get("TYPE")),
+            "subtype1": clean(row.get("SUBTYPE1")),
+            "subtype2": clean(row.get("SUBTYPE2")),
+            "subtype3": clean(row.get("SUBTYPE3")),
+            "month": clean(row.get("MONTH")),
+            "week": clean(row.get("WEEK")),
+            "all_nba_team_number": clean_int(row.get("ALL_NBA_TEAM_NUMBER")),
+        }
+
+    def _dataset_to_rows(self, dataset: Any) -> list[dict[str, Any]]:
+        payload = dataset.get_dict()
+        headers: list[Any] = payload.get("headers") or []
+        rows: list[list[Any]] = payload.get("data") or []
+        normalized: list[dict[str, Any]] = []
+        for row in rows:
+            normalized.append({str(headers[idx]): row[idx] for idx in range(min(len(headers), len(row)))})
+        return normalized
 
     def _resolution_payload(self, resolution: Resolution | None) -> ResolutionPayload | None:
         if not resolution:

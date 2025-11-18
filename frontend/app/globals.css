@@ -4,61 +4,118 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --color-app-background: #f8f4ea;
-  --color-app-background-soft: #f2ebda;
-  --color-app-surface: #ede2cf;
-  --color-app-surface-soft: #e4d5bb;
-  --color-app-surface-elevated: rgba(255, 255, 255, 0.92);
-  --color-app-surface-rgb: 237 226 207;
-  --color-app-border: rgba(10, 31, 68, 0.15);
-  --color-app-border-strong: rgba(10, 31, 68, 0.3);
+  --color-app-background: #f4ead6;
+  --color-app-background-soft: #ede0c7;
+  --color-app-surface: #f1e6d3;
+  --color-app-surface-soft: #eedfc8;
+  --color-app-surface-elevated: rgba(252, 245, 234, 0.95);
+  --color-app-surface-rgb: 241 230 211;
+  --color-app-border: rgba(10, 31, 68, 0.18);
+  --color-app-border-strong: rgba(10, 31, 68, 0.36);
   --color-app-foreground: #0a1f44;
   --color-app-foreground-rgb: 10 31 68;
-  --color-app-foreground-muted: rgba(10, 31, 68, 0.7);
+  --color-app-foreground-muted: rgba(10, 31, 68, 0.68);
   --color-app-primary: #0f3d91;
   --color-app-primary-rgb: 15 61 145;
   --color-app-primary-light: #3c63b8;
   --color-app-primary-light-rgb: 60 99 184;
   --color-app-primary-hover: #164fab;
-  --color-app-primary-soft: rgba(15, 61, 145, 0.15);
-  --color-app-gradient-start: #fffdf7;
-  --color-app-gradient-mid: #f8f1e3;
-  --color-app-gradient-end: #f1e3c8;
-  --color-app-shadow-strong: 0 25px 55px rgba(10, 31, 68, 0.15);
+  --color-app-primary-soft: rgba(15, 61, 145, 0.12);
+  --color-app-gradient-start: #fbf2e0;
+  --color-app-gradient-mid: #f6eede;
+  --color-app-gradient-end: #efe2cd;
+  --color-app-shadow-strong: 0 25px 55px rgba(133, 101, 59, 0.28);
   --font-geist-sans: "Inter", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   --font-geist-mono: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
   --radius: 0.625rem;
-  --background: #f8f4ea;
+  --background: #f4ead6;
   --foreground: #0a1f44;
-  --card: #fdf9f0;
+  --card: #fbf4e7;
   --card-foreground: #0a1f44;
-  --popover: #fffdf7;
+  --popover: #f8ecd7;
   --popover-foreground: #0a1f44;
   --primary: #0f3d91;
-  --primary-foreground: #fdf9f0;
-  --secondary: #e8ddd0;
+  --primary-foreground: #f4ead6;
+  --secondary: #efe2cf;
   --secondary-foreground: #0a1f44;
-  --muted: #e9e0cc;
-  --muted-foreground: rgba(10, 31, 68, 0.7);
-  --accent: #ede5d2;
+  --muted: #ecdec9;
+  --muted-foreground: rgba(10, 31, 68, 0.68);
+  --accent: #f7efe1;
   --accent-foreground: #0a1f44;
   --destructive: #b93836;
-  --border: rgba(10, 31, 68, 0.2);
-  --input: rgba(10, 31, 68, 0.2);
+  --border: rgba(10, 31, 68, 0.22);
+  --input: rgba(10, 31, 68, 0.22);
   --ring: rgba(10, 31, 68, 0.45);
   --chart-1: #0f3d91;
   --chart-2: #1557a2;
   --chart-3: #1f6cb0;
   --chart-4: #d88a36;
   --chart-5: #b86b22;
-  --sidebar: #f8f4ea;
+  --sidebar: #f5edd8;
   --sidebar-foreground: #0a1f44;
   --sidebar-primary: #0f3d91;
-  --sidebar-primary-foreground: #fdf9f0;
-  --sidebar-accent: #e4d5bb;
+  --sidebar-primary-foreground: #f4ead6;
+  --sidebar-accent: #eddcc3;
   --sidebar-accent-foreground: #0a1f44;
-  --sidebar-border: rgba(10, 31, 68, 0.1);
-  --sidebar-ring: rgba(10, 31, 68, 0.25);
+  --sidebar-border: rgba(10, 31, 68, 0.15);
+  --sidebar-ring: rgba(10, 31, 68, 0.3);
+  --color-app-logo-badge: #fdf6ea;
+}
+
+:root.dark {
+  --color-app-background: #061432;
+  --color-app-background-soft: #0a1f44;
+  --color-app-surface: #0b244f;
+  --color-app-surface-soft: #0e275b;
+  --color-app-surface-elevated: rgba(10, 31, 68, 0.92);
+  --color-app-surface-rgb: 11 36 79;
+  --color-app-border: rgba(247, 239, 221, 0.22);
+  --color-app-border-strong: rgba(247, 239, 221, 0.38);
+  --color-app-foreground: #f5edd8;
+  --color-app-foreground-rgb: 245 237 216;
+  --color-app-foreground-muted: rgba(245, 237, 216, 0.75);
+  --color-app-primary: #f5d7a4;
+  --color-app-primary-rgb: 245 215 164;
+  --color-app-primary-light: #ffe1b5;
+  --color-app-primary-light-rgb: 255 225 181;
+  --color-app-primary-hover: #f0c783;
+  --color-app-primary-soft: rgba(245, 215, 164, 0.2);
+  --color-app-gradient-start: #061432;
+  --color-app-gradient-mid: #0a1f44;
+  --color-app-gradient-end: #122e66;
+  --color-app-shadow-strong: 0 25px 55px rgba(0, 0, 0, 0.55);
+  --background: #061432;
+  --foreground: #f5edd8;
+  --card: #0c204d;
+  --card-foreground: #f5edd8;
+  --popover: #0a1b43;
+  --popover-foreground: #f5edd8;
+  --primary: #f5d7a4;
+  --primary-foreground: #061432;
+  --secondary: #13234c;
+  --secondary-foreground: #f5edd8;
+  --muted: #122144;
+  --muted-foreground: rgba(245, 237, 216, 0.75);
+  --accent: #182f5e;
+  --accent-foreground: #f5edd8;
+  --destructive: #f3958f;
+  --border: rgba(247, 239, 221, 0.28);
+  --input: rgba(247, 239, 221, 0.28);
+  --ring: rgba(245, 215, 164, 0.45);
+  --chart-1: #f5d7a4;
+  --chart-2: #d9b677;
+  --chart-3: #b39252;
+  --chart-4: #84a6ff;
+  --chart-5: #4f7fd1;
+  --sidebar: #061432;
+  --sidebar-foreground: #f5edd8;
+  --sidebar-primary: #f5d7a4;
+  --sidebar-primary-foreground: #061432;
+  --sidebar-accent: #0d1d45;
+  --sidebar-accent-foreground: #f5edd8;
+  --sidebar-border: rgba(247, 239, 221, 0.2);
+  --sidebar-ring: rgba(245, 215, 164, 0.4);
+  --color-app-logo-badge: #f5edd8;
 }
 
 @theme inline {
@@ -99,23 +156,6 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --color-app-background: #f8f4ea;
-    --color-app-background-soft: #f2ebda;
-    --color-app-surface: #ede2cf;
-    --color-app-surface-soft: #e4d5bb;
-    --color-app-surface-elevated: rgba(255, 255, 255, 0.92);
-    --color-app-border: rgba(10, 31, 68, 0.15);
-    --color-app-border-strong: rgba(10, 31, 68, 0.3);
-    --color-app-foreground: #0a1f44;
-    --color-app-foreground-muted: rgba(10, 31, 68, 0.7);
-    --color-app-primary: #0f3d91;
-    --color-app-primary-hover: #164fab;
-    --color-app-primary-soft: rgba(15, 61, 145, 0.15);
-  }
 }
 
 body {

@@ -24,12 +24,14 @@ from ..schemas import (
     NewsArticle,
     PaginationMeta,
     Player,
+    PlayerAward,
     PlayerCareerStatsRow,
     PlayerGameLog,
     PlayerStatsRow,
     ResolveResult,
     ShotLocation,
     Team,
+    TeamDetail,
     TeamGameRow,
     TeamStatsRow,
 )
@@ -187,6 +189,16 @@ async def player_career(
     return success(request, result.data, cache=result.cache)
 
 
+@router.get("/players/{player_id}/awards", response_model=Envelope[list[PlayerAward]])
+async def player_awards(
+    request: Request,
+    client: NBAClientDep,
+    player_id: int,
+) -> Envelope[list[PlayerAward]]:
+    result = await client.get_player_awards(player_id)
+    return success(request, result.data, cache=result.cache)
+
+
 @router.get("/games/{game_id}/boxscore", response_model=Envelope[list[BoxScoreLine]])
 async def game_boxscore(
     request: Request,
@@ -212,6 +224,16 @@ async def player_shots(
     end = parse_date(date_to, "date_to")
     validate_date_range(start, end)
     result = await client.get_shots(player_id, season, team_id, start, end)
+    return success(request, result.data, cache=result.cache)
+
+
+@router.get("/teams/{team_id}/details", response_model=Envelope[TeamDetail])
+async def team_details(
+    request: Request,
+    client: NBAClientDep,
+    team_id: int,
+) -> Envelope[TeamDetail]:
+    result = await client.get_team_details(team_id)
     return success(request, result.data, cache=result.cache)
 
 

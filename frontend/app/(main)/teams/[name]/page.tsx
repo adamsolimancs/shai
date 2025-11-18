@@ -1,7 +1,39 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { nbaFetch } from "@/lib/nbaApi";
 import { unslugifySegment } from "@/lib/utils";
+
+type ResolutionPayload = {
+  id: number;
+  name: string;
+  abbreviation?: string | null;
+  confidence: number;
+};
+
+type ResolveResult = {
+  team?: ResolutionPayload | null;
+};
+
+type TeamDetail = {
+  team_id: number;
+  abbreviation?: string | null;
+  nickname?: string | null;
+  city?: string | null;
+  year_founded?: number | null;
+  arena?: string | null;
+  arena_capacity?: number | null;
+  owner?: string | null;
+  general_manager?: string | null;
+  head_coach?: string | null;
+  dleague_affiliation?: string | null;
+  championships: string[];
+  conference_titles: string[];
+  division_titles: string[];
+  hall_of_famers: string[];
+  retired_numbers: string[];
+  social_sites: Record<string, string>;
+};
 
 type TeamMetric = {
   label: string;
@@ -23,6 +55,7 @@ type TeamScheduleEntry = {
 
 type TeamProfile = {
   slug: string;
+  teamId: number;
   name: string;
   location: string;
   record: string;
@@ -35,11 +68,19 @@ type TeamProfile = {
   metrics: TeamMetric[];
   leaders: TeamLeader[];
   schedule: TeamScheduleEntry[];
+  details: TeamDetail | null;
+};
+
+const formatListPreview = (items: string[], limit = 5) => {
+  if (!items.length) return "—";
+  if (items.length <= limit) return items.join(", ");
+  return `${items.slice(0, limit).join(", ")} +${items.length - limit} more`;
 };
 
 const MOCK_TEAM_DATA: Record<string, TeamProfile> = {
   "boston-celtics": {
     slug: "boston-celtics",
+    teamId: 1610612738,
     name: "Boston Celtics",
     location: "Boston, MA",
     record: "55-20",
@@ -67,9 +108,11 @@ const MOCK_TEAM_DATA: Record<string, TeamProfile> = {
       { opponent: "@ TOR", result: "W 124-113", date: "Mar 28" },
       { opponent: "vs. NYK", result: "Tip 7:30 PM", date: "Mar 30" },
     ],
+    details: null,
   },
   "los-angeles-lakers": {
     slug: "los-angeles-lakers",
+    teamId: 1610612747,
     name: "Los Angeles Lakers",
     location: "Los Angeles, CA",
     record: "44-33",
@@ -97,9 +140,11 @@ const MOCK_TEAM_DATA: Record<string, TeamProfile> = {
       { opponent: "@ SAC", result: "W 118-111", date: "Mar 28" },
       { opponent: "vs. MIN", result: "Tip 8:00 PM", date: "Mar 30" },
     ],
+    details: null,
   },
   "oklahoma-city-thunder": {
     slug: "oklahoma-city-thunder",
+    teamId: 1610612760,
     name: "Oklahoma City Thunder",
     location: "Oklahoma City, OK",
     record: "52-23",
@@ -127,18 +172,18 @@ const MOCK_TEAM_DATA: Record<string, TeamProfile> = {
       { opponent: "vs. UTA", result: "W 127-108", date: "Mar 27" },
       { opponent: "vs. DEN", result: "Tip 8:00 PM", date: "Mar 29" },
     ],
+    details: null,
   },
 };
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 function buildFallbackTeam(slug: string): TeamProfile | null {
-  const name = unslugifySegment(slug);
+  const name = unslugifySegment(slug) || slug.replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
   if (!name) {
     return null;
   }
   return {
     slug,
+    teamId: 0,
     name,
     location: "City, ST",
     record: "0-0",
@@ -165,26 +210,88 @@ function buildFallbackTeam(slug: string): TeamProfile | null {
       { opponent: "To be announced", result: "—", date: "—" },
       { opponent: "To be announced", result: "—", date: "—" },
     ],
+    details: null,
   };
 }
 
-async function fetchMockTeamProfile(slug: string): Promise<TeamProfile | null> {
-  await sleep(220);
-  const normalized = slug.toLowerCase();
-  return MOCK_TEAM_DATA[normalized] ?? buildFallbackTeam(normalized);
+async function fetchTeamProfile(slug: string): Promise<TeamProfile | null> {
+  const normalized = decodeURIComponent(slug).toLowerCase();
+  const fallback = MOCK_TEAM_DATA[normalized] ?? buildFallbackTeam(normalized);
+  if (!fallback) {
+    return null;
+  }
+
+  const friendlyName = unslugifySegment(normalized);
+  if (!friendlyName) {
+    return fallback;
+  }
+
+  try {
+    const resolution = await nbaFetch<ResolveResult>(`/v1/resolve?team=${encodeURIComponent(friendlyName)}`);
+    const teamId = resolution.team?.id;
+    if (!teamId) {
+      return fallback;
+    }
+    const details = await nbaFetch<TeamDetail>(`/v1/teams/${teamId}/details`, { next: { revalidate: 1800 } });
+    const derivedName = fallback.name || `${details.city ?? ""} ${details.nickname ?? ""}`.trim() || friendlyName;
+    const derivedLocation =
+      fallback.location === "City, ST" && details.city ? details.city : fallback.location;
+    const derivedCoach = fallback.coach === "TBD" && details.head_coach ? details.head_coach : fallback.coach;
+
+    return {
+      ...fallback,
+      teamId,
+      name: derivedName,
+      location: derivedLocation,
+      coach: derivedCoach,
+      details,
+    };
+  } catch (error) {
+    if (process.env.NODE_ENV !== "production") {
+      console.error("Failed to load team details", error);
+    }
+    return fallback;
+  }
 }
 
-export default async function TeamDetailPage({ params }: { params: { name?: string | string[] } }) {
-  const slug = Array.isArray(params.name) ? params.name[0] : params.name;
+export default async function TeamDetailPage({ params }: { params: Promise<{ name?: string | string[] }> | { name?: string | string[] } }) {
+  const resolvedParams = await Promise.resolve(params);
+  const slug = Array.isArray(resolvedParams.name) ? resolvedParams.name[0] : resolvedParams.name;
   if (!slug) {
     notFound();
   }
 
-  const team = await fetchMockTeamProfile(slug);
+  const team = await fetchTeamProfile(slug);
 
   if (!team) {
     notFound();
   }
+
+  const detail = team.details;
+  const detailFacts = detail
+    ? [
+        { label: "Founded", value: detail.year_founded ? detail.year_founded.toString() : "—" },
+        { label: "Arena", value: detail.arena ?? "—" },
+        {
+          label: "Capacity",
+          value: detail.arena_capacity ? detail.arena_capacity.toLocaleString() : "—",
+        },
+        { label: "Owner", value: detail.owner ?? "—" },
+        { label: "General Manager", value: detail.general_manager ?? "—" },
+        { label: "Head Coach", value: detail.head_coach ?? team.coach },
+        { label: "Affiliate", value: detail.dleague_affiliation ?? "—" },
+      ]
+    : [];
+  const trophyFacts = detail
+    ? [
+        { label: "Championships", value: formatListPreview(detail.championships, 4) },
+        { label: "Conference Titles", value: formatListPreview(detail.conference_titles, 4) },
+        { label: "Division Titles", value: formatListPreview(detail.division_titles, 4) },
+        { label: "Hall of Famers", value: formatListPreview(detail.hall_of_famers, 4) },
+        { label: "Retired Numbers", value: formatListPreview(detail.retired_numbers, 4) },
+      ]
+    : [];
+  const socialEntries = detail ? Object.entries(detail.social_sites ?? {}) : [];
 
   return (
     <div className="space-y-10">
@@ -230,6 +337,43 @@ export default async function TeamDetailPage({ params }: { params: { name?: stri
             <dd className="mt-1 text-white">{team.streak}</dd>
           </div>
         </dl>
+        {detail ? (
+          <div className="mt-8 rounded-2xl border border-white/10 bg-slate-950/60 p-5 text-white/80">
+            <p className="text-xs uppercase tracking-[0.3em] text-white/50">Franchise details</p>
+            <div className="mt-4 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-3">
+              {detailFacts.map((fact) => (
+                <div key={fact.label}>
+                  <p className="text-xs uppercase tracking-[0.25em] text-white/40">{fact.label}</p>
+                  <p className="mt-1 text-white">{fact.value || "—"}</p>
+                </div>
+              ))}
+            </div>
+            <div className="mt-6 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-3">
+              {trophyFacts.map((item) => (
+                <div key={item.label}>
+                  <p className="text-xs uppercase tracking-[0.25em] text-white/40">{item.label}</p>
+                  <p className="mt-1 text-white/90">{item.value}</p>
+                </div>
+              ))}
+            </div>
+            {socialEntries.length > 0 ? (
+              <div className="mt-6 flex flex-wrap gap-3 text-sm">
+                {socialEntries.map(([platform, url]) => (
+                  <a
+                    key={platform}
+                    href={url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-2 rounded-full border border-white/15 px-4 py-1 text-white/80 transition hover:border-white/40 hover:text-white"
+                  >
+                    <span className="text-xs uppercase tracking-[0.3em]">{platform.toUpperCase()}</span>
+                    <span aria-hidden="true">↗</span>
+                  </a>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </section>
 
       <section className="grid gap-6 lg:grid-cols-2">
@@ -252,7 +396,7 @@ export default async function TeamDetailPage({ params }: { params: { name?: stri
           <p className="text-xs uppercase tracking-[0.35em] text-white/40">Impact leaders</p>
           <ul className="mt-4 space-y-4">
             {team.leaders.map((leader) => (
-              <li key={leader.name} className="rounded-2xl bg-white/5 px-4 py-3">
+              <li key={leader.name} className="rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-3">
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-semibold text-white">{leader.name}</p>
