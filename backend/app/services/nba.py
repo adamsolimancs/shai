@@ -13,8 +13,10 @@ from typing import Any, TypeVar, cast
 from fastapi import HTTPException, status
 from nba_api.stats.endpoints import (
     boxscoreadvancedv2,
+    boxscoreadvancedv3,
     boxscorefourfactorsv2,
     boxscoretraditionalv2,
+    boxscoresummaryv2,
     commonallplayers,
     leaguedashplayerstats,
     leaguedashteamstats,
@@ -32,6 +34,7 @@ from ..cache import CacheBackend
 from ..config import Settings
 from ..resolvers import NameResolver, Resolution
 from ..schemas import (
+    BoxScoreGame,
     BoxScoreLine,
     CacheMeta,
     Game,
@@ -393,6 +396,15 @@ class NBAStatsClient:
         rows, cache_meta = await self._cached_call(key, GAMES_TTL, fetch)
         lines = [self._normalize_boxscore(row) for row in rows]
         return ServiceResult([BoxScoreLine(**item) for item in lines], cache_meta)
+
+    async def get_boxscore_details(self, game_id: str) -> ServiceResult:
+        key = f"boxscore:details:{game_id}"
+
+        def fetch() -> dict[str, Any]:
+            return self._build_boxscore_details(game_id)
+
+        data, cache_meta = await self._cached_call(key, GAMES_TTL, fetch)
+        return ServiceResult(BoxScoreGame(**data), cache_meta)
 
     async def get_shots(
         self,
@@ -778,6 +790,304 @@ class NBAStatsClient:
             "plus_minus": self._safe_float(row.get("PLUS_MINUS")),
         }
 
+    def _build_boxscore_details(self, game_id: str) -> dict[str, Any]:
+        traditional = boxscoretraditionalv2.BoxScoreTraditionalV2(game_id=game_id)
+        traditional_players = [
+            self._normalize_traditional_player(row)
+            for row in self._dataset_to_rows(traditional.player_stats)
+        ]
+        team_totals = [
+            self._normalize_team_totals(row)
+            for row in self._dataset_to_rows(traditional.team_stats)
+        ]
+        starter_bench = [
+            self._normalize_starter_bench(row)
+            for row in self._dataset_to_rows(traditional.team_starter_bench_stats)
+        ]
+
+        advanced_rows = self._load_advanced_rows(game_id)
+        advanced_players = [self._normalize_advanced_player(row) for row in advanced_rows]
+
+        summary = boxscoresummaryv2.BoxScoreSummaryV2(game_id=game_id)
+        summary_rows = self._dataset_to_rows(summary.game_summary)
+        if not summary_rows:
+            raise UpstreamError("Box score summary unavailable.")
+        summary_row = summary_rows[0]
+        home_team_id = self._coerce_int(summary_row.get("HOME_TEAM_ID"))
+        away_team_id = self._coerce_int(summary_row.get("VISITOR_TEAM_ID"))
+        if home_team_id is None or away_team_id is None:
+            raise UpstreamError("Unable to determine teams for box score.")
+
+        line_score_rows = self._dataset_to_rows(summary.line_score)
+        game_info_rows = self._dataset_to_rows(summary.game_info)
+        officials_rows = self._dataset_to_rows(summary.officials)
+
+        start_dt = self._parse_datetime(summary_row.get("GAME_DATE_EST"))
+        attendance = self._coerce_int(game_info_rows[0].get("ATTENDANCE")) if game_info_rows else None
+        officials = [
+            "{} {}".format(row.get("FIRST_NAME", "").strip(), row.get("LAST_NAME", "").strip()).strip()
+            for row in officials_rows
+            if row.get("FIRST_NAME") or row.get("LAST_NAME")
+        ]
+
+        line_score = self._build_line_score(line_score_rows, home_team_id, away_team_id)
+        home_team = self._build_team_card(home_team_id, True, line_score_rows, traditional_players)
+        away_team = self._build_team_card(away_team_id, False, line_score_rows, traditional_players)
+        summary_text = self._compose_summary(home_team, away_team, summary_row.get("GAME_STATUS_TEXT"))
+        arena = home_team.get("team_city")
+
+        return {
+            "game_id": game_id,
+            "status": summary_row.get("GAME_STATUS_TEXT"),
+            "game_date": start_dt,
+            "start_time": start_dt,
+            "arena": arena,
+            "attendance": attendance,
+            "summary": summary_text,
+            "officials": officials,
+            "home_team": home_team,
+            "away_team": away_team,
+            "line_score": line_score,
+            "team_totals": team_totals,
+            "starter_bench": starter_bench,
+            "traditional_players": traditional_players,
+            "advanced_players": advanced_players,
+        }
+
+    def _load_advanced_rows(self, game_id: str) -> list[dict[str, Any]]:
+        try:
+            endpoint = boxscoreadvancedv2.BoxScoreAdvancedV2(game_id=game_id)
+            rows = self._dataset_to_rows(endpoint.player_stats)
+            if rows:
+                return rows
+        except Exception:
+            logger.warning("boxscoreadvancedv2 returned no data; falling back to v3", exc_info=True)
+        endpoint_v3 = boxscoreadvancedv3.BoxScoreAdvancedV3(game_id=game_id)
+        return cast(list[dict[str, Any]], endpoint_v3.player_stats.get_data_frame().to_dict("records"))
+
+    def _normalize_traditional_player(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "player_id": self._safe_int(row.get("PLAYER_ID")),
+            "player_name": row.get("PLAYER_NAME"),
+            "team_id": self._safe_int(row.get("TEAM_ID")),
+            "team_abbreviation": row.get("TEAM_ABBREVIATION"),
+            "team_city": row.get("TEAM_CITY"),
+            "start_position": row.get("START_POSITION") or None,
+            "comment": row.get("COMMENT") or None,
+            "minutes": row.get("MIN"),
+            "field_goals_made": self._coerce_float(row.get("FGM")),
+            "field_goals_attempted": self._coerce_float(row.get("FGA")),
+            "field_goal_pct": self._coerce_float(row.get("FG_PCT")),
+            "three_point_made": self._coerce_float(row.get("FG3M")),
+            "three_point_attempted": self._coerce_float(row.get("FG3A")),
+            "three_point_pct": self._coerce_float(row.get("FG3_PCT")),
+            "free_throws_made": self._coerce_float(row.get("FTM")),
+            "free_throws_attempted": self._coerce_float(row.get("FTA")),
+            "free_throw_pct": self._coerce_float(row.get("FT_PCT")),
+            "offensive_rebounds": self._coerce_float(row.get("OREB")),
+            "defensive_rebounds": self._coerce_float(row.get("DREB")),
+            "rebounds": self._coerce_float(row.get("REB")),
+            "assists": self._coerce_float(row.get("AST")),
+            "steals": self._coerce_float(row.get("STL")),
+            "blocks": self._coerce_float(row.get("BLK")),
+            "turnovers": self._coerce_float(row.get("TO")),
+            "fouls": self._coerce_float(row.get("PF")),
+            "points": self._coerce_float(row.get("PTS")),
+            "plus_minus": self._coerce_float(row.get("PLUS_MINUS")),
+        }
+
+    def _normalize_team_totals(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "team_id": self._safe_int(row.get("TEAM_ID")),
+            "team_name": row.get("TEAM_NAME"),
+            "team_abbreviation": row.get("TEAM_ABBREVIATION"),
+            "minutes": row.get("MIN"),
+            "field_goals_made": self._coerce_float(row.get("FGM")),
+            "field_goals_attempted": self._coerce_float(row.get("FGA")),
+            "field_goal_pct": self._coerce_float(row.get("FG_PCT")),
+            "three_point_made": self._coerce_float(row.get("FG3M")),
+            "three_point_attempted": self._coerce_float(row.get("FG3A")),
+            "three_point_pct": self._coerce_float(row.get("FG3_PCT")),
+            "free_throws_made": self._coerce_float(row.get("FTM")),
+            "free_throws_attempted": self._coerce_float(row.get("FTA")),
+            "free_throw_pct": self._coerce_float(row.get("FT_PCT")),
+            "offensive_rebounds": self._coerce_float(row.get("OREB")),
+            "defensive_rebounds": self._coerce_float(row.get("DREB")),
+            "rebounds": self._coerce_float(row.get("REB")),
+            "assists": self._coerce_float(row.get("AST")),
+            "steals": self._coerce_float(row.get("STL")),
+            "blocks": self._coerce_float(row.get("BLK")),
+            "turnovers": self._coerce_float(row.get("TO")),
+            "fouls": self._coerce_float(row.get("PF")),
+            "points": self._coerce_float(row.get("PTS")),
+            "plus_minus": self._coerce_float(row.get("PLUS_MINUS")),
+        }
+
+    def _normalize_starter_bench(self, row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "team_id": self._safe_int(row.get("TEAM_ID")),
+            "team_name": row.get("TEAM_NAME"),
+            "team_abbreviation": row.get("TEAM_ABBREVIATION"),
+            "label": row.get("STARTERS_BENCH") or "",
+            "minutes": row.get("MIN"),
+            "field_goals_made": self._coerce_float(row.get("FGM")),
+            "field_goals_attempted": self._coerce_float(row.get("FGA")),
+            "field_goal_pct": self._coerce_float(row.get("FG_PCT")),
+            "three_point_made": self._coerce_float(row.get("FG3M")),
+            "three_point_attempted": self._coerce_float(row.get("FG3A")),
+            "three_point_pct": self._coerce_float(row.get("FG3_PCT")),
+            "free_throws_made": self._coerce_float(row.get("FTM")),
+            "free_throws_attempted": self._coerce_float(row.get("FTA")),
+            "free_throw_pct": self._coerce_float(row.get("FT_PCT")),
+            "offensive_rebounds": self._coerce_float(row.get("OREB")),
+            "defensive_rebounds": self._coerce_float(row.get("DREB")),
+            "rebounds": self._coerce_float(row.get("REB")),
+            "assists": self._coerce_float(row.get("AST")),
+            "steals": self._coerce_float(row.get("STL")),
+            "blocks": self._coerce_float(row.get("BLK")),
+            "turnovers": self._coerce_float(row.get("TO")),
+            "fouls": self._coerce_float(row.get("PF")),
+            "points": self._coerce_float(row.get("PTS")),
+        }
+
+    def _normalize_advanced_player(self, row: dict[str, Any]) -> dict[str, Any]:
+        def pick(*keys: str) -> Any:
+            for key in keys:
+                if key in row:
+                    return row[key]
+            return None
+
+        def team_abbr() -> str | None:
+            value = pick("TEAM_ABBREVIATION", "teamTricode")
+            return str(value) if value else None
+
+        return {
+            "player_id": self._safe_int(pick("PLAYER_ID", "personId")),
+            "player_name": pick("PLAYER_NAME", "playerName", "nameI", "firstName"),
+            "team_id": self._safe_int(pick("TEAM_ID", "teamId")),
+            "team_abbreviation": team_abbr(),
+            "minutes": pick("MIN", "minutes"),
+            "offensive_rating": self._coerce_float(pick("OFF_RATING", "offensiveRating")),
+            "defensive_rating": self._coerce_float(pick("DEF_RATING", "defensiveRating")),
+            "net_rating": self._coerce_float(pick("NET_RATING", "netRating")),
+            "usage_pct": self._coerce_float(pick("USG_PCT", "usagePercentage")),
+            "true_shooting_pct": self._coerce_float(pick("TS_PCT", "trueShootingPercentage")),
+            "effective_fg_pct": self._coerce_float(pick("EFG_PCT", "effectiveFieldGoalPercentage")),
+            "assist_pct": self._coerce_float(pick("AST_PCT", "assistPercentage")),
+            "assist_to_turnover": self._coerce_float(pick("AST_TOV", "assistToTurnover")),
+            "rebound_pct": self._coerce_float(pick("REB_PCT", "reboundPercentage")),
+            "offensive_rebound_pct": self._coerce_float(pick("OREB_PCT", "offensiveReboundPercentage")),
+            "defensive_rebound_pct": self._coerce_float(pick("DREB_PCT", "defensiveReboundPercentage")),
+            "pace": self._coerce_float(pick("PACE", "pace")),
+            "pace_per40": self._coerce_float(pick("PACE_PER40", "pacePer40")),
+            "possessions": self._coerce_float(pick("POSS", "possessions")),
+            "pie": self._coerce_float(pick("PIE", "PIE")),
+        }
+
+    def _build_team_card(
+        self,
+        team_id: int,
+        is_home: bool,
+        line_score_rows: list[dict[str, Any]],
+        players: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        row = next((item for item in line_score_rows if self._safe_int(item.get("TEAM_ID")) == team_id), {})
+        return {
+            "team_id": team_id,
+            "team_name": row.get("TEAM_NICKNAME") or row.get("TEAM_NAME"),
+            "team_city": row.get("TEAM_CITY_NAME") or row.get("TEAM_CITY"),
+            "team_abbreviation": row.get("TEAM_ABBREVIATION"),
+            "score": self._coerce_int(row.get("PTS")) or 0,
+            "record": row.get("TEAM_WINS_LOSSES"),
+            "is_home": is_home,
+            "leaders": self._team_leaders(players, team_id),
+        }
+
+    def _team_leaders(self, players: list[dict[str, Any]], team_id: int) -> list[dict[str, Any]]:
+        filtered = [row for row in players if row.get("team_id") == team_id and not row.get("comment")]
+        filtered.sort(key=lambda player: player.get("points") or 0, reverse=True)
+        leaders: list[dict[str, Any]] = []
+        for row in filtered[:3]:
+            leaders.append(
+                {
+                    "player_id": row.get("player_id"),
+                    "player_name": row.get("player_name"),
+                    "points": row.get("points"),
+                    "rebounds": row.get("rebounds"),
+                    "assists": row.get("assists"),
+                    "stat_line": self._format_leader_line(row),
+                }
+            )
+        return leaders
+
+    def _compose_summary(
+        self,
+        home: dict[str, Any],
+        away: dict[str, Any],
+        status: str | None,
+    ) -> str | None:
+        if not home or not away:
+            return None
+        status_text = status or "Final"
+        if home.get("score") is None or away.get("score") is None:
+            return status_text
+        home_score = int(home.get("score") or 0)
+        away_score = int(away.get("score") or 0)
+        if home_score == away_score:
+            return f"{status_text}: {home_score}-{away_score} in {home.get('team_city') or 'NBA play'}."
+        winner = home if home_score > away_score else away
+        loser = away if winner is home else home
+        margin = abs(home_score - away_score)
+        winner_name = winner.get("team_name") or "Home"
+        loser_name = loser.get("team_name") or "Visitor"
+        return f"{winner_name} {status_text.lower()} with a {margin}-point win over {loser_name}."
+
+    def _build_line_score(
+        self,
+        rows: list[dict[str, Any]],
+        home_id: int,
+        away_id: int,
+    ) -> list[dict[str, int]]:
+        lookup = {self._safe_int(row.get("TEAM_ID")): row for row in rows}
+        home_row = lookup.get(home_id, {})
+        away_row = lookup.get(away_id, {})
+        line_score: list[dict[str, int]] = []
+        for period in range(1, 5):
+            label = f"Q{period}"
+            home_pts = self._coerce_int(home_row.get(f"PTS_QTR{period}")) or 0
+            away_pts = self._coerce_int(away_row.get(f"PTS_QTR{period}")) or 0
+            line_score.append({"label": label, "home": home_pts, "away": away_pts})
+        for overtime in range(1, 11):
+            home_pts = self._coerce_int(home_row.get(f"PTS_OT{overtime}")) or 0
+            away_pts = self._coerce_int(away_row.get(f"PTS_OT{overtime}")) or 0
+            if home_pts == 0 and away_pts == 0:
+                continue
+            label = "OT" if overtime == 1 else f"OT{overtime}"
+            line_score.append({"label": label, "home": home_pts, "away": away_pts})
+        return line_score
+
+    def _format_leader_line(self, row: dict[str, Any]) -> str:
+        parts = []
+        if row.get("points") is not None:
+            parts.append(f"{int(row['points'])} PTS")
+        if row.get("rebounds") is not None:
+            parts.append(f"{int(row['rebounds'])} REB")
+        if row.get("assists") is not None:
+            parts.append(f"{int(row['assists'])} AST")
+        return " • ".join(parts) if parts else ""
+
+    def _parse_datetime(self, value: str | None) -> datetime | None:
+        if not value:
+            return None
+        normalized = value.replace("Z", "+00:00")
+        try:
+            return datetime.fromisoformat(normalized)
+        except ValueError:
+            try:
+                return datetime.strptime(value, "%Y-%m-%dT%H:%M:%S")
+            except ValueError:
+                return None
+
     def _normalize_shot(self, row: dict[str, Any]) -> dict[str, Any]:
         return {
             "game_id": row["GAME_ID"],
@@ -910,8 +1220,27 @@ class NBAStatsClient:
 
         return number
 
+    def _coerce_float(self, value: Any) -> float | None:
+        try:
+            if value is None or value == "":
+                return None
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        if math.isnan(number) or math.isinf(number):
+            return None
+        return number
+
     def _safe_int(self, value: Any) -> int:
         try:
             return int(value)
         except (TypeError, ValueError):
             return 0
+
+    def _coerce_int(self, value: Any) -> int | None:
+        try:
+            if value is None or value == "":
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None

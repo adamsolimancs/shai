@@ -16,6 +16,7 @@ from ..dependencies import (
 )
 from ..rate_limit import RateLimiter
 from ..schemas import (
+    BoxScoreGame,
     BoxScoreLine,
     Envelope,
     Game,
@@ -207,6 +208,16 @@ async def game_boxscore(
     kind: Literal["traditional", "advanced", "four_factors"] = Query("traditional"),
 ) -> Envelope[list[BoxScoreLine]]:
     result = await client.get_boxscore(game_id, kind)
+    return success(request, result.data, cache=result.cache)
+
+
+@router.get("/boxscores/{game_id}", response_model=Envelope[BoxScoreGame])
+async def full_boxscore(
+    request: Request,
+    client: NBAClientDep,
+    game_id: str,
+) -> Envelope[BoxScoreGame]:
+    result = await client.get_boxscore_details(game_id)
     return success(request, result.data, cache=result.cache)
 
 
