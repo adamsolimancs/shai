@@ -1,3 +1,4 @@
+import ScoreCard from "@/components/ScoreCard";
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
 
 type Game = {
@@ -119,16 +120,6 @@ function formatTrendLabel(trend: string) {
   return trend.toUpperCase();
 }
 
-function scoreRowClasses(game: EnhancedGame, team: "home" | "away"): string {
-  if (game.winner === "even") {
-    return "bg-white/5";
-  }
-  if (game.winner === team) {
-    return "border border-emerald-300/30 bg-emerald-400/10";
-  }
-  return "border border-red-400/30 bg-red-500/10";
-}
-
 export default async function ScoresPage() {
   const games = await nbaFetch<Game[]>(`/v1/games?season=${DEFAULT_SEASON}&page_size=36`);
   const enhanced = games.map(enhanceGame);
@@ -182,25 +173,17 @@ export default async function ScoresPage() {
                 </div>
                 <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
                   {group.games.map((game) => (
-                    <article key={game.id} className="rounded-3xl border border-white/10 bg-slate-950/60 p-5 shadow-lg shadow-black/30">
-                      <div className="flex items-center justify-between text-xs uppercase tracking-[0.3em] text-white/40">
-                        <span>{game.tipLabel}</span>
-                        <span className="text-white/70">{game.status}</span>
-                      </div>
-                      <div className="mt-5 space-y-4 text-lg font-semibold">
-                        <div className={`flex items-center justify-between rounded-2xl px-4 py-3 ${scoreRowClasses(game, "away")}`}>
-                          <span className="text-white">{game.away.name}</span>
-                          <span className="text-white">{game.away.score}</span>
-                        </div>
-                        <div className={`flex items-center justify-between rounded-2xl px-4 py-3 ${scoreRowClasses(game, "home")}`}>
-                          <span className="text-white">{game.home.name}</span>
-                          <span className="text-white">{game.home.score}</span>
-                        </div>
-                      </div>
-                      <p className="mt-4 text-xs uppercase tracking-[0.3em] text-white/50">
-                        Margin: {game.margin === 0 ? "OT thriller" : `${game.margin} pts`}
-                      </p>
-                    </article>
+                    <ScoreCard
+                      key={game.id}
+                      href={`/boxscore/${game.id}`}
+                      variant="scoreboard"
+                      timeLabel={game.tipLabel}
+                      status={game.status}
+                      home={{ name: game.home.name, score: game.home.score }}
+                      away={{ name: game.away.name, score: game.away.score }}
+                      winner={game.winner}
+                      footerLabel={`Margin: ${game.margin === 0 ? "OT thriller" : `${game.margin} pts`}`}
+                    />
                   ))}
                 </div>
               </div>

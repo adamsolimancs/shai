@@ -128,22 +128,6 @@ class PlayerGameLog(BaseModel):
     plus_minus: float | None = None
 
 
-class BoxScoreLine(BaseModel):
-    player_id: int
-    player_name: str
-    team_id: int
-    team_abbreviation: str
-    minutes: float
-    points: float | None = None
-    rebounds: float | None = None
-    assists: float | None = None
-    steals: float | None = None
-    blocks: float | None = None
-    turnovers: float | None = None
-    fouls: float | None = None
-    plus_minus: float | None = None
-
-
 class BoxScoreTeamLeader(BaseModel):
     player_id: int
     player_name: str

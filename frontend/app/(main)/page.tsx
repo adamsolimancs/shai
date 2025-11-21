@@ -1,7 +1,7 @@
-import Link from "next/link";
 import { Suspense } from "react";
 import { LeagueStandings, type LeagueStandingsConference } from "@/components/LeagueStandings";
 import HeroSearch from "@/components/HeroSearch";
+import ScoreCard from "@/components/ScoreCard";
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
 import { slugifySegment } from "@/lib/utils";
 
@@ -25,7 +25,7 @@ type PlayerStatsRow = {
   assists: number;
 };
 
-type ScoreCard = {
+type ScoreCardData = {
   id: string;
   away: string;
   awayScore: number;
@@ -115,7 +115,7 @@ type LeagueStanding = {
   eliminated_conference?: boolean | number | null;
 };
 
-async function fetchRecentGames(): Promise<ScoreCard[]> {
+async function fetchRecentGames(): Promise<ScoreCardData[]> {
   const games = await nbaFetch<Game[]>(`/v1/games?season=${DEFAULT_SEASON}&page_size=6`, { next: { revalidate: 120 } });
   return games.slice(0, 6).map((game) => ({
     id: game.game_id,
@@ -241,32 +241,22 @@ export default async function HomePage() {
       <section id="scores" className="mt-20">
         <SectionTitle title="Recent Games" eyebrow="Live scores" />
         <div className="grid gap-4 md:grid-cols-3">
-          {scores.map((game) => (
-            <Link
-              key={game.id}
-              href={`/boxscore/${game.id}`}
-              className="group block rounded-3xl border border-[color:var(--color-app-border)] bg-linear-to-br from-[color:var(--color-app-background-soft)] via-[color:var(--color-app-surface)] to-[color:var(--color-app-surface-soft)] p-5 text-[color:var(--color-app-foreground)] shadow-lg shadow-black/5 transition-all hover:border-[color:var(--color-app-border-strong)] hover:from-[color:rgba(var(--color-app-primary-rgb)_/_0.05)] hover:via-[color:rgba(var(--color-app-primary-rgb)_/_0.08)] hover:to-[color:rgba(var(--color-app-primary-light-rgb)_/_0.12)] hover:shadow-black/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-app-primary-soft)]"
-            >
-              <div className="flex flex-col gap-1 text-[0.65rem] uppercase tracking-[0.3em] text-[color:var(--color-app-foreground-muted)] sm:flex-row sm:items-center sm:justify-between">
-                <span className="text-base font-semibold normal-case tracking-normal text-[color:var(--color-app-foreground)]">
-                  {game.tip}
-                </span>
-                <p className="text-[0.65rem] font-medium uppercase tracking-[0.2em] text-[color:var(--color-app-foreground-muted)]">
-                  {game.location}
-                </p>
-              </div>
-              <div className="mt-4 space-y-3 text-lg font-semibold">
-                <div className="flex items-center justify-between rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-soft)] px-4 py-3 transition group-hover:border-[color:var(--color-app-border-strong)] group-hover:bg-[color:var(--color-app-background-soft)]">
-                  <span>{game.away}</span>
-                  <span>{game.awayScore}</span>
-                </div>
-                <div className="flex items-center justify-between rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-soft)] px-4 py-3 transition group-hover:border-[color:var(--color-app-border-strong)] group-hover:bg-[color:var(--color-app-background-soft)]">
-                  <span>{game.home}</span>
-                  <span>{game.homeScore}</span>
-                </div>
-              </div>
-            </Link>
-          ))}
+          {scores.map((game) => {
+            const winner =
+              game.homeScore === game.awayScore ? "even" : game.homeScore > game.awayScore ? "home" : "away";
+            return (
+              <ScoreCard
+                key={game.id}
+                href={`/boxscore/${game.id}`}
+                timeLabel={game.tip}
+                locationLabel={game.location}
+                status={game.status}
+                home={{ name: game.home, score: game.homeScore }}
+                away={{ name: game.away, score: game.awayScore }}
+                winner={winner}
+              />
+            );
+          })}
         </div>
       </section>
 

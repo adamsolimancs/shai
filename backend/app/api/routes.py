@@ -17,7 +17,6 @@ from ..dependencies import (
 from ..rate_limit import RateLimiter
 from ..schemas import (
     BoxScoreGame,
-    BoxScoreLine,
     Envelope,
     Game,
     LeagueStanding,
@@ -197,17 +196,6 @@ async def player_awards(
     player_id: int,
 ) -> Envelope[list[PlayerAward]]:
     result = await client.get_player_awards(player_id)
-    return success(request, result.data, cache=result.cache)
-
-
-@router.get("/games/{game_id}/boxscore", response_model=Envelope[list[BoxScoreLine]])
-async def game_boxscore(
-    request: Request,
-    client: NBAClientDep,
-    game_id: str,
-    kind: Literal["traditional", "advanced", "four_factors"] = Query("traditional"),
-) -> Envelope[list[BoxScoreLine]]:
-    result = await client.get_boxscore(game_id, kind)
     return success(request, result.data, cache=result.cache)
 
 

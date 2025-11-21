@@ -5,16 +5,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any, TypeVar, cast
 
+import requests
 from fastapi import HTTPException, status
 from nba_api.stats.endpoints import (
     boxscoreadvancedv2,
     boxscoreadvancedv3,
-    boxscorefourfactorsv2,
     boxscoretraditionalv2,
     boxscoresummaryv2,
     commonallplayers,
@@ -35,7 +36,6 @@ from ..config import Settings
 from ..resolvers import NameResolver, Resolution
 from ..schemas import (
     BoxScoreGame,
-    BoxScoreLine,
     CacheMeta,
     Game,
     LeagueStanding,
@@ -56,6 +56,17 @@ from ..schemas import (
 from ..utils import paginate, validate_season
 
 logger = logging.getLogger(__name__)
+
+# Explicit headers for stats.nba.com to avoid CDN blocks.
+NBA_STATS_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Origin": "https://www.nba.com",
+    "Referer": "https://www.nba.com/",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    "x-nba-stats-origin": "stats",
+    "x-nba-stats-token": "true",
+}
 
 
 DIRECTORY_TTL = 60 * 60 * 24
@@ -91,6 +102,8 @@ class NBAStatsClient:
         self.cache = cache
         self.resolver = resolver
         self._last_refresh: dict[str, datetime | None] = {}
+        # Stats.nba.com endpoints are sluggish; keep a generous timeout floor.
+        self._stats_timeout = max(self.settings.upstream_timeout_seconds, 60.0)
 
     async def get_meta(self) -> MetaResponse:
         seasons = self._supported_seasons()
@@ -373,30 +386,6 @@ class NBAStatsClient:
 
         return ServiceResult(detail, cache_meta)
 
-    async def get_boxscore(self, game_id: str, kind: str) -> ServiceResult:
-        key = f"boxscore:{kind}:{game_id}"
-
-        endpoint_cls = {
-            "traditional": boxscoretraditionalv2.BoxScoreTraditionalV2,
-            "advanced": boxscoreadvancedv2.BoxScoreAdvancedV2,
-            "four_factors": boxscorefourfactorsv2.BoxScoreFourFactorsV2,
-        }.get(kind)
-
-        if not endpoint_cls:
-            raise HTTPException(
-                status_code=400,
-                detail={"code": "INVALID_KIND", "message": "Invalid boxscore kind."},
-            )
-
-        def fetch() -> list[dict[str, Any]]:
-            endpoint = endpoint_cls(game_id=game_id)
-            df = endpoint.player_stats.get_data_frame()
-            return cast(list[dict[str, Any]], df.to_dict("records"))
-
-        rows, cache_meta = await self._cached_call(key, GAMES_TTL, fetch)
-        lines = [self._normalize_boxscore(row) for row in rows]
-        return ServiceResult([BoxScoreLine(**item) for item in lines], cache_meta)
-
     async def get_boxscore_details(self, game_id: str) -> ServiceResult:
         key = f"boxscore:details:{game_id}"
 
@@ -548,6 +537,10 @@ class NBAStatsClient:
         try:
             data = await self._run_with_retry(fetcher)
         except Exception as exc:
+            logger.warning(
+                "Upstream fetch failed; checking stale cache",
+                extra={"cache_key": key, "error": str(exc)},
+            )
             fallback = await self.cache.get_stale(key)
             if fallback is not None:
                 return cast(TData, fallback), CacheMeta(hit=True, stale=True)
@@ -773,25 +766,28 @@ class NBAStatsClient:
             "plus_minus": self._safe_float(row.get("PLUS_MINUS")),
         }
 
-    def _normalize_boxscore(self, row: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "player_id": int(row["PLAYER_ID"]),
-            "player_name": row["PLAYER_NAME"],
-            "team_id": int(row["TEAM_ID"]),
-            "team_abbreviation": row["TEAM_ABBREVIATION"],
-            "minutes": self._safe_float(row.get("MIN")),
-            "points": self._safe_float(row.get("PTS")),
-            "rebounds": self._safe_float(row.get("REB")),
-            "assists": self._safe_float(row.get("AST")),
-            "steals": self._safe_float(row.get("STL")),
-            "blocks": self._safe_float(row.get("BLK")),
-            "turnovers": self._safe_float(row.get("TO")),
-            "fouls": self._safe_float(row.get("PF")),
-            "plus_minus": self._safe_float(row.get("PLUS_MINUS")),
-        }
-
     def _build_boxscore_details(self, game_id: str) -> dict[str, Any]:
-        traditional = boxscoretraditionalv2.BoxScoreTraditionalV2(game_id=game_id)
+        try:
+            return self._build_boxscore_details_stats(game_id)
+        except Exception:
+            logger.warning(
+                "stats.nba.com boxscore failed; attempting CDN fallback",
+                exc_info=True,
+                extra={"game_id": game_id},
+            )
+            return self._build_boxscore_details_cdn(game_id)
+
+    def _build_boxscore_details_stats(self, game_id: str) -> dict[str, Any]:
+        traditional = boxscoretraditionalv2.BoxScoreTraditionalV2(
+            game_id=game_id,
+            start_period="0",
+            end_period="0",
+            start_range="0",
+            end_range="0",
+            range_type="0",
+            headers=NBA_STATS_HEADERS,
+            timeout=self._stats_timeout,
+        )
         traditional_players = [
             self._normalize_traditional_player(row)
             for row in self._dataset_to_rows(traditional.player_stats)
@@ -808,7 +804,9 @@ class NBAStatsClient:
         advanced_rows = self._load_advanced_rows(game_id)
         advanced_players = [self._normalize_advanced_player(row) for row in advanced_rows]
 
-        summary = boxscoresummaryv2.BoxScoreSummaryV2(game_id=game_id)
+        summary = boxscoresummaryv2.BoxScoreSummaryV2(
+            game_id=game_id, headers=NBA_STATS_HEADERS, timeout=self._stats_timeout
+        )
         summary_rows = self._dataset_to_rows(summary.game_summary)
         if not summary_rows:
             raise UpstreamError("Box score summary unavailable.")
@@ -854,15 +852,215 @@ class NBAStatsClient:
             "advanced_players": advanced_players,
         }
 
+    def _build_boxscore_details_cdn(self, game_id: str) -> dict[str, Any]:
+        url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{game_id}.json"
+        try:
+            response = requests.get(url, timeout=self._stats_timeout)
+            response.raise_for_status()
+        except Exception as exc:
+            raise UpstreamError("NBA boxscore CDN unavailable") from exc
+
+        payload = response.json()
+        game = payload.get("game") or {}
+        home_team_raw = game.get("homeTeam") or {}
+        away_team_raw = game.get("awayTeam") or {}
+
+        traditional_players = self._cdn_players(home_team_raw) + self._cdn_players(away_team_raw)
+        team_totals = [self._cdn_team_totals(home_team_raw), self._cdn_team_totals(away_team_raw)]
+        line_score = self._cdn_line_score(home_team_raw, away_team_raw)
+        home_team = self._cdn_team_card(home_team_raw, True, traditional_players)
+        away_team = self._cdn_team_card(away_team_raw, False, traditional_players)
+        officials = [
+            " ".join(filter(None, [ref.get("firstName"), ref.get("familyName")])).strip()
+            for ref in (game.get("officials") or [])
+            if ref.get("firstName") or ref.get("familyName")
+        ]
+        start_dt = self._parse_datetime(game.get("gameTimeUTC"))
+        arena_meta = game.get("arena") or {}
+
+        return {
+            "game_id": game.get("gameId") or game_id,
+            "status": game.get("gameStatusText"),
+            "game_date": start_dt,
+            "start_time": start_dt,
+            "arena": arena_meta.get("arenaName") or arena_meta.get("arenaCity"),
+            "attendance": self._coerce_int(game.get("attendance")),
+            "summary": None,
+            "officials": officials,
+            "home_team": home_team,
+            "away_team": away_team,
+            "line_score": line_score,
+            "team_totals": team_totals,
+            "starter_bench": [],
+            "traditional_players": traditional_players,
+            "advanced_players": [],
+        }
+
+    def _cdn_players(self, team: dict[str, Any]) -> list[dict[str, Any]]:
+        abbreviation = team.get("teamTricode")
+        city = team.get("teamCity")
+        team_id = self._coerce_int(team.get("teamId"))
+        players = []
+        for player in team.get("players") or []:
+            stats = player.get("statistics") or {}
+            minutes_raw = stats.get("minutesCalculated") or stats.get("minutes")
+            players.append(
+                {
+                    "player_id": self._coerce_int(player.get("personId")),
+                    "player_name": player.get("name"),
+                    "team_id": team_id,
+                    "team_abbreviation": abbreviation,
+                    "team_city": city,
+                    "start_position": player.get("position"),
+                    "comment": None,
+                    "minutes": self._iso_duration_to_minutes(minutes_raw),
+                    "field_goals_made": self._coerce_float(stats.get("fieldGoalsMade")),
+                    "field_goals_attempted": self._coerce_float(stats.get("fieldGoalsAttempted")),
+                    "field_goal_pct": self._coerce_float(stats.get("fieldGoalsPercentage")),
+                    "three_point_made": self._coerce_float(stats.get("threePointersMade")),
+                    "three_point_attempted": self._coerce_float(stats.get("threePointersAttempted")),
+                    "three_point_pct": self._coerce_float(stats.get("threePointersPercentage")),
+                    "free_throws_made": self._coerce_float(stats.get("freeThrowsMade")),
+                    "free_throws_attempted": self._coerce_float(stats.get("freeThrowsAttempted")),
+                    "free_throw_pct": self._coerce_float(stats.get("freeThrowsPercentage")),
+                    "offensive_rebounds": self._coerce_float(stats.get("reboundsOffensive")),
+                    "defensive_rebounds": self._coerce_float(stats.get("reboundsDefensive")),
+                    "rebounds": self._coerce_float(stats.get("reboundsTotal")),
+                    "assists": self._coerce_float(stats.get("assists")),
+                    "steals": self._coerce_float(stats.get("steals")),
+                    "blocks": self._coerce_float(stats.get("blocks")),
+                    "turnovers": self._coerce_float(stats.get("turnovers")),
+                    "fouls": self._coerce_float(stats.get("foulsPersonal")),
+                    "points": self._coerce_float(stats.get("points")),
+                    "plus_minus": self._coerce_float(stats.get("plusMinusPoints")),
+                }
+            )
+        return players
+
+    def _cdn_team_totals(self, team: dict[str, Any]) -> dict[str, Any]:
+        stats = team.get("statistics") or {}
+        minutes_raw = stats.get("minutesCalculated") or stats.get("minutes")
+        points = self._coerce_float(stats.get("points"))
+        points_against = self._coerce_float(stats.get("pointsAgainst"))
+        plus_minus = None
+        if points is not None and points_against is not None:
+            plus_minus = points - points_against
+        return {
+            "team_id": self._coerce_int(team.get("teamId")),
+            "team_name": team.get("teamName"),
+            "team_abbreviation": team.get("teamTricode"),
+            "minutes": self._iso_duration_to_minutes(minutes_raw),
+            "field_goals_made": self._coerce_float(stats.get("fieldGoalsMade")),
+            "field_goals_attempted": self._coerce_float(stats.get("fieldGoalsAttempted")),
+            "field_goal_pct": self._coerce_float(stats.get("fieldGoalsPercentage")),
+            "three_point_made": self._coerce_float(stats.get("threePointersMade")),
+            "three_point_attempted": self._coerce_float(stats.get("threePointersAttempted")),
+            "three_point_pct": self._coerce_float(stats.get("threePointersPercentage")),
+            "free_throws_made": self._coerce_float(stats.get("freeThrowsMade")),
+            "free_throws_attempted": self._coerce_float(stats.get("freeThrowsAttempted")),
+            "free_throw_pct": self._coerce_float(stats.get("freeThrowsPercentage")),
+            "offensive_rebounds": self._coerce_float(stats.get("reboundsOffensive")),
+            "defensive_rebounds": self._coerce_float(stats.get("reboundsDefensive")),
+            "rebounds": self._coerce_float(stats.get("reboundsTotal")),
+            "assists": self._coerce_float(stats.get("assists")),
+            "steals": self._coerce_float(stats.get("steals")),
+            "blocks": self._coerce_float(stats.get("blocks")),
+            "turnovers": self._coerce_float(stats.get("turnoversTotal") or stats.get("turnovers")),
+            "fouls": self._coerce_float(stats.get("foulsPersonal")),
+            "points": points,
+            "plus_minus": plus_minus,
+        }
+
+    def _cdn_line_score(
+        self, home_team: dict[str, Any], away_team: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        line_score = []
+        home_periods = home_team.get("periods") or []
+        away_periods = away_team.get("periods") or []
+        max_periods = max(len(home_periods), len(away_periods))
+        for idx in range(max_periods):
+            label = f"Q{idx + 1}" if idx < 4 else ("OT" if idx == 4 else f"OT{idx - 3}")
+            home_pts = self._coerce_int(home_periods[idx].get("score")) if idx < len(home_periods) else 0
+            away_pts = self._coerce_int(away_periods[idx].get("score")) if idx < len(away_periods) else 0
+            line_score.append({"label": label, "home": home_pts or 0, "away": away_pts or 0})
+        return line_score
+
+    def _cdn_team_card(
+        self, team: dict[str, Any], is_home: bool, players: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        team_id = self._coerce_int(team.get("teamId"))
+        leaders = self._cdn_team_leaders(team_id, players)
+        return {
+            "team_id": team_id,
+            "team_name": team.get("teamName"),
+            "team_city": team.get("teamCity"),
+            "team_abbreviation": team.get("teamTricode"),
+            "score": self._coerce_int(team.get("score")) or 0,
+            "record": None,
+            "is_home": is_home,
+            "leaders": leaders,
+        }
+
+    def _cdn_team_leaders(self, team_id: int | None, players: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        filtered = [p for p in players if p.get("team_id") == team_id]
+        metrics = [
+            ("points", "PTS"),
+            ("rebounds", "REB"),
+            ("assists", "AST"),
+        ]
+        leaders: list[dict[str, Any]] = []
+        for metric, _label in metrics:
+            best = max(filtered, key=lambda p: p.get(metric) or -1, default=None)
+            if best and best.get(metric) is not None:
+                leaders.append(
+                    {
+                        "player_id": best.get("player_id") or 0,
+                        "player_name": best.get("player_name") or "Unknown",
+                        "points": best.get("points"),
+                        "rebounds": best.get("rebounds"),
+                        "assists": best.get("assists"),
+                        "stat_line": self._format_leader_line(best),
+                    }
+                )
+        return leaders
+
+    def _iso_duration_to_minutes(self, value: str | None) -> str | None:
+        if not value or not isinstance(value, str):
+            return None
+        match = re.match(r"PT(?:(\d+)M)?(?:(\d+)(?:\.\d+)?S)?", value)
+        if not match:
+            return None
+        minutes = int(match.group(1) or 0)
+        seconds = int(match.group(2) or 0)
+        return f"{minutes}:{str(seconds).zfill(2)}"
+
     def _load_advanced_rows(self, game_id: str) -> list[dict[str, Any]]:
         try:
-            endpoint = boxscoreadvancedv2.BoxScoreAdvancedV2(game_id=game_id)
+            endpoint = boxscoreadvancedv2.BoxScoreAdvancedV2(
+                game_id=game_id,
+                start_period="0",
+                end_period="0",
+                start_range="0",
+                end_range="0",
+                range_type="0",
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
+            )
             rows = self._dataset_to_rows(endpoint.player_stats)
             if rows:
                 return rows
         except Exception:
             logger.warning("boxscoreadvancedv2 returned no data; falling back to v3", exc_info=True)
-        endpoint_v3 = boxscoreadvancedv3.BoxScoreAdvancedV3(game_id=game_id)
+        endpoint_v3 = boxscoreadvancedv3.BoxScoreAdvancedV3(
+            game_id=game_id,
+            start_period="0",
+            end_period="0",
+            start_range="0",
+            end_range="0",
+            range_type="0",
+            headers=NBA_STATS_HEADERS,
+            timeout=self._stats_timeout,
+        )
         return cast(list[dict[str, Any]], endpoint_v3.player_stats.get_data_frame().to_dict("records"))
 
     def _normalize_traditional_player(self, row: dict[str, Any]) -> dict[str, Any]:
