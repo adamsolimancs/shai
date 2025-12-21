@@ -334,6 +334,7 @@ class PlayerCareerStatsRow(BaseModel):
     field_goal_pct: float | None = None
     three_point_pct: float | None = None
     free_throw_pct: float | None = None
+    true_shooting_pct: float | None = None
 
 
 class PlayerAward(BaseModel):

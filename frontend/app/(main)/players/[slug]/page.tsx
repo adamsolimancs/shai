@@ -34,6 +34,7 @@ type PlayerCareerStatsRow = {
   field_goal_pct: number | null;
   three_point_pct: number | null;
   free_throw_pct: number | null;
+  true_shooting_pct: number | null;
 };
 
 type PlayerGameLog = {
@@ -663,6 +664,9 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
   }));
   const awardSummary = normalizeAwardSummary(profile.awards, profile.rings);
   const allStarSeasons = extractAllStarSeasons(profile.awards);
+  const showTrueShooting = profile.careerSeasons.some(
+    (season) => season.true_shooting_pct !== null && season.true_shooting_pct !== undefined,
+  );
   const renderSeasonLabel = (seasonId: string) => (
     <span className="inline-flex items-center gap-1">
       {seasonId}
@@ -857,6 +861,7 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
               <tr>
                 <th className="px-4 py-3">Season</th>
                 <th className="px-4 py-3">Team</th>
+                <th className="px-4 py-3">MPG</th>
                 <th className="px-4 py-3">PPG</th>
                 <th className="px-4 py-3">RPG</th>
                 <th className="px-4 py-3">APG</th>
@@ -865,21 +870,50 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
                 <th className="px-4 py-3">FG%</th>
                 <th className="px-4 py-3">3P%</th>
                 <th className="px-4 py-3">FT%</th>
+                {showTrueShooting ? <th className="px-4 py-3">TS%</th> : null}
               </tr>
             </thead>
             <tbody className="divide-y divide-[color:rgba(var(--color-app-foreground-rgb),0.08)] text-[color:var(--color-app-foreground)]">
               {profile.careerSeasons.map((season) => (
-                <tr key={`avg-${season.season_id}-${season.team_abbreviation ?? "tot"}`} className="hover:bg-[color:rgba(var(--color-app-foreground-rgb),0.04)]">
-                  <td className="px-4 py-2 font-semibold">{renderSeasonLabel(season.season_id)}</td>
-                  <td className="px-4 py-2">{season.team_abbreviation ?? "—"}</td>
-                  <td className="px-4 py-2">{formatPerGame(season.points, season.games_played)}</td>
-                  <td className="px-4 py-2">{formatPerGame(season.rebounds, season.games_played)}</td>
-                  <td className="px-4 py-2">{formatPerGame(season.assists, season.games_played)}</td>
-                  <td className="px-4 py-2">{formatPerGame(season.steals, season.games_played)}</td>
-                  <td className="px-4 py-2">{formatPerGame(season.blocks, season.games_played)}</td>
-                  <td className="px-4 py-2">{formatPercentage(season.field_goal_pct)}</td>
-                  <td className="px-4 py-2">{formatPercentage(season.three_point_pct)}</td>
-                  <td className="px-4 py-2">{formatPercentage(season.free_throw_pct)}</td>
+                <tr key={`avg-${season.season_id}-${season.team_abbreviation ?? "tot"}`} className="group">
+                  <td className="px-4 py-2 font-semibold transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {renderSeasonLabel(season.season_id)}
+                  </td>
+                  <td className="px-4 py-2 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {season.team_abbreviation ?? "—"}
+                  </td>
+                  <td className="px-4 py-2 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {formatPerGame(season.minutes, season.games_played)}
+                  </td>
+                  <td className="px-4 py-2 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {formatPerGame(season.points, season.games_played)}
+                  </td>
+                  <td className="px-4 py-2 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {formatPerGame(season.rebounds, season.games_played)}
+                  </td>
+                  <td className="px-4 py-2 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {formatPerGame(season.assists, season.games_played)}
+                  </td>
+                  <td className="px-4 py-2 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {formatPerGame(season.steals, season.games_played)}
+                  </td>
+                  <td className="px-4 py-2 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {formatPerGame(season.blocks, season.games_played)}
+                  </td>
+                  <td className="px-4 py-2 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {formatPercentage(season.field_goal_pct)}
+                  </td>
+                  <td className="px-4 py-2 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {formatPercentage(season.three_point_pct)}
+                  </td>
+                  <td className="px-4 py-2 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {formatPercentage(season.free_throw_pct)}
+                  </td>
+                  {showTrueShooting ? (
+                    <td className="px-4 py-2 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                      {formatPercentage(season.true_shooting_pct)}
+                    </td>
+                  ) : null}
                 </tr>
               ))}
             </tbody>
@@ -893,29 +927,47 @@ export default async function PlayerPage({ params }: { params: Promise<{ slug: s
           <table className="min-w-full divide-y divide-[color:rgba(var(--color-app-foreground-rgb),0.08)] bg-[color:var(--color-app-surface)] text-xs text-[color:var(--color-app-foreground)] sm:text-sm">
             <thead className="text-left text-[0.65rem] uppercase tracking-[0.3em] text-[color:rgba(var(--color-app-foreground-rgb),0.5)] sm:text-[0.7rem]">
               <tr>
-                <th className="px-4 py-3">Season</th>
-                <th className="px-4 py-3">Team</th>
-                <th className="px-4 py-3">GP</th>
-                <th className="px-4 py-3">MIN</th>
-                <th className="px-4 py-3">PTS</th>
-                <th className="px-4 py-3">REB</th>
-                <th className="px-4 py-3">AST</th>
-                <th className="px-4 py-3">STL</th>
-                <th className="px-4 py-3">BLK</th>
+                <th className="pl-3 pr-0.5 py-2">Season</th>
+                <th className="pl-0 pr-1 py-2">Team</th>
+                <th className="px-3 py-2">GP</th>
+                <th className="px-3 py-2">MIN</th>
+                <th className="px-3 py-2">PTS</th>
+                <th className="px-3 py-2">REB</th>
+                <th className="px-3 py-2">AST</th>
+                <th className="px-3 py-2">STL</th>
+                <th className="px-3 py-2">BLK</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[color:rgba(var(--color-app-foreground-rgb),0.08)]">
               {profile.careerSeasons.map((season) => (
-                <tr key={`tot-${season.season_id}-${season.team_abbreviation ?? "tot"}`} className="hover:bg-[color:rgba(var(--color-app-foreground-rgb),0.04)]">
-                  <td className="px-4 py-2 font-semibold">{renderSeasonLabel(season.season_id)}</td>
-                  <td className="px-4 py-2">{season.team_abbreviation ?? "—"}</td>
-                  <td className="px-4 py-2">{season.games_played}</td>
-                  <td className="px-4 py-2">{formatInteger(season.minutes)}</td>
-                  <td className="px-4 py-2">{formatInteger(season.points)}</td>
-                  <td className="px-4 py-2">{formatInteger(season.rebounds)}</td>
-                  <td className="px-4 py-2">{formatInteger(season.assists)}</td>
-                  <td className="px-4 py-2">{formatInteger(season.steals)}</td>
-                  <td className="px-4 py-2">{formatInteger(season.blocks)}</td>
+                <tr key={`tot-${season.season_id}-${season.team_abbreviation ?? "tot"}`} className="group">
+                  <td className="pl-3 pr-0.5 py-1.5 font-semibold transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {renderSeasonLabel(season.season_id)}
+                  </td>
+                  <td className="pl-0 pr-1 py-1.5 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {season.team_abbreviation ?? "—"}
+                  </td>
+                  <td className="px-3 py-1.5 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {season.games_played}
+                  </td>
+                  <td className="px-3 py-1.5 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {formatInteger(season.minutes)}
+                  </td>
+                  <td className="px-3 py-1.5 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {formatInteger(season.points)}
+                  </td>
+                  <td className="px-3 py-1.5 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {formatInteger(season.rebounds)}
+                  </td>
+                  <td className="px-3 py-1.5 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {formatInteger(season.assists)}
+                  </td>
+                  <td className="px-3 py-1.5 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {formatInteger(season.steals)}
+                  </td>
+                  <td className="px-3 py-1.5 transition-colors group-hover:bg-[color:var(--color-app-primary-soft)]">
+                    {formatInteger(season.blocks)}
+                  </td>
                 </tr>
               ))}
             </tbody>

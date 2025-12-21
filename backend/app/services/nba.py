@@ -1353,6 +1353,9 @@ class NBAStatsClient:
             "free_throw_pct": (
                 self._safe_float(row.get("FT_PCT")) if row.get("FT_PCT") is not None else None
             ),
+            "true_shooting_pct": (
+                self._safe_float(row.get("TS_PCT")) if row.get("TS_PCT") is not None else None
+            ),
         }
 
     def _normalize_player_award(self, row: dict[str, Any]) -> dict[str, Any]:

@@ -47,11 +47,11 @@ export default function PlayerProfileSearch({ initialValue = "" }: PlayerProfile
         onChange={(event) => setValue(event.target.value)}
         className="rounded-2xl border border-white/10 bg-transparent px-4 py-2.5 text-sm text-white placeholder:text-white/50 focus:border-white/40 focus:outline-none"
       />
-      <button type="submit" className="btn-primary flex items-center justify-center gap-2 rounded-2xl px-6 py-2.5 text-sm font-semibold">
+      <button type="submit" className="btn-primary flex items-center justify-center gap-2 rounded-full px-5 py-2 text-sm font-semibold">
         {isPending && (
           <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" aria-hidden="true" />
         )}
-        <span>{isPending ? "Loading" : "Go to profile"}</span>
+        <span className="text-background">{isPending ? "Loading" : "Search"}</span>
       </button>
     </form>
   );

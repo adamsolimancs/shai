@@ -139,7 +139,7 @@ export default async function PlayersPage({ searchParams = {} }: { searchParams?
                     <li key={row.player_id}>
                       <Link
                         href={`/players/${slug}`}
-                        className="flex items-center justify-between rounded-2xl bg-white/5 px-4 py-3 transition hover:bg-white/10"
+                        className="flex items-center justify-between rounded-2xl bg-slate-950/40 px-4 py-3 transition hover:bg-slate-950/60"
                       >
                         <div>
                           <p className="text-xs uppercase tracking-[0.3em] text-white/40">#{index + 1}</p>
@@ -157,50 +157,6 @@ export default async function PlayersPage({ searchParams = {} }: { searchParams?
             </article>
           ))}
         </div>
-      </section>
-
-      <section className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <p className="text-xs uppercase tracking-[0.4em] text-white/40">Directory</p>
-            <h2 className="mt-2 text-2xl font-semibold text-white">{directorySubset.length} players displayed</h2>
-            {directory.length > DIRECTORY_LIMIT && (
-              <p className="text-xs text-white/60">Showing the first {DIRECTORY_LIMIT} matches for readability.</p>
-            )}
-          </div>
-          <span className="text-xs uppercase tracking-[0.3em] text-white/60">
-            Source: /v1/players?season={DEFAULT_SEASON}
-          </span>
-        </div>
-        {directorySubset.length === 0 ? (
-          <div className="rounded-3xl border border-white/10 bg-slate-950/40 p-10 text-center text-white/70">
-            No players matched that filter. Try broadening the query or removing the roster filter.
-          </div>
-        ) : (
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-            {directorySubset.map((player) => (
-              <Link
-                key={player.id}
-                href={`/players/${encodeURIComponent(slugify(player.full_name))}`}
-                className="rounded-3xl border border-white/10 bg-slate-950/60 p-5 transition hover:border-white/30"
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.4em] text-white/50">{player.team_abbreviation ?? "FA"}</p>
-                    <h3 className="mt-1 text-xl font-semibold text-white">{player.full_name}</h3>
-                  </div>
-                  <span
-                    className={`rounded-full px-3 py-1 text-xs font-semibold ${
-                      player.is_active ? "border border-emerald-400/30 text-emerald-200" : "border border-white/20 text-white/60"
-                    }`}
-                  >
-                    {player.is_active ? "Active" : "Inactive"}
-                  </span>
-                </div>
-              </Link>
-            ))}
-          </div>
-        )}
       </section>
     </div>
   );
