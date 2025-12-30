@@ -508,7 +508,7 @@ export default async function TeamsPage({ searchParams = {} }: { searchParams?: 
       <section className="space-y-4">
         <div>
           <p className="text-xs uppercase tracking-[0.4em] text-white/40">Historic data</p>
-          <h2 className="mt-2 text-2xl font-semibold text-white">Archive jumps</h2>
+          <h2 className="mt-2 text-2xl font-semibold text-white">Seasons</h2>
           <p className="mt-1 text-sm text-white/60">
             Need to study a previous season? Use these quick links to reload this page with archived data.
           </p>
