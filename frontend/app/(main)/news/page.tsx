@@ -51,15 +51,8 @@ function formatStoryTime(value: string) {
   return STORY_DATE.format(new Date(value));
 }
 
-function accentClasses(accent: StoryAccent) {
-  switch (accent) {
-    case "highlight":
-      return "border-blue-400/30 bg-blue-500/10";
-    case "alert":
-      return "border-amber-300/40 bg-amber-200/10";
-    default:
-      return "border-white/10 bg-slate-950/60";
-  }
+function accentClasses() {
+  return "border-white/10 bg-slate-950/60";
 }
 
 export default async function NewsPage() {
@@ -74,7 +67,7 @@ export default async function NewsPage() {
       accent: deriveAccent(article),
     }))
     .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())
-    .slice(0, 10);
+    .slice(0, 12);
 
   const pulseAggregate = games.slice(0, 12).reduce(
     (acc, game) => {
@@ -122,64 +115,59 @@ export default async function NewsPage() {
         </div>
       </header>
 
-      <section className="grid gap-6 lg:grid-cols-[2fr_1fr]">
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-xs uppercase tracking-[0.4em] text-white/40">Top stories</p>
-              <h2 className="mt-2 text-2xl font-semibold text-white">Instant recaps & talking points</h2>
-            </div>
+      <section className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-xs uppercase tracking-[0.4em] text-white/40">Top stories</p>
           </div>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {stories.length === 0 ? (
-            <div className="rounded-3xl border border-white/10 bg-slate-950/60 p-10 text-center text-white/70">
+            <div className="rounded-3xl border border-white/10 bg-slate-950/60 p-10 text-center text-white/70 sm:col-span-2 xl:col-span-2">
               No stories yet—check back after the first slate posts scores.
             </div>
           ) : (
-            <div className="grid gap-4 md:grid-cols-2">
-              {stories.map((story) => (
-                <article key={story.id} className={`rounded-3xl border p-5 transition ${accentClasses(story.accent)}`}>
-                  <p className="text-xs uppercase tracking-[0.4em] text-white/50">{story.source}</p>
-                  <h3 className="mt-3 text-xl font-semibold text-white">{story.title}</h3>
-                  <p className="mt-2 text-sm text-white/70">{story.summary}</p>
-                  <div className="mt-4 flex items-center justify-between text-xs text-white/60">
-                    <span>{formatStoryTime(story.published_at)}</span>
-                    <a
-                      href={story.url}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="font-semibold text-blue-300 hover:text-blue-200"
-                    >
-                      Read article
-                    </a>
-                  </div>
-                </article>
-              ))}
-            </div>
+            stories.map((story) => (
+              <article key={story.id} className={`rounded-3xl border p-5 transition ${accentClasses()}`}>
+                <p className="text-xs uppercase tracking-[0.4em] text-white/50">{story.source}</p>
+                <h3 className="mt-3 text-xl font-semibold text-white">{story.title}</h3>
+                <p className="mt-2 text-sm text-white/70">{story.summary}</p>
+                <div className="mt-4 flex items-center justify-between text-xs text-white/60">
+                  <span>{formatStoryTime(story.published_at)}</span>
+                  <a
+                    href={story.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-semibold text-blue-300 hover:text-blue-200"
+                  >
+                    Read article
+                  </a>
+                </div>
+              </article>
+            ))
           )}
-        </div>
-        <aside className="space-y-6">
-          <article className="rounded-3xl border border-white/10 bg-slate-950/60 p-5">
-            <p className="text-xs uppercase tracking-[0.4em] text-white/40">Keep exploring</p>
-            <div className="mt-4 space-y-3">
-              {[
-                { href: "/scores", label: "Tonight's scoreboard" },
-                { href: "/players", label: "Deep dive on players" },
-                { href: "/teams", label: "Team directory" },
-              ].map((item) => (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  className="block rounded-2xl border border-white/10 px-4 py-3 text-sm font-semibold text-white transition hover:border-white/40"
-                >
-                  <span className="flex items-center justify-between">
+          <div className="rounded-3xl border border-white/10 bg-slate-950/60 px-6 py-4 sm:col-span-2 xl:col-span-3">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-xs uppercase tracking-[0.4em] text-white/40">Keep exploring</p>
+              <div className="flex flex-wrap gap-3">
+                {[
+                  { href: "/scores", label: "Scores" },
+                  { href: "/players", label: "Player directory" },
+                  { href: "/teams", label: "Team directory" },
+                ].map((item) => (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    className="inline-flex items-center gap-2 rounded-full border border-white/10 px-4 py-2 text-sm font-semibold text-white transition hover:border-white/40"
+                  >
                     {item.label}
                     <span aria-hidden="true">→</span>
-                  </span>
-                </Link>
-              ))}
+                  </Link>
+                ))}
+              </div>
             </div>
-          </article>
-        </aside>
+          </div>
+        </div>
       </section>
     </div>
   );
