@@ -16,8 +16,8 @@ from fastapi import HTTPException, status
 from nba_api.stats.endpoints import (
     boxscoreadvancedv2,
     boxscoreadvancedv3,
-    boxscoretraditionalv2,
     boxscoresummaryv2,
+    boxscoretraditionalv2,
     commonallplayers,
     leaguedashplayerstats,
     leaguedashteamstats,
@@ -49,8 +49,8 @@ from ..schemas import (
     ResolveResult,
     ShotLocation,
     Team,
-    TeamGameRow,
     TeamDetail,
+    TeamGameRow,
     TeamStatsRow,
 )
 from ..utils import paginate, validate_season
@@ -63,7 +63,11 @@ NBA_STATS_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Origin": "https://www.nba.com",
     "Referer": "https://www.nba.com/",
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0 Safari/537.36"
+    ),
     "x-nba-stats-origin": "stats",
     "x-nba-stats-token": "true",
 }
@@ -821,9 +825,14 @@ class NBAStatsClient:
         officials_rows = self._dataset_to_rows(summary.officials)
 
         start_dt = self._parse_datetime(summary_row.get("GAME_DATE_EST"))
-        attendance = self._coerce_int(game_info_rows[0].get("ATTENDANCE")) if game_info_rows else None
+        attendance = (
+            self._coerce_int(game_info_rows[0].get("ATTENDANCE")) if game_info_rows else None
+        )
         officials = [
-            "{} {}".format(row.get("FIRST_NAME", "").strip(), row.get("LAST_NAME", "").strip()).strip()
+            "{} {}".format(
+                row.get("FIRST_NAME", "").strip(),
+                row.get("LAST_NAME", "").strip(),
+            ).strip()
             for row in officials_rows
             if row.get("FIRST_NAME") or row.get("LAST_NAME")
         ]
@@ -831,7 +840,11 @@ class NBAStatsClient:
         line_score = self._build_line_score(line_score_rows, home_team_id, away_team_id)
         home_team = self._build_team_card(home_team_id, True, line_score_rows, traditional_players)
         away_team = self._build_team_card(away_team_id, False, line_score_rows, traditional_players)
-        summary_text = self._compose_summary(home_team, away_team, summary_row.get("GAME_STATUS_TEXT"))
+        summary_text = self._compose_summary(
+            home_team,
+            away_team,
+            summary_row.get("GAME_STATUS_TEXT"),
+        )
         arena = home_team.get("team_city")
 
         return {
@@ -918,7 +931,9 @@ class NBAStatsClient:
                     "field_goals_attempted": self._coerce_float(stats.get("fieldGoalsAttempted")),
                     "field_goal_pct": self._coerce_float(stats.get("fieldGoalsPercentage")),
                     "three_point_made": self._coerce_float(stats.get("threePointersMade")),
-                    "three_point_attempted": self._coerce_float(stats.get("threePointersAttempted")),
+                    "three_point_attempted": self._coerce_float(
+                        stats.get("threePointersAttempted")
+                    ),
                     "three_point_pct": self._coerce_float(stats.get("threePointersPercentage")),
                     "free_throws_made": self._coerce_float(stats.get("freeThrowsMade")),
                     "free_throws_attempted": self._coerce_float(stats.get("freeThrowsAttempted")),
@@ -980,8 +995,14 @@ class NBAStatsClient:
         max_periods = max(len(home_periods), len(away_periods))
         for idx in range(max_periods):
             label = f"Q{idx + 1}" if idx < 4 else ("OT" if idx == 4 else f"OT{idx - 3}")
-            home_pts = self._coerce_int(home_periods[idx].get("score")) if idx < len(home_periods) else 0
-            away_pts = self._coerce_int(away_periods[idx].get("score")) if idx < len(away_periods) else 0
+            if idx < len(home_periods):
+                home_pts = self._coerce_int(home_periods[idx].get("score")) or 0
+            else:
+                home_pts = 0
+            if idx < len(away_periods):
+                away_pts = self._coerce_int(away_periods[idx].get("score")) or 0
+            else:
+                away_pts = 0
             line_score.append({"label": label, "home": home_pts or 0, "away": away_pts or 0})
         return line_score
 
@@ -1001,7 +1022,9 @@ class NBAStatsClient:
             "leaders": leaders,
         }
 
-    def _cdn_team_leaders(self, team_id: int | None, players: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _cdn_team_leaders(
+        self, team_id: int | None, players: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         filtered = [p for p in players if p.get("team_id") == team_id]
         metrics = [
             ("points", "PTS"),
@@ -1061,7 +1084,10 @@ class NBAStatsClient:
             headers=NBA_STATS_HEADERS,
             timeout=self._stats_timeout,
         )
-        return cast(list[dict[str, Any]], endpoint_v3.player_stats.get_data_frame().to_dict("records"))
+        return cast(
+            list[dict[str, Any]],
+            endpoint_v3.player_stats.get_data_frame().to_dict("records"),
+        )
 
     def _normalize_traditional_player(self, row: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -1174,8 +1200,12 @@ class NBAStatsClient:
             "assist_pct": self._coerce_float(pick("AST_PCT", "assistPercentage")),
             "assist_to_turnover": self._coerce_float(pick("AST_TOV", "assistToTurnover")),
             "rebound_pct": self._coerce_float(pick("REB_PCT", "reboundPercentage")),
-            "offensive_rebound_pct": self._coerce_float(pick("OREB_PCT", "offensiveReboundPercentage")),
-            "defensive_rebound_pct": self._coerce_float(pick("DREB_PCT", "defensiveReboundPercentage")),
+            "offensive_rebound_pct": self._coerce_float(
+                pick("OREB_PCT", "offensiveReboundPercentage")
+            ),
+            "defensive_rebound_pct": self._coerce_float(
+                pick("DREB_PCT", "defensiveReboundPercentage")
+            ),
             "pace": self._coerce_float(pick("PACE", "pace")),
             "pace_per40": self._coerce_float(pick("PACE_PER40", "pacePer40")),
             "possessions": self._coerce_float(pick("POSS", "possessions")),
@@ -1189,7 +1219,10 @@ class NBAStatsClient:
         line_score_rows: list[dict[str, Any]],
         players: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        row = next((item for item in line_score_rows if self._safe_int(item.get("TEAM_ID")) == team_id), {})
+        row = next(
+            (item for item in line_score_rows if self._safe_int(item.get("TEAM_ID")) == team_id),
+            {},
+        )
         return {
             "team_id": team_id,
             "team_name": row.get("TEAM_NICKNAME") or row.get("TEAM_NAME"),
@@ -1202,7 +1235,9 @@ class NBAStatsClient:
         }
 
     def _team_leaders(self, players: list[dict[str, Any]], team_id: int) -> list[dict[str, Any]]:
-        filtered = [row for row in players if row.get("team_id") == team_id and not row.get("comment")]
+        filtered = [
+            row for row in players if row.get("team_id") == team_id and not row.get("comment")
+        ]
         filtered.sort(key=lambda player: player.get("points") or 0, reverse=True)
         leaders: list[dict[str, Any]] = []
         for row in filtered[:3]:
@@ -1232,7 +1267,10 @@ class NBAStatsClient:
         home_score = int(home.get("score") or 0)
         away_score = int(away.get("score") or 0)
         if home_score == away_score:
-            return f"{status_text}: {home_score}-{away_score} in {home.get('team_city') or 'NBA play'}."
+            return (
+                f"{status_text}: {home_score}-{away_score} in "
+                f"{home.get('team_city') or 'NBA play'}."
+            )
         winner = home if home_score > away_score else away
         loser = away if winner is home else home
         margin = abs(home_score - away_score)
@@ -1397,7 +1435,9 @@ class NBAStatsClient:
         rows: list[list[Any]] = payload.get("data") or []
         normalized: list[dict[str, Any]] = []
         for row in rows:
-            normalized.append({str(headers[idx]): row[idx] for idx in range(min(len(headers), len(row)))})
+            normalized.append(
+                {str(headers[idx]): row[idx] for idx in range(min(len(headers), len(row)))}
+            )
         return normalized
 
     def _resolution_payload(self, resolution: Resolution | None) -> ResolutionPayload | None:
