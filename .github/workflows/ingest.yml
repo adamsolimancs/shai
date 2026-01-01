@@ -25,5 +25,4 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_SCHEMA: public
           NBA_TIME_ZONE: America/New_York
-          HISTORIC_SEASONS_BACK: 5
         run: node workers/worker-live.js
