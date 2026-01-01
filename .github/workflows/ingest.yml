@@ -1,0 +1,26 @@
+name: Ingestion Cron
+
+on:
+  schedule:
+    - cron: "*/5 * * * *" # GitHub doesn't guarantee 1-minute cron
+  workflow_dispatch:
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - name: Run worker
+        env:
+          WORKER_MODE: cron
+          CRON_MIN_INTERVAL_MS: 60000
+          NBA_API_BASE_URL: ${{ secrets.NBA_API_BASE_URL }}
+          NBA_API_KEY: ${{ secrets.NBA_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_SCHEMA: public
+          NBA_TIME_ZONE: America/New_York
+        run: node workers/worker-live.js
