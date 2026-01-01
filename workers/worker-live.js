@@ -6,14 +6,25 @@ if (typeof fetch !== "function") {
   process.exit(1);
 }
 
+function normalizeBaseUrl(value) {
+  if (!value) return value;
+  const trimmed = value.trim().replace(/\/+$/, "");
+  if (!/^https?:\/\//i.test(trimmed)) {
+    return `https://${trimmed}`;
+  }
+  return trimmed;
+}
+
 const CONFIG = {
   workerMode: process.env.WORKER_MODE || "cron",
-  apiBaseUrl: process.env.NBA_API_BASE_URL || "http://localhost:8080",
+  apiBaseUrl: normalizeBaseUrl(process.env.NBA_API_BASE_URL || "http://localhost:8080"),
   apiKey: process.env.NBA_API_KEY,
   supabaseUrl: process.env.SUPABASE_URL,
   supabaseKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
   supabaseSchema: process.env.SUPABASE_SCHEMA || "public",
   seasonOverride: process.env.NBA_SEASON,
+  historicSeasons: process.env.HISTORIC_SEASONS || "",
+  historicSeasonsBack: Number(process.env.HISTORIC_SEASONS_BACK || 0),
   timeZone: process.env.NBA_TIME_ZONE || "America/New_York",
   cronMinIntervalMs: Number(process.env.CRON_MIN_INTERVAL_MS || 60 * 1000),
   livePollIntervalMs: Number(process.env.LIVE_GAMES_INTERVAL_MS || 5000),
@@ -21,6 +32,7 @@ const CONFIG = {
   teamsIntervalMs: Number(process.env.TEAMS_INTERVAL_MS || 6 * 60 * 60 * 1000),
   playersIntervalMs: Number(process.env.PLAYERS_INTERVAL_MS || 6 * 60 * 60 * 1000),
   standingsIntervalMs: Number(process.env.STANDINGS_INTERVAL_MS || 15 * 60 * 1000),
+  playerStatsIntervalMs: Number(process.env.PLAYER_STATS_INTERVAL_MS || 6 * 60 * 60 * 1000),
   teamStatsIntervalMs: Number(process.env.TEAM_STATS_INTERVAL_MS || 60 * 60 * 1000),
   statusRefreshMs: Number(process.env.STATUS_REFRESH_MS || 60 * 1000),
   boxscoreConcurrency: Number(process.env.BOXSCORE_CONCURRENCY || 3),
@@ -40,6 +52,8 @@ const activeGameIds = new Set();
 const statusCache = new Map();
 let cachedSeason = null;
 let cachedSeasonAt = 0;
+let cachedSupportedSeasons = null;
+let cachedSupportedSeasonsAt = 0;
 
 process.on("unhandledRejection", (reason) => {
   console.error("Unhandled rejection", reason);
@@ -65,6 +79,20 @@ function formatDateInTZ(timeZone) {
   return `${lookup.year}-${lookup.month}-${lookup.day}`;
 }
 
+function getSeasonForDate(timeZone, date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+  }).formatToParts(date);
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const year = Number(lookup.year);
+  const month = Number(lookup.month);
+  const startYear = month >= 10 ? year : year - 1;
+  const suffix = String((startYear + 1) % 100).padStart(2, "0");
+  return `${startYear}-${suffix}`;
+}
+
 function isFinalStatus(status) {
   return Boolean(status && /final/i.test(status));
 }
@@ -77,6 +105,13 @@ function isLiveStatus(status) {
   if (text.includes("postponed") || text.includes("cancel")) return false;
   if (text.includes("pm") || text.includes("am") || text.includes("et")) return false;
   return true;
+}
+
+function parseSeasonList(value) {
+  return value
+    .split(",")
+    .map((season) => season.trim())
+    .filter(Boolean);
 }
 
 async function apiRequest(path) {
@@ -206,19 +241,58 @@ async function getSeason() {
   if (CONFIG.seasonOverride) {
     return CONFIG.seasonOverride;
   }
+  const seasons = await getSupportedSeasons();
+  const preferred = getSeasonForDate(CONFIG.timeZone);
+  if (seasons.includes(preferred)) {
+    return preferred;
+  }
+  const fallback = seasons.at(-1);
+  if (!fallback) {
+    throw new Error("Unable to determine active season");
+  }
+  return fallback;
+}
+
+async function getSupportedSeasons() {
   const now = Date.now();
-  if (cachedSeason && now - cachedSeasonAt < 6 * 60 * 60 * 1000) {
-    return cachedSeason;
+  if (cachedSupportedSeasons && now - cachedSupportedSeasonsAt < 6 * 60 * 60 * 1000) {
+    return cachedSupportedSeasons;
   }
   const payload = await apiRequest("/v1/meta");
   const seasons = payload.data?.supported_seasons || [];
-  const season = seasons.at(-1);
-  if (!season) {
-    throw new Error("Unable to determine active season");
+  if (!seasons.length) {
+    throw new Error("Unable to determine supported seasons");
   }
-  cachedSeason = season;
+  cachedSupportedSeasons = seasons;
+  cachedSupportedSeasonsAt = now;
+  cachedSeason = seasons.at(-1) || null;
   cachedSeasonAt = now;
-  return season;
+  return seasons;
+}
+
+async function getSeasonsToSync() {
+  const supported = await getSupportedSeasons();
+  const seasonSet = new Set();
+  const currentSeason = await getSeason();
+  seasonSet.add(currentSeason);
+
+  const manualSeasons = parseSeasonList(CONFIG.historicSeasons);
+  manualSeasons.forEach((season) => seasonSet.add(season));
+
+  if (CONFIG.historicSeasonsBack > 0) {
+    const recent = supported.slice(-CONFIG.historicSeasonsBack);
+    recent.forEach((season) => seasonSet.add(season));
+  }
+
+  const ordered = supported.filter((season) => seasonSet.has(season));
+  const extras = manualSeasons.filter((season) => !supported.includes(season));
+  const combined = ordered.concat(extras);
+  const currentIndex = combined.indexOf(currentSeason);
+  if (currentIndex !== -1 && currentIndex !== combined.length - 1) {
+    combined.splice(currentIndex, 1);
+    combined.push(currentSeason);
+  }
+  return combined;
 }
 
 async function refreshTeams() {
@@ -230,45 +304,86 @@ async function refreshTeams() {
   }, { season });
 }
 
-async function refreshPlayers() {
-  const season = await getSeason();
-  await withIngestionState("players", async () => {
-    let page = 1;
-    const pageSize = 200;
-    let total = 0;
-    while (true) {
-      const payload = await apiRequest(`/v1/players?season=${season}&page=${page}&page_size=${pageSize}`);
-      const rows = payload.data || [];
-      if (rows.length) {
-        await supabaseUpsert("players", rows, "id");
-        total += rows.length;
-      }
-      const nextPage = payload.meta?.pagination?.next;
-      if (!nextPage) break;
-      page = nextPage;
+async function refreshPlayersForSeason(season) {
+  let page = 1;
+  const pageSize = 200;
+  let total = 0;
+  while (true) {
+    const payload = await apiRequest(
+      `/v1/players?season=${season}&page=${page}&page_size=${pageSize}`
+    );
+    const rows = payload.data || [];
+    if (rows.length) {
+      await supabaseUpsert("players", rows, "id");
+      total += rows.length;
     }
-    log(`Upserted ${total} players`);
-  }, { season });
+    const nextPage = payload.meta?.pagination?.next;
+    if (!nextPage) break;
+    page = nextPage;
+  }
+  log(`Upserted ${total} players for ${season}`);
+}
+
+async function refreshPlayers() {
+  const seasons = await getSeasonsToSync();
+  await withIngestionState("players", async () => {
+    for (const season of seasons) {
+      await refreshPlayersForSeason(season);
+    }
+  }, { seasons });
 }
 
 async function refreshStandings() {
-  const season = await getSeason();
+  const seasons = await getSeasonsToSync();
   await withIngestionState("league_standings", async () => {
-    const payload = await apiRequest(`/v1/league_standings?season=${season}`);
-    const rows = (payload.data || []).map((row) => ({ ...row, season }));
-    await supabaseUpsert("league_standings", rows, "season,team_id");
-    log(`Upserted ${rows.length} league standings`);
-  }, { season });
+    for (const season of seasons) {
+      const payload = await apiRequest(`/v1/league_standings?season=${season}`);
+      const rows = (payload.data || []).map((row) => ({ ...row, season }));
+      await supabaseUpsert("league_standings", rows, "season,team_id");
+      log(`Upserted ${rows.length} league standings for ${season}`);
+    }
+  }, { seasons });
 }
 
 async function refreshTeamStats() {
-  const season = await getSeason();
+  const seasons = await getSeasonsToSync();
   await withIngestionState("team_stats", async () => {
-    const payload = await apiRequest(`/v1/teams/stats?season=${season}`);
+    for (const season of seasons) {
+      const payload = await apiRequest(`/v1/teams/stats?season=${season}`);
+      const rows = (payload.data || []).map((row) => ({ ...row, season }));
+      await supabaseUpsert("team_stats", rows, "season,team_id");
+      log(`Upserted ${rows.length} team stats for ${season}`);
+    }
+  }, { seasons });
+}
+
+async function refreshPlayerSeasonStatsForSeason(season) {
+  let page = 1;
+  const pageSize = 200;
+  let total = 0;
+  while (true) {
+    const payload = await apiRequest(
+      `/v1/players/stats?season=${season}&page=${page}&page_size=${pageSize}`
+    );
     const rows = (payload.data || []).map((row) => ({ ...row, season }));
-    await supabaseUpsert("team_stats", rows, "season,team_id");
-    log(`Upserted ${rows.length} team stats`);
-  }, { season });
+    if (rows.length) {
+      await supabaseUpsert("player_season_stats", rows, "season,player_id");
+      total += rows.length;
+    }
+    const nextPage = payload.meta?.pagination?.next;
+    if (!nextPage) break;
+    page = nextPage;
+  }
+  log(`Upserted ${total} player season stats for ${season}`);
+}
+
+async function refreshPlayerSeasonStats() {
+  const seasons = await getSeasonsToSync();
+  await withIngestionState("player_season_stats", async () => {
+    for (const season of seasons) {
+      await refreshPlayerSeasonStatsForSeason(season);
+    }
+  }, { seasons });
 }
 
 async function fetchBoxscore(gameId) {
@@ -466,14 +581,14 @@ async function runCron() {
   if (await shouldRun("scoreboard", CONFIG.scoreboardIntervalMs)) {
     await refreshScoreboard({ mode: "cron" });
   }
-  if (await shouldRun("teams", CONFIG.teamsIntervalMs)) {
-    await refreshTeams();
-  }
   if (await shouldRun("players", CONFIG.playersIntervalMs)) {
     await refreshPlayers();
   }
   if (await shouldRun("league_standings", CONFIG.standingsIntervalMs)) {
     await refreshStandings();
+  }
+  if (await shouldRun("player_season_stats", CONFIG.playerStatsIntervalMs)) {
+    await refreshPlayerSeasonStats();
   }
   if (await shouldRun("team_stats", CONFIG.teamStatsIntervalMs)) {
     await refreshTeamStats();
@@ -486,6 +601,7 @@ async function runLive() {
   scheduleTask("teams", CONFIG.teamsIntervalMs, refreshTeams, true);
   scheduleTask("players", CONFIG.playersIntervalMs, refreshPlayers, true);
   scheduleTask("standings", CONFIG.standingsIntervalMs, refreshStandings, true);
+  scheduleTask("player-season-stats", CONFIG.playerStatsIntervalMs, refreshPlayerSeasonStats, true);
   scheduleTask("team-stats", CONFIG.teamStatsIntervalMs, refreshTeamStats, true);
 }
 
