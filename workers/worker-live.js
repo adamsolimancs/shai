@@ -8,11 +8,19 @@ if (typeof fetch !== "function") {
 
 function normalizeBaseUrl(value) {
   if (!value) return value;
-  const trimmed = value.trim().replace(/\/+$/, "");
+  const trimmed = value
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .replace(/\/+$/, "");
   if (!/^https?:\/\//i.test(trimmed)) {
     return `https://${trimmed}`;
   }
   return trimmed;
+}
+
+function parseBoolean(value, fallback = false) {
+  if (value === undefined || value === null || value === "") return fallback;
+  return ["1", "true", "yes", "y", "on"].includes(String(value).toLowerCase());
 }
 
 const CONFIG = {
@@ -27,6 +35,7 @@ const CONFIG = {
   historicSeasonsBack: Number(process.env.HISTORIC_SEASONS_BACK || 0),
   timeZone: process.env.NBA_TIME_ZONE || "America/New_York",
   cronMinIntervalMs: Number(process.env.CRON_MIN_INTERVAL_MS || 60 * 1000),
+  gamesIntervalMs: Number(process.env.GAMES_INTERVAL_MS || 6 * 60 * 60 * 1000),
   livePollIntervalMs: Number(process.env.LIVE_GAMES_INTERVAL_MS || 5000),
   scoreboardIntervalMs: Number(process.env.SCOREBOARD_INTERVAL_MS || 10000),
   teamsIntervalMs: Number(process.env.TEAMS_INTERVAL_MS || 6 * 60 * 60 * 1000),
@@ -34,6 +43,19 @@ const CONFIG = {
   standingsIntervalMs: Number(process.env.STANDINGS_INTERVAL_MS || 15 * 60 * 1000),
   playerStatsIntervalMs: Number(process.env.PLAYER_STATS_INTERVAL_MS || 6 * 60 * 60 * 1000),
   teamStatsIntervalMs: Number(process.env.TEAM_STATS_INTERVAL_MS || 60 * 60 * 1000),
+  teamDetailsIntervalMs: Number(process.env.TEAM_DETAILS_INTERVAL_MS || 24 * 60 * 60 * 1000),
+  teamGameLogsIntervalMs: Number(process.env.TEAM_GAME_LOGS_INTERVAL_MS || 6 * 60 * 60 * 1000),
+  teamGameLogsSeasonsBack: Number(process.env.TEAM_GAME_LOGS_SEASONS_BACK || 1),
+  playerAwardsIntervalMs: Number(process.env.PLAYER_AWARDS_INTERVAL_MS || 24 * 60 * 60 * 1000),
+  playerAwardsActiveOnly: parseBoolean(process.env.PLAYER_AWARDS_ACTIVE_ONLY, true),
+  playerGameLogsIntervalMs: Number(process.env.PLAYER_GAME_LOGS_INTERVAL_MS || 24 * 60 * 60 * 1000),
+  playerGameLogsSeasonsBack: Number(process.env.PLAYER_GAME_LOGS_SEASONS_BACK || 1),
+  playerGameLogsActiveOnly: parseBoolean(process.env.PLAYER_GAME_LOGS_ACTIVE_ONLY, true),
+  playerGameLogsMaxPlayers: Number(process.env.PLAYER_GAME_LOGS_MAX_PLAYERS || 0),
+  boxscoreBackfillIntervalMs: Number(
+    process.env.BOXSCORE_BACKFILL_INTERVAL_MS || 60 * 60 * 1000
+  ),
+  boxscoreLookbackDays: Number(process.env.BOXSCORE_LOOKBACK_DAYS || 7),
   statusRefreshMs: Number(process.env.STATUS_REFRESH_MS || 60 * 1000),
   boxscoreConcurrency: Number(process.env.BOXSCORE_CONCURRENCY || 3),
   upsertChunkSize: Number(process.env.UPSERT_CHUNK_SIZE || 200),
@@ -68,13 +90,13 @@ function log(message, extra) {
   }
 }
 
-function formatDateInTZ(timeZone) {
+function formatDateInTZ(timeZone, date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).formatToParts(new Date());
+  }).formatToParts(date);
   const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
   return `${lookup.year}-${lookup.month}-${lookup.day}`;
 }
@@ -295,6 +317,47 @@ async function getSeasonsToSync() {
   return combined;
 }
 
+async function getRecentSeasons(count) {
+  const supported = await getSupportedSeasons();
+  const currentSeason = await getSeason();
+  const currentIndex = supported.indexOf(currentSeason);
+  if (currentIndex === -1) {
+    return supported.slice(-Math.max(1, count));
+  }
+  const start = Math.max(0, currentIndex - Math.max(1, count) + 1);
+  return supported.slice(start, currentIndex + 1);
+}
+
+async function fetchTeamsForSeason(season) {
+  const payload = await apiRequest(`/v1/teams?season=${season}`);
+  return payload.data || [];
+}
+
+async function fetchPlayerIds(season, { activeOnly = false, maxPlayers = 0 } = {}) {
+  let page = 1;
+  const pageSize = 200;
+  const players = [];
+  const activeParam = activeOnly ? "&active=true" : "";
+  while (true) {
+    const payload = await apiRequest(
+      `/v1/players?season=${season}&page=${page}&page_size=${pageSize}${activeParam}`
+    );
+    const rows = payload.data || [];
+    for (const row of rows) {
+      if (row && row.id) {
+        players.push(row.id);
+      }
+      if (maxPlayers && players.length >= maxPlayers) {
+        return players;
+      }
+    }
+    const nextPage = payload.meta?.pagination?.next;
+    if (!nextPage) break;
+    page = nextPage;
+  }
+  return players;
+}
+
 async function refreshTeams() {
   const season = await getSeason();
   await withIngestionState("teams", async () => {
@@ -302,6 +365,31 @@ async function refreshTeams() {
     await supabaseUpsert("teams", payload.data, "id");
     log(`Upserted ${payload.data.length} teams`);
   }, { season });
+}
+
+async function refreshGames() {
+  const seasons = await getSeasonsToSync();
+  await withIngestionState("games", async () => {
+    for (const season of seasons) {
+      let page = 1;
+      const pageSize = 200;
+      let total = 0;
+      while (true) {
+        const payload = await apiRequest(
+          `/v1/games?season=${season}&page=${page}&page_size=${pageSize}`
+        );
+        const rows = payload.data || [];
+        if (rows.length) {
+          await supabaseUpsert("games", rows, "game_id");
+          total += rows.length;
+        }
+        const nextPage = payload.meta?.pagination?.next;
+        if (!nextPage) break;
+        page = nextPage;
+      }
+      log(`Upserted ${total} games for ${season}`);
+    }
+  }, { seasons });
 }
 
 async function refreshPlayersForSeason(season) {
@@ -355,6 +443,91 @@ async function refreshTeamStats() {
       log(`Upserted ${rows.length} team stats for ${season}`);
     }
   }, { seasons });
+}
+
+async function refreshTeamDetails() {
+  const season = await getSeason();
+  await withIngestionState("team_details", async () => {
+    const teams = await fetchTeamsForSeason(season);
+    await runWithConcurrency(teams, CONFIG.boxscoreConcurrency, async (team) => {
+      const payload = await apiRequest(`/v1/teams/${team.id}/details`);
+      const detail = payload.data || {};
+      const row = detail.team_id ? detail : { ...detail, team_id: team.id };
+      await supabaseUpsert("team_details", [row], "team_id");
+    });
+    log(`Upserted ${teams.length} team details`);
+  }, { season });
+}
+
+async function refreshTeamGameLogs() {
+  const seasons = await getRecentSeasons(CONFIG.teamGameLogsSeasonsBack);
+  const currentSeason = await getSeason();
+  const teams = await fetchTeamsForSeason(currentSeason);
+  const tasks = [];
+  for (const season of seasons) {
+    for (const team of teams) {
+      tasks.push({ season, teamId: team.id });
+    }
+  }
+  await withIngestionState("team_game_logs", async () => {
+    await runWithConcurrency(tasks, CONFIG.boxscoreConcurrency, async (task) => {
+      let page = 1;
+      const pageSize = 200;
+      let total = 0;
+      while (true) {
+        const payload = await apiRequest(
+          `/v1/games?season=${task.season}&team_id=${task.teamId}&per_team=true&page=${page}&page_size=${pageSize}`
+        );
+        const rows = payload.data || [];
+        if (rows.length) {
+          await supabaseUpsert("team_game_logs", rows, "game_id,team_id");
+          total += rows.length;
+        }
+        const nextPage = payload.meta?.pagination?.next;
+        if (!nextPage) break;
+        page = nextPage;
+      }
+      log(`Upserted ${total} team game logs for ${task.season} team ${task.teamId}`);
+    });
+  }, { seasons, team_count: teams.length });
+}
+
+async function refreshPlayerAwards() {
+  const season = await getSeason();
+  const playerIds = await fetchPlayerIds(season, {
+    activeOnly: CONFIG.playerAwardsActiveOnly,
+  });
+  await withIngestionState("player_awards", async () => {
+    await runWithConcurrency(playerIds, CONFIG.boxscoreConcurrency, async (playerId) => {
+      const payload = await apiRequest(`/v1/players/${playerId}/awards`);
+      const rows = (payload.data || []).map((row) => ({ ...row, player_id: playerId }));
+      if (rows.length) {
+        await supabaseUpsert("player_awards", rows, "player_id,season,description");
+      }
+    });
+    log(`Upserted player awards for ${playerIds.length} players`);
+  }, { season, player_count: playerIds.length });
+}
+
+async function refreshPlayerGameLogs() {
+  const seasons = await getRecentSeasons(CONFIG.playerGameLogsSeasonsBack);
+  const currentSeason = await getSeason();
+  const playerIds = await fetchPlayerIds(currentSeason, {
+    activeOnly: CONFIG.playerGameLogsActiveOnly,
+    maxPlayers: CONFIG.playerGameLogsMaxPlayers,
+  });
+  await withIngestionState("player_game_logs", async () => {
+    await runWithConcurrency(playerIds, CONFIG.boxscoreConcurrency, async (playerId) => {
+      for (const season of seasons) {
+        const payload = await apiRequest(`/v1/players/${playerId}/gamelog?season=${season}`);
+        const rows = (payload.data || []).map((row) => ({ ...row, player_id: playerId }));
+        if (rows.length) {
+          await supabaseUpsert("player_game_logs", rows, "player_id,game_id");
+        }
+      }
+    });
+    log(`Upserted player game logs for ${playerIds.length} players`);
+  }, { seasons, player_count: playerIds.length });
 }
 
 async function refreshPlayerSeasonStatsForSeason(season) {
@@ -528,6 +701,36 @@ async function refreshScoreboard({ mode = CONFIG.workerMode } = {}) {
   }, { season, date: today });
 }
 
+async function refreshRecentBoxscores() {
+  const season = await getSeason();
+  const endDate = new Date();
+  const startDate = new Date(endDate);
+  startDate.setDate(startDate.getDate() - CONFIG.boxscoreLookbackDays);
+  const dateFrom = formatDateInTZ(CONFIG.timeZone, startDate);
+  const dateTo = formatDateInTZ(CONFIG.timeZone, endDate);
+  await withIngestionState("boxscores", async () => {
+    let page = 1;
+    const pageSize = 200;
+    const gameIds = [];
+    while (true) {
+      const payload = await apiRequest(
+        `/v1/games?season=${season}&date_from=${dateFrom}&date_to=${dateTo}&page=${page}&page_size=${pageSize}`
+      );
+      const rows = payload.data || [];
+      for (const row of rows) {
+        if (row && row.game_id) {
+          gameIds.push(row.game_id);
+        }
+      }
+      const nextPage = payload.meta?.pagination?.next;
+      if (!nextPage) break;
+      page = nextPage;
+    }
+    await runWithConcurrency(gameIds, CONFIG.boxscoreConcurrency, updateBoxscoreForGame);
+    log(`Backfilled ${gameIds.length} boxscores from ${dateFrom} to ${dateTo}`);
+  }, { season, date_from: dateFrom, date_to: dateTo });
+}
+
 async function refreshActiveGames() {
   if (activeGameIds.size === 0) return;
   await withIngestionState("live_games", async () => {
@@ -581,17 +784,35 @@ async function runCron() {
   if (await shouldRun("scoreboard", CONFIG.scoreboardIntervalMs)) {
     await refreshScoreboard({ mode: "cron" });
   }
+  if (await shouldRun("games", CONFIG.gamesIntervalMs)) {
+    await refreshGames();
+  }
   if (await shouldRun("players", CONFIG.playersIntervalMs)) {
     await refreshPlayers();
   }
   if (await shouldRun("league_standings", CONFIG.standingsIntervalMs)) {
     await refreshStandings();
   }
+  if (await shouldRun("player_awards", CONFIG.playerAwardsIntervalMs)) {
+    await refreshPlayerAwards();
+  }
+  if (await shouldRun("player_game_logs", CONFIG.playerGameLogsIntervalMs)) {
+    await refreshPlayerGameLogs();
+  }
   if (await shouldRun("player_season_stats", CONFIG.playerStatsIntervalMs)) {
     await refreshPlayerSeasonStats();
   }
   if (await shouldRun("team_stats", CONFIG.teamStatsIntervalMs)) {
     await refreshTeamStats();
+  }
+  if (await shouldRun("team_details", CONFIG.teamDetailsIntervalMs)) {
+    await refreshTeamDetails();
+  }
+  if (await shouldRun("team_game_logs", CONFIG.teamGameLogsIntervalMs)) {
+    await refreshTeamGameLogs();
+  }
+  if (await shouldRun("boxscores", CONFIG.boxscoreBackfillIntervalMs)) {
+    await refreshRecentBoxscores();
   }
 }
 
@@ -601,8 +822,13 @@ async function runLive() {
   scheduleTask("teams", CONFIG.teamsIntervalMs, refreshTeams, true);
   scheduleTask("players", CONFIG.playersIntervalMs, refreshPlayers, true);
   scheduleTask("standings", CONFIG.standingsIntervalMs, refreshStandings, true);
+  scheduleTask("player-awards", CONFIG.playerAwardsIntervalMs, refreshPlayerAwards, true);
+  scheduleTask("player-game-logs", CONFIG.playerGameLogsIntervalMs, refreshPlayerGameLogs, true);
   scheduleTask("player-season-stats", CONFIG.playerStatsIntervalMs, refreshPlayerSeasonStats, true);
   scheduleTask("team-stats", CONFIG.teamStatsIntervalMs, refreshTeamStats, true);
+  scheduleTask("team-details", CONFIG.teamDetailsIntervalMs, refreshTeamDetails, true);
+  scheduleTask("team-game-logs", CONFIG.teamGameLogsIntervalMs, refreshTeamGameLogs, true);
+  scheduleTask("boxscores-backfill", CONFIG.boxscoreBackfillIntervalMs, refreshRecentBoxscores, true);
 }
 
 if (CONFIG.workerMode === "live") {
