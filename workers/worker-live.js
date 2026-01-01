@@ -190,9 +190,10 @@ async function requestWithRetry(url) {
       throw new Error(`API ${response.status}: ${body}`);
     }
     const retryAfter = Number(response.headers.get("retry-after"));
-    const waitMs = Number.isFinite(retryAfter)
-      ? retryAfter * 1000
-      : delay + Math.floor(Math.random() * 200);
+    const waitMs =
+      Number.isFinite(retryAfter) && retryAfter > 0
+        ? retryAfter * 1000
+        : delay + Math.floor(Math.random() * 200);
     log("API request throttled; backing off", {
       status: response.status,
       wait_ms: waitMs,
