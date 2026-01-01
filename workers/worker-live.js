@@ -7,6 +7,7 @@ if (typeof fetch !== "function") {
 }
 
 const CONFIG = {
+  workerMode: process.env.WORKER_MODE || "cron",
   apiBaseUrl: process.env.NBA_API_BASE_URL || "http://localhost:8080",
   apiKey: process.env.NBA_API_KEY,
   supabaseUrl: process.env.SUPABASE_URL,
@@ -14,6 +15,7 @@ const CONFIG = {
   supabaseSchema: process.env.SUPABASE_SCHEMA || "public",
   seasonOverride: process.env.NBA_SEASON,
   timeZone: process.env.NBA_TIME_ZONE || "America/New_York",
+  cronMinIntervalMs: Number(process.env.CRON_MIN_INTERVAL_MS || 60 * 1000),
   livePollIntervalMs: Number(process.env.LIVE_GAMES_INTERVAL_MS || 5000),
   scoreboardIntervalMs: Number(process.env.SCOREBOARD_INTERVAL_MS || 10000),
   teamsIntervalMs: Number(process.env.TEAMS_INTERVAL_MS || 6 * 60 * 60 * 1000),
@@ -118,6 +120,27 @@ async function supabaseUpsert(table, rows, onConflict) {
   }
 }
 
+async function supabaseSelect(table, query) {
+  const url = new URL(`${CONFIG.supabaseUrl}/rest/v1/${table}`);
+  Object.entries(query).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) {
+      url.searchParams.set(key, String(value));
+    }
+  });
+  const response = await fetch(url.toString(), {
+    headers: {
+      apikey: CONFIG.supabaseKey,
+      Authorization: `Bearer ${CONFIG.supabaseKey}`,
+      "Accept-Profile": CONFIG.supabaseSchema,
+    },
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Supabase ${table} select failed: ${response.status} ${body}`);
+  }
+  return response.json();
+}
+
 async function updateIngestionState(entity, status, cursor, errorMessage) {
   const now = new Date().toISOString();
   const row = {
@@ -132,6 +155,32 @@ async function updateIngestionState(entity, status, cursor, errorMessage) {
     row.last_success_at = now;
   }
   await supabaseUpsert("ingestion_state", [row], "source,entity");
+}
+
+async function getIngestionState(entity) {
+  const rows = await supabaseSelect("ingestion_state", {
+    select: "last_success_at",
+    source: "eq.nba_api",
+    entity: `eq.${entity}`,
+    limit: 1,
+  });
+  return Array.isArray(rows) && rows.length ? rows[0] : null;
+}
+
+async function shouldRun(entity, intervalMs) {
+  const state = await getIngestionState(entity);
+  if (!state || !state.last_success_at) {
+    return true;
+  }
+  const lastSuccess = Date.parse(state.last_success_at);
+  if (Number.isNaN(lastSuccess)) {
+    return true;
+  }
+  const minInterval =
+    CONFIG.workerMode === "cron"
+      ? Math.max(intervalMs, CONFIG.cronMinIntervalMs)
+      : intervalMs;
+  return Date.now() - lastSuccess >= minInterval;
 }
 
 function chunkArray(rows, size) {
@@ -333,7 +382,7 @@ async function updateBoxscoreForGame(gameId) {
   return status;
 }
 
-async function refreshScoreboard() {
+async function refreshScoreboard({ mode = CONFIG.workerMode } = {}) {
   const season = await getSeason();
   const today = formatDateInTZ(CONFIG.timeZone);
   await withIngestionState("scoreboard", async () => {
@@ -344,6 +393,13 @@ async function refreshScoreboard() {
     await supabaseUpsert("games", games, "game_id");
 
     const gameIds = games.map((game) => game.game_id);
+    if (mode === "cron") {
+      activeGameIds.clear();
+      await runWithConcurrency(gameIds, CONFIG.boxscoreConcurrency, updateBoxscoreForGame);
+      log(`Scoreboard updated: ${games.length} games (cron)`);
+      return;
+    }
+
     const now = Date.now();
     const staleIds = gameIds.filter((gameId) => {
       const cached = statusCache.get(gameId);
@@ -406,9 +462,42 @@ log("Worker starting", {
   timeZone: CONFIG.timeZone,
 });
 
-scheduleTask("scoreboard", CONFIG.scoreboardIntervalMs, refreshScoreboard, true);
-scheduleTask("live-games", CONFIG.livePollIntervalMs, refreshActiveGames, true);
-scheduleTask("teams", CONFIG.teamsIntervalMs, refreshTeams, true);
-scheduleTask("players", CONFIG.playersIntervalMs, refreshPlayers, true);
-scheduleTask("standings", CONFIG.standingsIntervalMs, refreshStandings, true);
-scheduleTask("team-stats", CONFIG.teamStatsIntervalMs, refreshTeamStats, true);
+async function runCron() {
+  if (await shouldRun("scoreboard", CONFIG.scoreboardIntervalMs)) {
+    await refreshScoreboard({ mode: "cron" });
+  }
+  if (await shouldRun("teams", CONFIG.teamsIntervalMs)) {
+    await refreshTeams();
+  }
+  if (await shouldRun("players", CONFIG.playersIntervalMs)) {
+    await refreshPlayers();
+  }
+  if (await shouldRun("league_standings", CONFIG.standingsIntervalMs)) {
+    await refreshStandings();
+  }
+  if (await shouldRun("team_stats", CONFIG.teamStatsIntervalMs)) {
+    await refreshTeamStats();
+  }
+}
+
+async function runLive() {
+  scheduleTask("scoreboard", CONFIG.scoreboardIntervalMs, refreshScoreboard, true);
+  scheduleTask("live-games", CONFIG.livePollIntervalMs, refreshActiveGames, true);
+  scheduleTask("teams", CONFIG.teamsIntervalMs, refreshTeams, true);
+  scheduleTask("players", CONFIG.playersIntervalMs, refreshPlayers, true);
+  scheduleTask("standings", CONFIG.standingsIntervalMs, refreshStandings, true);
+  scheduleTask("team-stats", CONFIG.teamStatsIntervalMs, refreshTeamStats, true);
+}
+
+if (CONFIG.workerMode === "live") {
+  runLive();
+} else {
+  runCron()
+    .then(() => {
+      log("Cron run complete");
+    })
+    .catch((error) => {
+      console.error("Cron run failed", error);
+      process.exitCode = 1;
+    });
+}
