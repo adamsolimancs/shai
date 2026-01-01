@@ -35,6 +35,9 @@ const CONFIG = {
   historicSeasonsBack: Number(process.env.HISTORIC_SEASONS_BACK || 0),
   timeZone: process.env.NBA_TIME_ZONE || "America/New_York",
   cronMinIntervalMs: Number(process.env.CRON_MIN_INTERVAL_MS || 60 * 1000),
+  apiMinIntervalMs: Number(process.env.API_MIN_INTERVAL_MS || 250),
+  apiRetryMax: Number(process.env.API_RETRY_MAX || 4),
+  apiRetryBaseDelayMs: Number(process.env.API_RETRY_BASE_DELAY_MS || 750),
   gamesIntervalMs: Number(process.env.GAMES_INTERVAL_MS || 6 * 60 * 60 * 1000),
   livePollIntervalMs: Number(process.env.LIVE_GAMES_INTERVAL_MS || 5000),
   scoreboardIntervalMs: Number(process.env.SCOREBOARD_INTERVAL_MS || 10000),
@@ -76,6 +79,8 @@ let cachedSeason = null;
 let cachedSeasonAt = 0;
 let cachedSupportedSeasons = null;
 let cachedSupportedSeasonsAt = 0;
+let requestQueue = Promise.resolve();
+let lastApiRequestAt = 0;
 
 process.on("unhandledRejection", (reason) => {
   console.error("Unhandled rejection", reason);
@@ -88,6 +93,10 @@ function log(message, extra) {
   } else {
     console.log(`[${stamp}] ${message}`);
   }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function formatDateInTZ(timeZone, date = new Date()) {
@@ -138,20 +147,61 @@ function parseSeasonList(value) {
 
 async function apiRequest(path) {
   const url = path.startsWith("http") ? path : `${CONFIG.apiBaseUrl}${path}`;
-  const response = await fetch(url, {
-    headers: {
-      "x-api-key": CONFIG.apiKey,
-    },
+  const queued = requestQueue.then(async () => {
+    const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastApiRequestAt));
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+    lastApiRequestAt = Date.now();
+    return requestWithRetry(url);
+  }, async () => {
+    const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastApiRequestAt));
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+    lastApiRequestAt = Date.now();
+    return requestWithRetry(url);
   });
-  if (!response.ok) {
+  requestQueue = queued.catch(() => {});
+  return queued;
+}
+
+async function requestWithRetry(url) {
+  let attempt = 0;
+  let delay = CONFIG.apiRetryBaseDelayMs;
+  while (attempt <= CONFIG.apiRetryMax) {
+    const response = await fetch(url, {
+      headers: {
+        "x-api-key": CONFIG.apiKey,
+      },
+    });
+    if (response.ok) {
+      const payload = await response.json();
+      if (!payload || !payload.ok) {
+        throw new Error(`API error: ${JSON.stringify(payload)}`);
+      }
+      return payload;
+    }
     const body = await response.text();
-    throw new Error(`API ${response.status}: ${body}`);
+    if (response.status !== 429 && response.status < 500) {
+      throw new Error(`API ${response.status}: ${body}`);
+    }
+    if (attempt >= CONFIG.apiRetryMax) {
+      throw new Error(`API ${response.status}: ${body}`);
+    }
+    const retryAfter = Number(response.headers.get("retry-after"));
+    const waitMs = Number.isFinite(retryAfter)
+      ? retryAfter * 1000
+      : delay + Math.floor(Math.random() * 200);
+    log("API request throttled; backing off", {
+      status: response.status,
+      wait_ms: waitMs,
+    });
+    await sleep(waitMs);
+    delay *= 2;
+    attempt += 1;
   }
-  const payload = await response.json();
-  if (!payload || !payload.ok) {
-    throw new Error(`API error: ${JSON.stringify(payload)}`);
-  }
-  return payload;
+  throw new Error("API request failed after retries");
 }
 
 async function supabaseUpsert(table, rows, onConflict) {
