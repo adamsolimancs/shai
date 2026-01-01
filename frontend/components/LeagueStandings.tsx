@@ -70,7 +70,7 @@ export function LeagueStandings({ conferences, className }: LeagueStandingsProps
                           key={team.id}
                           className={cn(
                             gridClass,
-                            "group rounded-lg border-t border-[color:var(--color-app-border)] px-2 py-1.5 text-[0.7rem] text-[color:var(--color-app-foreground)] transition hover:bg-[color:var(--color-app-background-soft)] first:border-t-0 sm:px-3 sm:py-2 sm:text-[0.82rem]",
+                            "group rounded-lg border-t border-[color:var(--color-app-border)] px-2 py-1.5 text-[0.7rem] text-[color:var(--color-app-foreground)] transition-colors duration-200 hover:border-[color:var(--color-app-border-strong)] hover:bg-[color:var(--color-app-surface-soft)] focus-within:border-[color:var(--color-app-border-strong)] focus-within:bg-[color:var(--color-app-surface-soft)] first:border-t-0 sm:px-3 sm:py-2 sm:text-[0.82rem]",
                           )}
                         >
                           <span className="font-semibold text-[color:var(--color-app-foreground)]">{team.standing}</span>

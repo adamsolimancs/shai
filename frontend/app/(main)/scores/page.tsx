@@ -1,3 +1,4 @@
+import ScoreCard from "@/components/ScoreCard";
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
 
 type Game = {
@@ -119,16 +120,6 @@ function formatTrendLabel(trend: string) {
   return trend.toUpperCase();
 }
 
-function scoreRowClasses(game: EnhancedGame, team: "home" | "away"): string {
-  if (game.winner === "even") {
-    return "bg-white/5";
-  }
-  if (game.winner === team) {
-    return "border border-emerald-300/30 bg-emerald-400/10";
-  }
-  return "border border-red-400/30 bg-red-500/10";
-}
-
 export default async function ScoresPage() {
   const games = await nbaFetch<Game[]>(`/v1/games?season=${DEFAULT_SEASON}&page_size=36`);
   const enhanced = games.map(enhanceGame);
@@ -146,11 +137,7 @@ export default async function ScoresPage() {
       <header className="space-y-6">
         <div>
           <p className="text-xs uppercase tracking-[0.5em] text-white/60">Season scoreboard</p>
-          <h1 className="mt-3 text-4xl font-semibold text-white">Scores, recaps, and nightly context</h1>
-          <p className="mt-2 max-w-2xl text-sm text-white/70">
-            Catch up on the latest NBA slate powered by the nba_data_api service. We surface live statuses, highlight the loudest
-            margins, and keep a ledger of games that swing by a single possession.
-          </p>
+          <h1 className="mt-3 text-4xl font-semibold text-white">Catch up on the latest NBA slate</h1>
         </div>
         <dl className="grid gap-4 rounded-3xl border border-white/10 bg-slate-950/40 p-6 text-center sm:grid-cols-3">
           {highlights.map((metric) => (
@@ -182,76 +169,23 @@ export default async function ScoresPage() {
                 </div>
                 <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
                   {group.games.map((game) => (
-                    <article key={game.id} className="rounded-3xl border border-white/10 bg-slate-950/60 p-5 shadow-lg shadow-black/30">
-                      <div className="flex items-center justify-between text-xs uppercase tracking-[0.3em] text-white/40">
-                        <span>{game.tipLabel}</span>
-                        <span className="text-white/70">{game.status}</span>
-                      </div>
-                      <div className="mt-5 space-y-4 text-lg font-semibold">
-                        <div className={`flex items-center justify-between rounded-2xl px-4 py-3 ${scoreRowClasses(game, "away")}`}>
-                          <span className="text-white">{game.away.name}</span>
-                          <span className="text-white">{game.away.score}</span>
-                        </div>
-                        <div className={`flex items-center justify-between rounded-2xl px-4 py-3 ${scoreRowClasses(game, "home")}`}>
-                          <span className="text-white">{game.home.name}</span>
-                          <span className="text-white">{game.home.score}</span>
-                        </div>
-                      </div>
-                      <p className="mt-4 text-xs uppercase tracking-[0.3em] text-white/50">
-                        Margin: {game.margin === 0 ? "OT thriller" : `${game.margin} pts`}
-                      </p>
-                    </article>
+                    <ScoreCard
+                      key={game.id}
+                      href={`/boxscore/${game.id}`}
+                      variant="scoreboard"
+                      timeLabel={game.tipLabel}
+                      status={game.status}
+                      home={{ name: game.home.name, score: game.home.score }}
+                      away={{ name: game.away.name, score: game.away.score }}
+                      winner={game.winner}
+                      footerLabel={`Margin: ${game.margin === 0 ? "OT thriller" : `${game.margin} pts`}`}
+                    />
                   ))}
                 </div>
               </div>
             ))}
           </div>
         )}
-      </section>
-
-      <section className="grid gap-6 lg:grid-cols-2">
-        <article className="rounded-3xl border border-white/10 bg-slate-950/60 p-6">
-          <p className="text-xs uppercase tracking-[0.4em] text-white/40">Game of the night</p>
-          {statementGame ? (
-            <div className="mt-4 space-y-4">
-              <h3 className="text-2xl font-semibold text-white">
-                {statementGame.home.name} vs {statementGame.away.name}
-              </h3>
-              <p className="text-sm text-white/70">
-                Combined for {statementGame.totalPoints} points — the loudest total on the board. {statementGame.status} with a
-                {statementGame.margin}-point swing.
-              </p>
-              <div className="flex gap-3 text-sm text-white/80">
-                <span className="rounded-full border border-white/10 px-3 py-1">{statementGame.dateLabel}</span>
-                <span className="rounded-full border border-white/10 px-3 py-1">{statementGame.status}</span>
-              </div>
-            </div>
-          ) : (
-            <p className="mt-4 text-sm text-white/60">We need at least one completed game to crown a headliner.</p>
-          )}
-        </article>
-        <article className="rounded-3xl border border-white/10 bg-slate-950/60 p-6">
-          <p className="text-xs uppercase tracking-[0.4em] text-white/40">Trend tracker</p>
-          <div className="mt-4 flex flex-wrap gap-3">
-            {[{ label: "Clutch time", games: tightGames }, { label: "Wire-to-wire", games: blowouts }].map((bucket) => (
-              <div key={bucket.label} className="min-w-[220px] flex-1 rounded-2xl border border-white/10 bg-white/5 p-4">
-                <p className="text-xs uppercase tracking-[0.3em] text-white/50">{formatTrendLabel(bucket.label)}</p>
-                {bucket.games.length ? (
-                  <ul className="mt-3 space-y-2 text-sm text-white/80">
-                    {bucket.games.map((game) => (
-                      <li key={`${bucket.label}-${game.id}`} className="flex items-center justify-between">
-                        <span>{game.away.name} @ {game.home.name}</span>
-                        <span className="text-white">{game.margin} pts</span>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="mt-3 text-xs text-white/60">Need more games to track this pattern.</p>
-                )}
-              </div>
-            ))}
-          </div>
-        </article>
       </section>
     </div>
   );

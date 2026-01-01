@@ -128,20 +128,153 @@ class PlayerGameLog(BaseModel):
     plus_minus: float | None = None
 
 
-class BoxScoreLine(BaseModel):
+class BoxScoreTeamLeader(BaseModel):
     player_id: int
     player_name: str
-    team_id: int
-    team_abbreviation: str
-    minutes: float
     points: float | None = None
+    rebounds: float | None = None
+    assists: float | None = None
+    stat_line: str | None = None
+
+
+class BoxScoreTeamInfo(BaseModel):
+    team_id: int
+    team_name: str | None = None
+    team_city: str | None = None
+    team_abbreviation: str | None = None
+    score: int = 0
+    record: str | None = None
+    is_home: bool = False
+    leaders: list[BoxScoreTeamLeader] = Field(default_factory=list)
+
+
+class BoxScorePeriodScore(BaseModel):
+    label: str
+    home: int = 0
+    away: int = 0
+
+
+class BoxScoreTeamTotals(BaseModel):
+    team_id: int
+    team_name: str | None = None
+    team_abbreviation: str | None = None
+    minutes: str | None = None
+    field_goals_made: float | None = None
+    field_goals_attempted: float | None = None
+    field_goal_pct: float | None = None
+    three_point_made: float | None = None
+    three_point_attempted: float | None = None
+    three_point_pct: float | None = None
+    free_throws_made: float | None = None
+    free_throws_attempted: float | None = None
+    free_throw_pct: float | None = None
+    offensive_rebounds: float | None = None
+    defensive_rebounds: float | None = None
     rebounds: float | None = None
     assists: float | None = None
     steals: float | None = None
     blocks: float | None = None
     turnovers: float | None = None
     fouls: float | None = None
+    points: float | None = None
     plus_minus: float | None = None
+
+
+class BoxScoreStarterBenchTotals(BaseModel):
+    team_id: int
+    team_name: str | None = None
+    team_abbreviation: str | None = None
+    label: str
+    minutes: str | None = None
+    field_goals_made: float | None = None
+    field_goals_attempted: float | None = None
+    field_goal_pct: float | None = None
+    three_point_made: float | None = None
+    three_point_attempted: float | None = None
+    three_point_pct: float | None = None
+    free_throws_made: float | None = None
+    free_throws_attempted: float | None = None
+    free_throw_pct: float | None = None
+    offensive_rebounds: float | None = None
+    defensive_rebounds: float | None = None
+    rebounds: float | None = None
+    assists: float | None = None
+    steals: float | None = None
+    blocks: float | None = None
+    turnovers: float | None = None
+    fouls: float | None = None
+    points: float | None = None
+
+
+class BoxScoreTraditionalPlayer(BaseModel):
+    player_id: int
+    player_name: str
+    team_id: int
+    team_abbreviation: str
+    team_city: str | None = None
+    start_position: str | None = None
+    comment: str | None = None
+    minutes: str | None = None
+    field_goals_made: float | None = None
+    field_goals_attempted: float | None = None
+    field_goal_pct: float | None = None
+    three_point_made: float | None = None
+    three_point_attempted: float | None = None
+    three_point_pct: float | None = None
+    free_throws_made: float | None = None
+    free_throws_attempted: float | None = None
+    free_throw_pct: float | None = None
+    offensive_rebounds: float | None = None
+    defensive_rebounds: float | None = None
+    rebounds: float | None = None
+    assists: float | None = None
+    steals: float | None = None
+    blocks: float | None = None
+    turnovers: float | None = None
+    fouls: float | None = None
+    points: float | None = None
+    plus_minus: float | None = None
+
+
+class BoxScoreAdvancedPlayer(BaseModel):
+    player_id: int
+    player_name: str
+    team_id: int
+    team_abbreviation: str
+    minutes: str | None = None
+    offensive_rating: float | None = None
+    defensive_rating: float | None = None
+    net_rating: float | None = None
+    usage_pct: float | None = None
+    true_shooting_pct: float | None = None
+    effective_fg_pct: float | None = None
+    assist_pct: float | None = None
+    assist_to_turnover: float | None = None
+    rebound_pct: float | None = None
+    offensive_rebound_pct: float | None = None
+    defensive_rebound_pct: float | None = None
+    pace: float | None = None
+    pace_per40: float | None = None
+    possessions: float | None = None
+    pie: float | None = None
+
+
+class BoxScoreGame(BaseModel):
+    game_id: str
+    status: str | None = None
+    game_date: datetime | None = None
+    start_time: datetime | None = None
+    arena: str | None = None
+    attendance: int | None = None
+    summary: str | None = None
+    officials: list[str] = Field(default_factory=list)
+    home_team: BoxScoreTeamInfo
+    away_team: BoxScoreTeamInfo
+    line_score: list[BoxScorePeriodScore] = Field(default_factory=list)
+    team_totals: list[BoxScoreTeamTotals] = Field(default_factory=list)
+    starter_bench: list[BoxScoreStarterBenchTotals] = Field(default_factory=list)
+    traditional_players: list[BoxScoreTraditionalPlayer] = Field(default_factory=list)
+    advanced_players: list[BoxScoreAdvancedPlayer] = Field(default_factory=list)
 
 
 class ShotLocation(BaseModel):
@@ -201,6 +334,7 @@ class PlayerCareerStatsRow(BaseModel):
     field_goal_pct: float | None = None
     three_point_pct: float | None = None
     free_throw_pct: float | None = None
+    true_shooting_pct: float | None = None
 
 
 class PlayerAward(BaseModel):
