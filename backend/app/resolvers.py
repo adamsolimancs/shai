@@ -12,6 +12,7 @@ from typing import Any
 from rapidfuzz import fuzz, process
 
 from .cache import CacheBackend
+from .supabase import SupabaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +49,9 @@ class NameResolver:
 
     CACHE_KEY = "resolver:data"
 
-    def __init__(self, cache: CacheBackend):
+    def __init__(self, cache: CacheBackend, supabase: SupabaseClient | None = None):
         self.cache = cache
+        self.supabase = supabase
         self.players: dict[str, dict[str, Any]] = {}
         self.teams: dict[str, dict[str, Any]] = {}
         self.last_refreshed: datetime | None = None
@@ -66,7 +68,10 @@ class NameResolver:
 
     async def refresh(self) -> None:
         try:
-            data = await asyncio.get_running_loop().run_in_executor(None, self._fetch_latest)
+            if self.supabase:
+                data = await self._fetch_from_db()
+            else:
+                data = await asyncio.get_running_loop().run_in_executor(None, self._fetch_latest)
         except Exception:
             logger.exception("resolver refresh failed; falling back to cached data")
             return
@@ -115,6 +120,38 @@ class NameResolver:
                 teams[_normalize(abbreviation)] = teams[key]
         return {"players": players, "teams": teams}
 
+    async def _fetch_from_db(self) -> dict[str, dict[str, Any]]:
+        if not self.supabase:
+            raise RuntimeError("Supabase client unavailable")
+        players_rows = await self.supabase.select_all("players", order="full_name.asc")
+        teams_rows = await self.supabase.select_all("teams", order="name.asc")
+        players = {}
+        for row in players_rows:
+            name = row.get("full_name") or ""
+            key = _normalize(str(name))
+            if not key:
+                continue
+            players[key] = {
+                "id": int(row.get("id")),
+                "name": name,
+                "team_id": row.get("team_id"),
+            }
+        teams = {}
+        for row in teams_rows:
+            display = f"{row.get('city', '')} {row.get('name', '')}".strip()
+            key = _normalize(display)
+            abbreviation = row.get("abbreviation")
+            teams[key] = {
+                "id": int(row.get("id")),
+                "name": display,
+                "abbreviation": abbreviation,
+            }
+            if row.get("name"):
+                teams[_normalize(str(row["name"]))] = teams[key]
+            if abbreviation:
+                teams[_normalize(str(abbreviation))] = teams[key]
+        return {"players": players, "teams": teams}
+
     def resolve_player(self, query: str) -> Resolution | None:
         if not query:
             return None
@@ -122,6 +159,29 @@ class NameResolver:
         if normalized in self.players:
             record = self.players[normalized]
             return Resolution(id=record["id"], name=record["name"], confidence=1.0)
+        tokens = [token for token in normalized.split() if token]
+        if tokens:
+            best: tuple[float, dict[str, Any]] | None = None
+            for key, record in self.players.items():
+                name_tokens = key.split()
+                if normalized in name_tokens:
+                    score = 0.95
+                elif all(token in name_tokens for token in tokens):
+                    score = 0.9
+                elif key.startswith(normalized):
+                    score = 0.85
+                elif normalized in key:
+                    score = 0.75
+                else:
+                    continue
+                if not best or score > best[0]:
+                    best = (score, record)
+            if best:
+                return Resolution(
+                    id=best[1]["id"],
+                    name=best[1]["name"],
+                    confidence=best[0],
+                )
         choices = list(self.players.keys())
         match = process.extractOne(normalized, choices, scorer=fuzz.WRatio)
         if not match:

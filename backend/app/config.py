@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -66,8 +66,16 @@ class Settings(BaseSettings):
     readiness_startup_delay_seconds: float = Field(2.0, ge=0.0)
     supported_season_start_year: int = Field(1996, ge=1946)
     database_url: str | None = None
+    supabase_url: str | None = Field(None, validation_alias=AliasChoices("SUPABASE_URL"))
+    supabase_key: str | None = Field(
+        None,
+        validation_alias=AliasChoices("SUPABASE_KEY", "SUPABASE_SERVICE_ROLE_KEY"),
+    )
+    supabase_schema: str = Field("public")
     hot_cache_keys: list[str] = Field(default_factory=list)
     enable_integration_tests: bool = False
+    cache_key_prefix: str = Field("nba:serve")
+    admin_api_key: str | None = None
 
     @property
     def cors_origins(self) -> list[str]:

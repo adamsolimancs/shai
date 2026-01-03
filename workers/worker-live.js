@@ -6,6 +6,8 @@ if (typeof fetch !== "function") {
   process.exit(1);
 }
 
+const { cache } = require("./cache");
+
 function normalizeBaseUrl(value) {
   if (!value) return value;
   const trimmed = value
@@ -44,6 +46,10 @@ const CONFIG = {
   apiMinIntervalMs: Number(process.env.API_MIN_INTERVAL_MS || 250),
   apiRetryMax: Number(process.env.API_RETRY_MAX || 4),
   apiRetryBaseDelayMs: Number(process.env.API_RETRY_BASE_DELAY_MS || 750),
+  apiCircuitBreakerMaxFailures: Number(process.env.API_CIRCUIT_BREAKER_MAX_FAILURES || 5),
+  apiCircuitBreakerCooldownMs: Number(
+    process.env.API_CIRCUIT_BREAKER_COOLDOWN_MS || 5 * 60 * 1000
+  ),
   gamesIntervalMs: Number(process.env.GAMES_INTERVAL_MS || 6 * 60 * 60 * 1000),
   livePollIntervalMs: Number(process.env.LIVE_GAMES_INTERVAL_MS || 5000),
   scoreboardIntervalMs: Number(process.env.SCOREBOARD_INTERVAL_MS || 10000),
@@ -68,6 +74,16 @@ const CONFIG = {
   statusRefreshMs: Number(process.env.STATUS_REFRESH_MS || 60 * 1000),
   boxscoreConcurrency: Number(process.env.BOXSCORE_CONCURRENCY || 3),
   upsertChunkSize: Number(process.env.UPSERT_CHUNK_SIZE || 200),
+  cacheKeyPrefix: process.env.CACHE_KEY_PREFIX || "nba:serve",
+  cacheTtlScoreboardLiveSec: Number(process.env.CACHE_TTL_SCOREBOARD_LIVE_SEC || 5),
+  cacheTtlScoreboardFinalSec: Number(process.env.CACHE_TTL_SCOREBOARD_FINAL_SEC || 60 * 60),
+  cacheTtlBoxscoreLiveSec: Number(process.env.CACHE_TTL_BOXSCORE_LIVE_SEC || 5),
+  cacheTtlBoxscoreFinalSec: Number(
+    process.env.CACHE_TTL_BOXSCORE_FINAL_SEC || 60 * 60 * 12
+  ),
+  cacheTtlStandingsSec: Number(process.env.CACHE_TTL_STANDINGS_SEC || 60 * 15),
+  cacheTtlTeamsSec: Number(process.env.CACHE_TTL_TEAMS_SEC || 60 * 60 * 24),
+  cacheTtlPlayerGameLogSec: Number(process.env.CACHE_TTL_PLAYER_GAMELOG_SEC || 60 * 60 * 6),
 };
 
 if (!CONFIG.apiKey) {
@@ -87,6 +103,13 @@ let cachedSupportedSeasons = null;
 let cachedSupportedSeasonsAt = 0;
 let requestQueue = Promise.resolve();
 let lastApiRequestAt = 0;
+let apiCircuitOpenUntil = 0;
+let apiCircuitFailures = 0;
+const cacheStats = {
+  writes: 0,
+  failures: 0,
+  lastLogAt: 0,
+};
 
 process.on("unhandledRejection", (reason) => {
   console.error("Unhandled rejection", reason);
@@ -107,6 +130,74 @@ function logUpsert(table, count, extra) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function cacheKey(...parts) {
+  const prefix = CONFIG.cacheKeyPrefix.replace(/:+$/, "");
+  const joined = parts.map((part) => String(part).replace(/^:+|:+$/g, "")).join(":");
+  return joined ? `${prefix}:${joined}` : prefix;
+}
+
+const CacheKeys = {
+  scoreboard: (date) => cacheKey("scoreboard", date),
+  boxscore: (gameId) => cacheKey("boxscore", gameId),
+  standings: (season, leagueId = "00", seasonType = "Regular Season") =>
+    cacheKey("standings", season, leagueId, seasonType),
+  teams: (season) => cacheKey("teams", season),
+  playerGameLog: (playerId, season) => cacheKey("player_gamelog", playerId, season),
+};
+
+function recordCacheWrite(ok) {
+  if (ok) {
+    cacheStats.writes += 1;
+  } else {
+    cacheStats.failures += 1;
+  }
+  const now = Date.now();
+  if (now - cacheStats.lastLogAt > 60 * 1000) {
+    cacheStats.lastLogAt = now;
+    log("Cache write stats", {
+      writes: cacheStats.writes,
+      failures: cacheStats.failures,
+    });
+  }
+}
+
+async function writeCache(key, payload, ttlSeconds) {
+  if (!cache) return;
+  try {
+    await cache.set(key, payload, { ex: ttlSeconds });
+    recordCacheWrite(true);
+  } catch (error) {
+    recordCacheWrite(false);
+    log("Redis cache write failed", { key, error: String(error) });
+  }
+}
+
+class CircuitOpenError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "CircuitOpenError";
+  }
+}
+
+function isCircuitOpen() {
+  return Date.now() < apiCircuitOpenUntil;
+}
+
+function recordApiSuccess() {
+  apiCircuitFailures = 0;
+}
+
+function recordApiFailure() {
+  apiCircuitFailures += 1;
+  if (apiCircuitFailures >= CONFIG.apiCircuitBreakerMaxFailures) {
+    apiCircuitFailures = 0;
+    apiCircuitOpenUntil = Date.now() + CONFIG.apiCircuitBreakerCooldownMs;
+    log("API circuit opened; cooling down", {
+      cooldown_ms: CONFIG.apiCircuitBreakerCooldownMs,
+    });
+  }
 }
 
 function formatDateInTZ(timeZone, date = new Date()) {
@@ -175,8 +266,14 @@ function seasonsMatch(a, b) {
 }
 
 async function apiRequest(path) {
+  if (isCircuitOpen()) {
+    throw new CircuitOpenError("API circuit open; skipping request");
+  }
   const url = path.startsWith("http") ? path : `${CONFIG.apiBaseUrl}${path}`;
   const queued = requestQueue.then(async () => {
+    if (isCircuitOpen()) {
+      throw new CircuitOpenError("API circuit open; skipping request");
+    }
     const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastApiRequestAt));
     if (waitMs > 0) {
       await sleep(waitMs);
@@ -184,6 +281,9 @@ async function apiRequest(path) {
     lastApiRequestAt = Date.now();
     return requestWithRetry(url);
   }, async () => {
+    if (isCircuitOpen()) {
+      throw new CircuitOpenError("API circuit open; skipping request");
+    }
     const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastApiRequestAt));
     if (waitMs > 0) {
       await sleep(waitMs);
@@ -209,13 +309,16 @@ async function requestWithRetry(url) {
       if (!payload || !payload.ok) {
         throw new Error(`API error: ${JSON.stringify(payload)}`);
       }
+      recordApiSuccess();
       return payload;
     }
     const body = await response.text();
-    if (response.status !== 429 && response.status < 500) {
+    const retryable = response.status === 429 || response.status >= 500;
+    if (!retryable) {
       throw new Error(`API ${response.status}: ${body}`);
     }
     if (attempt >= CONFIG.apiRetryMax) {
+      recordApiFailure();
       throw new Error(`API ${response.status}: ${body}`);
     }
     const retryAfter = Number(response.headers.get("retry-after"));
@@ -300,6 +403,10 @@ function isNoUniqueConstraintError(error) {
     message.includes("\"code\":\"42P10\"") ||
     message.includes("no unique or exclusion constraint matching the ON CONFLICT specification")
   );
+}
+
+function isCircuitOpenError(error) {
+  return error instanceof CircuitOpenError || String(error).includes("API circuit open");
 }
 
 async function supabaseUpsert(table, rows, onConflict) {
@@ -548,6 +655,7 @@ async function refreshTeams() {
   await withIngestionState("teams", async () => {
     const payload = await apiRequest(`/v1/teams?season=${season}`);
     await supabaseUpsert("teams", payload.data, "id");
+    await writeCache(CacheKeys.teams(season), payload.data, CONFIG.cacheTtlTeamsSec);
     logUpsert("teams", payload.data.length, { season });
   }, { season });
 }
@@ -653,6 +761,11 @@ async function refreshStandings() {
       const payload = await apiRequest(`/v1/league_standings?season=${season}`);
       const rows = (payload.data || []).map((row) => ({ ...row, season }));
       await supabaseUpsert("league_standings", rows, "season,team_id");
+      await writeCache(
+        CacheKeys.standings(season),
+        payload.data || [],
+        CONFIG.cacheTtlStandingsSec
+      );
       logUpsert("league_standings", rows.length, { season });
     }
   }, { seasons });
@@ -748,11 +861,17 @@ async function refreshPlayerGameLogs() {
     await runWithConcurrency(playerIds, CONFIG.boxscoreConcurrency, async (playerId) => {
       for (const season of seasons) {
         const payload = await apiRequest(`/v1/players/${playerId}/gamelog?season=${season}`);
-        const rows = (payload.data || []).map((row) => ({ ...row, player_id: playerId }));
+        const data = payload.data || [];
+        const rows = data.map((row) => ({ ...row, player_id: playerId }));
         if (rows.length) {
           await supabaseUpsert("player_game_logs", rows, "player_id,game_id");
           total += rows.length;
         }
+        await writeCache(
+          CacheKeys.playerGameLog(playerId, season),
+          data,
+          CONFIG.cacheTtlPlayerGameLogSec
+        );
       }
     });
     logUpsert("player_game_logs", total, {
@@ -911,6 +1030,10 @@ async function updateBoxscoreForGame(gameId) {
   const boxscore = await fetchBoxscore(gameId);
   const playersCount = await upsertBoxscore(boxscore);
   const status = boxscore.status || null;
+  const boxscoreTtl = isLiveStatus(status)
+    ? CONFIG.cacheTtlBoxscoreLiveSec
+    : CONFIG.cacheTtlBoxscoreFinalSec;
+  await writeCache(CacheKeys.boxscore(gameId), boxscore, boxscoreTtl);
   statusCache.set(gameId, { status, checkedAt: Date.now() });
   if (isFinalStatus(status) || !isLiveStatus(status)) {
     activeGameIds.delete(gameId);
@@ -930,6 +1053,11 @@ async function refreshScoreboard({ mode = CONFIG.workerMode } = {}) {
     const games = payload.data || [];
     await supabaseUpsert("games", games, "game_id");
     logUpsert("games", games.length, { season, date: today });
+    const scoreboardTtl =
+      today === formatDateInTZ(CONFIG.timeZone)
+        ? CONFIG.cacheTtlScoreboardLiveSec
+        : CONFIG.cacheTtlScoreboardFinalSec;
+    await writeCache(CacheKeys.scoreboard(today), games, scoreboardTtl);
 
     const gameIds = games.map((game) => game.game_id);
     if (mode === "cron") {
@@ -999,13 +1127,22 @@ async function refreshActiveGames() {
 async function runWithConcurrency(items, limit, fn, { strict = false } = {}) {
   const queue = [...items];
   const errors = [];
+  let circuitOpen = false;
   const workers = new Array(Math.min(limit, queue.length)).fill(null).map(async () => {
-    while (queue.length) {
+    while (queue.length && !circuitOpen) {
       const item = queue.shift();
       if (item === undefined) return;
       try {
         await fn(item);
       } catch (error) {
+        if (isCircuitOpenError(error)) {
+          if (!circuitOpen) {
+            log("API circuit open; halting task batch", { item });
+          }
+          circuitOpen = true;
+          errors.push({ item, error: String(error) });
+          return;
+        }
         errors.push({ item, error: String(error) });
         log("Worker task failed", { item, error: String(error) });
       }
@@ -1024,6 +1161,10 @@ function scheduleTask(name, intervalMs, fn, runImmediately = true) {
   let inFlight = false;
   const run = async () => {
     if (inFlight) return;
+    if (isCircuitOpen()) {
+      log("API circuit open; skipping task", { task: name });
+      return;
+    }
     inFlight = true;
     try {
       await fn();
@@ -1046,6 +1187,10 @@ log("Worker starting", {
 
 async function runCronTask(entity, intervalMs, fn) {
   if (!(await shouldRun(entity, intervalMs))) {
+    return;
+  }
+  if (isCircuitOpen()) {
+    log("API circuit open; skipping cron task", { task: entity });
     return;
   }
   try {
