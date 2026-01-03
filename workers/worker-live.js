@@ -33,6 +33,12 @@ const CONFIG = {
   seasonOverride: process.env.NBA_SEASON,
   historicSeasons: process.env.HISTORIC_SEASONS || "",
   historicSeasonsBack: Number(process.env.HISTORIC_SEASONS_BACK || 0),
+  playersHistoricMode: process.env.PLAYERS_HISTORIC_MODE || "once",
+  playersHistoricSeasonsBack: Number(
+    process.env.PLAYERS_HISTORIC_SEASONS_BACK ||
+      process.env.HISTORIC_SEASONS_BACK ||
+      0
+  ),
   timeZone: process.env.NBA_TIME_ZONE || "America/New_York",
   cronMinIntervalMs: Number(process.env.CRON_MIN_INTERVAL_MS || 60 * 1000),
   apiMinIntervalMs: Number(process.env.API_MIN_INTERVAL_MS || 250),
@@ -95,6 +101,10 @@ function log(message, extra) {
   }
 }
 
+function logUpsert(table, count, extra) {
+  log(`Upserted ${count} rows into table '${table}'`, extra);
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -145,6 +155,17 @@ function parseSeasonList(value) {
     .filter(Boolean);
 }
 
+function normalizeSeasonList(seasons) {
+  return Array.from(new Set(seasons)).sort();
+}
+
+function seasonsMatch(a, b) {
+  const left = normalizeSeasonList(a || []);
+  const right = normalizeSeasonList(b || []);
+  if (left.length !== right.length) return false;
+  return left.every((season, index) => season === right[index]);
+}
+
 async function apiRequest(path) {
   const url = path.startsWith("http") ? path : `${CONFIG.apiBaseUrl}${path}`;
   const queued = requestQueue.then(async () => {
@@ -190,9 +211,10 @@ async function requestWithRetry(url) {
       throw new Error(`API ${response.status}: ${body}`);
     }
     const retryAfter = Number(response.headers.get("retry-after"));
-    const waitMs = Number.isFinite(retryAfter)
-      ? retryAfter * 1000
-      : delay + Math.floor(Math.random() * 200);
+    const waitMs =
+      Number.isFinite(retryAfter) && retryAfter > 0
+        ? retryAfter * 1000
+        : delay + Math.floor(Math.random() * 200);
     log("API request throttled; backing off", {
       status: response.status,
       wait_ms: waitMs,
@@ -266,12 +288,21 @@ async function updateIngestionState(entity, status, cursor, errorMessage) {
 
 async function getIngestionState(entity) {
   const rows = await supabaseSelect("ingestion_state", {
-    select: "last_success_at",
+    select: "last_success_at,last_cursor",
     source: "eq.nba_api",
     entity: `eq.${entity}`,
     limit: 1,
   });
   return Array.isArray(rows) && rows.length ? rows[0] : null;
+}
+
+function parseCursor(state) {
+  if (!state || !state.last_cursor) return null;
+  try {
+    return JSON.parse(state.last_cursor);
+  } catch {
+    return null;
+  }
 }
 
 async function shouldRun(entity, intervalMs) {
@@ -343,16 +374,21 @@ async function getSupportedSeasons() {
 }
 
 async function getSeasonsToSync() {
+  return getSeasonsToSyncWithOptions();
+}
+
+async function getSeasonsToSyncWithOptions(options = {}) {
   const supported = await getSupportedSeasons();
   const seasonSet = new Set();
   const currentSeason = await getSeason();
   seasonSet.add(currentSeason);
 
-  const manualSeasons = parseSeasonList(CONFIG.historicSeasons);
+  const manualSeasons = parseSeasonList(options.historicSeasons ?? CONFIG.historicSeasons);
   manualSeasons.forEach((season) => seasonSet.add(season));
 
-  if (CONFIG.historicSeasonsBack > 0) {
-    const recent = supported.slice(-CONFIG.historicSeasonsBack);
+  const historicBack = options.historicSeasonsBack ?? CONFIG.historicSeasonsBack;
+  if (historicBack > 0) {
+    const recent = supported.slice(-historicBack);
     recent.forEach((season) => seasonSet.add(season));
   }
 
@@ -413,7 +449,7 @@ async function refreshTeams() {
   await withIngestionState("teams", async () => {
     const payload = await apiRequest(`/v1/teams?season=${season}`);
     await supabaseUpsert("teams", payload.data, "id");
-    log(`Upserted ${payload.data.length} teams`);
+    logUpsert("teams", payload.data.length, { season });
   }, { season });
 }
 
@@ -437,7 +473,7 @@ async function refreshGames() {
         if (!nextPage) break;
         page = nextPage;
       }
-      log(`Upserted ${total} games for ${season}`);
+      logUpsert("games", total, { season });
     }
   }, { seasons });
 }
@@ -459,16 +495,56 @@ async function refreshPlayersForSeason(season) {
     if (!nextPage) break;
     page = nextPage;
   }
-  log(`Upserted ${total} players for ${season}`);
+  logUpsert("players", total, { season });
 }
 
 async function refreshPlayers() {
-  const seasons = await getSeasonsToSync();
+  const currentSeason = await getSeason();
+  let seasons = [currentSeason];
+  const configuredSeasons = await getSeasonsToSyncWithOptions({
+    historicSeasonsBack: CONFIG.playersHistoricSeasonsBack,
+  });
+  let cursor = {
+    seasons: configuredSeasons,
+    historic_complete: false,
+    historic_seasons: configuredSeasons,
+    mode: CONFIG.playersHistoricMode,
+  };
+
+  if (CONFIG.playersHistoricMode === "off") {
+    seasons = [currentSeason];
+  } else if (CONFIG.playersHistoricMode === "always") {
+    seasons = configuredSeasons;
+  } else {
+    const state = await getIngestionState("players");
+    const previousCursor = parseCursor(state);
+    const historicComplete =
+      previousCursor?.historic_complete &&
+      seasonsMatch(previousCursor?.historic_seasons, configuredSeasons);
+    if (historicComplete) {
+      seasons = [currentSeason];
+      cursor = {
+        seasons,
+        historic_complete: true,
+        historic_seasons: configuredSeasons,
+        mode: CONFIG.playersHistoricMode,
+      };
+    } else {
+      seasons = configuredSeasons;
+      cursor = {
+        seasons,
+        historic_complete: true,
+        historic_seasons: configuredSeasons,
+        mode: CONFIG.playersHistoricMode,
+      };
+    }
+  }
+
   await withIngestionState("players", async () => {
     for (const season of seasons) {
       await refreshPlayersForSeason(season);
     }
-  }, { seasons });
+  }, cursor);
 }
 
 async function refreshStandings() {
@@ -478,7 +554,7 @@ async function refreshStandings() {
       const payload = await apiRequest(`/v1/league_standings?season=${season}`);
       const rows = (payload.data || []).map((row) => ({ ...row, season }));
       await supabaseUpsert("league_standings", rows, "season,team_id");
-      log(`Upserted ${rows.length} league standings for ${season}`);
+      logUpsert("league_standings", rows.length, { season });
     }
   }, { seasons });
 }
@@ -490,7 +566,7 @@ async function refreshTeamStats() {
       const payload = await apiRequest(`/v1/teams/stats?season=${season}`);
       const rows = (payload.data || []).map((row) => ({ ...row, season }));
       await supabaseUpsert("team_stats", rows, "season,team_id");
-      log(`Upserted ${rows.length} team stats for ${season}`);
+      logUpsert("team_stats", rows.length, { season });
     }
   }, { seasons });
 }
@@ -505,7 +581,7 @@ async function refreshTeamDetails() {
       const row = detail.team_id ? detail : { ...detail, team_id: team.id };
       await supabaseUpsert("team_details", [row], "team_id");
     });
-    log(`Upserted ${teams.length} team details`);
+    logUpsert("team_details", teams.length, { season });
   }, { season });
 }
 
@@ -537,7 +613,7 @@ async function refreshTeamGameLogs() {
         if (!nextPage) break;
         page = nextPage;
       }
-      log(`Upserted ${total} team game logs for ${task.season} team ${task.teamId}`);
+      logUpsert("team_game_logs", total, { season: task.season, team_id: task.teamId });
     });
   }, { seasons, team_count: teams.length });
 }
@@ -548,14 +624,16 @@ async function refreshPlayerAwards() {
     activeOnly: CONFIG.playerAwardsActiveOnly,
   });
   await withIngestionState("player_awards", async () => {
+    let total = 0;
     await runWithConcurrency(playerIds, CONFIG.boxscoreConcurrency, async (playerId) => {
       const payload = await apiRequest(`/v1/players/${playerId}/awards`);
       const rows = (payload.data || []).map((row) => ({ ...row, player_id: playerId }));
       if (rows.length) {
         await supabaseUpsert("player_awards", rows, "player_id,season,description");
+        total += rows.length;
       }
     });
-    log(`Upserted player awards for ${playerIds.length} players`);
+    logUpsert("player_awards", total, { season, player_count: playerIds.length });
   }, { season, player_count: playerIds.length });
 }
 
@@ -567,16 +645,21 @@ async function refreshPlayerGameLogs() {
     maxPlayers: CONFIG.playerGameLogsMaxPlayers,
   });
   await withIngestionState("player_game_logs", async () => {
+    let total = 0;
     await runWithConcurrency(playerIds, CONFIG.boxscoreConcurrency, async (playerId) => {
       for (const season of seasons) {
         const payload = await apiRequest(`/v1/players/${playerId}/gamelog?season=${season}`);
         const rows = (payload.data || []).map((row) => ({ ...row, player_id: playerId }));
         if (rows.length) {
           await supabaseUpsert("player_game_logs", rows, "player_id,game_id");
+          total += rows.length;
         }
       }
     });
-    log(`Upserted player game logs for ${playerIds.length} players`);
+    logUpsert("player_game_logs", total, {
+      seasons,
+      player_count: playerIds.length,
+    });
   }, { seasons, player_count: playerIds.length });
 }
 
@@ -597,7 +680,7 @@ async function refreshPlayerSeasonStatsForSeason(season) {
     if (!nextPage) break;
     page = nextPage;
   }
-  log(`Upserted ${total} player season stats for ${season}`);
+  logUpsert("player_season_stats", total, { season });
 }
 
 async function refreshPlayerSeasonStats() {
@@ -705,11 +788,12 @@ async function upsertBoxscore(boxscore) {
       await supabaseUpsert("boxscore_players", chunk, "game_id,player_id,stat_type");
     }
   }
+  return players.length;
 }
 
 async function updateBoxscoreForGame(gameId) {
   const boxscore = await fetchBoxscore(gameId);
-  await upsertBoxscore(boxscore);
+  const playersCount = await upsertBoxscore(boxscore);
   const status = boxscore.status || null;
   statusCache.set(gameId, { status, checkedAt: Date.now() });
   if (isFinalStatus(status) || !isLiveStatus(status)) {
@@ -717,7 +801,7 @@ async function updateBoxscoreForGame(gameId) {
   } else {
     activeGameIds.add(gameId);
   }
-  return status;
+  return { status, playersCount };
 }
 
 async function refreshScoreboard({ mode = CONFIG.workerMode } = {}) {
@@ -729,6 +813,7 @@ async function refreshScoreboard({ mode = CONFIG.workerMode } = {}) {
     );
     const games = payload.data || [];
     await supabaseUpsert("games", games, "game_id");
+    logUpsert("games", games.length, { season, date: today });
 
     const gameIds = games.map((game) => game.game_id);
     if (mode === "cron") {
@@ -776,8 +861,13 @@ async function refreshRecentBoxscores() {
       if (!nextPage) break;
       page = nextPage;
     }
-    await runWithConcurrency(gameIds, CONFIG.boxscoreConcurrency, updateBoxscoreForGame);
-    log(`Backfilled ${gameIds.length} boxscores from ${dateFrom} to ${dateTo}`);
+    let totalPlayers = 0;
+    await runWithConcurrency(gameIds, CONFIG.boxscoreConcurrency, async (gameId) => {
+      const result = await updateBoxscoreForGame(gameId);
+      totalPlayers += result.playersCount || 0;
+    });
+    logUpsert("boxscores", gameIds.length, { date_from: dateFrom, date_to: dateTo });
+    logUpsert("boxscore_players", totalPlayers, { date_from: dateFrom, date_to: dateTo });
   }, { season, date_from: dateFrom, date_to: dateTo });
 }
 
@@ -830,40 +920,31 @@ log("Worker starting", {
   timeZone: CONFIG.timeZone,
 });
 
+async function runCronTask(entity, intervalMs, fn) {
+  if (!(await shouldRun(entity, intervalMs))) {
+    return;
+  }
+  try {
+    await fn();
+  } catch (error) {
+    log(`${entity} task failed`, String(error));
+  }
+}
+
 async function runCron() {
-  if (await shouldRun("scoreboard", CONFIG.scoreboardIntervalMs)) {
-    await refreshScoreboard({ mode: "cron" });
-  }
-  if (await shouldRun("games", CONFIG.gamesIntervalMs)) {
-    await refreshGames();
-  }
-  if (await shouldRun("players", CONFIG.playersIntervalMs)) {
-    await refreshPlayers();
-  }
-  if (await shouldRun("league_standings", CONFIG.standingsIntervalMs)) {
-    await refreshStandings();
-  }
-  if (await shouldRun("player_awards", CONFIG.playerAwardsIntervalMs)) {
-    await refreshPlayerAwards();
-  }
-  if (await shouldRun("player_game_logs", CONFIG.playerGameLogsIntervalMs)) {
-    await refreshPlayerGameLogs();
-  }
-  if (await shouldRun("player_season_stats", CONFIG.playerStatsIntervalMs)) {
-    await refreshPlayerSeasonStats();
-  }
-  if (await shouldRun("team_stats", CONFIG.teamStatsIntervalMs)) {
-    await refreshTeamStats();
-  }
-  if (await shouldRun("team_details", CONFIG.teamDetailsIntervalMs)) {
-    await refreshTeamDetails();
-  }
-  if (await shouldRun("team_game_logs", CONFIG.teamGameLogsIntervalMs)) {
-    await refreshTeamGameLogs();
-  }
-  if (await shouldRun("boxscores", CONFIG.boxscoreBackfillIntervalMs)) {
-    await refreshRecentBoxscores();
-  }
+  await runCronTask("scoreboard", CONFIG.scoreboardIntervalMs, () =>
+    refreshScoreboard({ mode: "cron" })
+  );
+  await runCronTask("games", CONFIG.gamesIntervalMs, refreshGames);
+  await runCronTask("players", CONFIG.playersIntervalMs, refreshPlayers);
+  await runCronTask("league_standings", CONFIG.standingsIntervalMs, refreshStandings);
+  await runCronTask("player_awards", CONFIG.playerAwardsIntervalMs, refreshPlayerAwards);
+  await runCronTask("player_game_logs", CONFIG.playerGameLogsIntervalMs, refreshPlayerGameLogs);
+  await runCronTask("player_season_stats", CONFIG.playerStatsIntervalMs, refreshPlayerSeasonStats);
+  await runCronTask("team_stats", CONFIG.teamStatsIntervalMs, refreshTeamStats);
+  await runCronTask("team_details", CONFIG.teamDetailsIntervalMs, refreshTeamDetails);
+  await runCronTask("team_game_logs", CONFIG.teamGameLogsIntervalMs, refreshTeamGameLogs);
+  await runCronTask("boxscores", CONFIG.boxscoreBackfillIntervalMs, refreshRecentBoxscores);
 }
 
 async function runLive() {

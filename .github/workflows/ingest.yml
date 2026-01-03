@@ -17,11 +17,14 @@ jobs:
         env:
           WORKER_MODE: cron
           CRON_MIN_INTERVAL_MS: 60000
+          HISTORIC_SEASONS_BACK: 2
+          PLAYERS_HISTORIC_MODE: once
+          PLAYERS_HISTORIC_SEASONS_BACK: 2
+          API_MIN_INTERVAL_MS: 1500
           NBA_API_BASE_URL: ${{ secrets.NBA_API_BASE_URL }}
           NBA_API_KEY: ${{ secrets.NBA_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_SCHEMA: public
           NBA_TIME_ZONE: America/New_York
-          HISTORIC_SEASONS_BACK: 10
         run: node workers/worker-live.js
