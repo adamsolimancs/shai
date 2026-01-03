@@ -134,6 +134,14 @@ function getSeasonForDate(timeZone, date = new Date()) {
   return `${startYear}-${suffix}`;
 }
 
+function normalizeConflictValue(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "string") {
+    return value.trim().toLowerCase();
+  }
+  return value;
+}
+
 function isFinalStatus(status) {
   return Boolean(status && /final/i.test(status));
 }
@@ -226,8 +234,28 @@ async function requestWithRetry(url) {
   throw new Error("API request failed after retries");
 }
 
+function dedupeRowsForConflict(rows, onConflict) {
+  if (!onConflict || !Array.isArray(rows) || rows.length < 2) return rows;
+  const keys = onConflict
+    .split(",")
+    .map((key) => key.trim())
+    .filter(Boolean);
+  if (!keys.length) return rows;
+  const seen = new Map();
+  rows.forEach((row, index) => {
+    const values = keys.map((key) => normalizeConflictValue(row?.[key]));
+    const canDedupe = values.every((value) => value !== null);
+    const dedupeKey = canDedupe ? JSON.stringify(values) : `__index:${index}`;
+    seen.set(dedupeKey, row);
+  });
+  if (seen.size === rows.length) return rows;
+  return Array.from(seen.values());
+}
+
 async function supabaseUpsert(table, rows, onConflict) {
   if (!rows || rows.length === 0) return;
+  const payload = dedupeRowsForConflict(rows, onConflict);
+  if (!payload || payload.length === 0) return;
   const url = new URL(`${CONFIG.supabaseUrl}/rest/v1/${table}`);
   if (onConflict) {
     url.searchParams.set("on_conflict", onConflict);
@@ -241,10 +269,24 @@ async function supabaseUpsert(table, rows, onConflict) {
       Prefer: "resolution=merge-duplicates",
       "Content-Profile": CONFIG.supabaseSchema,
     },
-    body: JSON.stringify(rows),
+    body: JSON.stringify(payload),
   });
   if (!response.ok) {
     const body = await response.text();
+    const isDuplicateConflict =
+      response.status === 500 &&
+      (body.includes("\"code\":\"21000\"") ||
+        body.includes("ON CONFLICT DO UPDATE command cannot affect row a second time"));
+    if (isDuplicateConflict && payload.length > 1) {
+      log("Supabase upsert conflict detected; retrying rows individually", {
+        table,
+        count: payload.length,
+      });
+      for (const row of payload) {
+        await supabaseUpsert(table, [row], onConflict);
+      }
+      return;
+    }
     throw new Error(`Supabase ${table} upsert failed: ${response.status} ${body}`);
   }
 }
@@ -373,6 +415,12 @@ async function getSupportedSeasons() {
   return seasons;
 }
 
+function seasonsUpToCurrent(supported, currentSeason) {
+  const currentIndex = supported.indexOf(currentSeason);
+  if (currentIndex === -1) return supported;
+  return supported.slice(0, currentIndex + 1);
+}
+
 async function getSeasonsToSync() {
   return getSeasonsToSyncWithOptions();
 }
@@ -381,6 +429,7 @@ async function getSeasonsToSyncWithOptions(options = {}) {
   const supported = await getSupportedSeasons();
   const seasonSet = new Set();
   const currentSeason = await getSeason();
+  const supportedUpToCurrent = seasonsUpToCurrent(supported, currentSeason);
   seasonSet.add(currentSeason);
 
   const manualSeasons = parseSeasonList(options.historicSeasons ?? CONFIG.historicSeasons);
@@ -388,7 +437,7 @@ async function getSeasonsToSyncWithOptions(options = {}) {
 
   const historicBack = options.historicSeasonsBack ?? CONFIG.historicSeasonsBack;
   if (historicBack > 0) {
-    const recent = supported.slice(-historicBack);
+    const recent = supportedUpToCurrent.slice(-historicBack);
     recent.forEach((season) => seasonSet.add(season));
   }
 
