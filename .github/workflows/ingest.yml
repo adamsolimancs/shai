@@ -18,7 +18,9 @@ jobs:
           WORKER_MODE: cron
           CRON_MIN_INTERVAL_MS: 60000
           HISTORIC_SEASONS_BACK: 2
-          API_MIN_INTERVAL_MS: 1000
+          PLAYERS_HISTORIC_MODE: once
+          PLAYERS_HISTORIC_SEASONS_BACK: 2
+          API_MIN_INTERVAL_MS: 1500
           NBA_API_BASE_URL: ${{ secrets.NBA_API_BASE_URL }}
           NBA_API_KEY: ${{ secrets.NBA_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
