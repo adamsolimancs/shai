@@ -252,6 +252,56 @@ function dedupeRowsForConflict(rows, onConflict) {
   return Array.from(seen.values());
 }
 
+async function supabaseInsert(table, rows) {
+  if (!rows || rows.length === 0) return;
+  const url = new URL(`${CONFIG.supabaseUrl}/rest/v1/${table}`);
+  const response = await fetch(url.toString(), {
+    method: "POST",
+    headers: {
+      apikey: CONFIG.supabaseKey,
+      Authorization: `Bearer ${CONFIG.supabaseKey}`,
+      "Content-Type": "application/json",
+      "Content-Profile": CONFIG.supabaseSchema,
+      Prefer: "return=minimal",
+    },
+    body: JSON.stringify(rows),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Supabase ${table} insert failed: ${response.status} ${body}`);
+  }
+}
+
+async function supabaseDelete(table, filters) {
+  const url = new URL(`${CONFIG.supabaseUrl}/rest/v1/${table}`);
+  Object.entries(filters || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null) {
+      url.searchParams.set(key, String(value));
+    }
+  });
+  const response = await fetch(url.toString(), {
+    method: "DELETE",
+    headers: {
+      apikey: CONFIG.supabaseKey,
+      Authorization: `Bearer ${CONFIG.supabaseKey}`,
+      "Content-Profile": CONFIG.supabaseSchema,
+      Prefer: "return=minimal",
+    },
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Supabase ${table} delete failed: ${response.status} ${body}`);
+  }
+}
+
+function isNoUniqueConstraintError(error) {
+  const message = String(error || "");
+  return (
+    message.includes("\"code\":\"42P10\"") ||
+    message.includes("no unique or exclusion constraint matching the ON CONFLICT specification")
+  );
+}
+
 async function supabaseUpsert(table, rows, onConflict) {
   if (!rows || rows.length === 0) return;
   const payload = dedupeRowsForConflict(rows, onConflict);
@@ -832,9 +882,26 @@ async function upsertBoxscore(boxscore) {
   await supabaseUpsert("boxscores", [toBoxscoreRow(boxscore)], "game_id");
   const players = toBoxscorePlayers(boxscore);
   if (players.length) {
-    const chunks = chunkArray(players, CONFIG.upsertChunkSize);
-    for (const chunk of chunks) {
-      await supabaseUpsert("boxscore_players", chunk, "game_id,player_id,stat_type");
+    try {
+      const chunks = chunkArray(players, CONFIG.upsertChunkSize);
+      for (const chunk of chunks) {
+        await supabaseUpsert("boxscore_players", chunk, "game_id,player_id,stat_type");
+      }
+    } catch (error) {
+      if (!isNoUniqueConstraintError(error)) {
+        throw error;
+      }
+      log("boxscore_players missing unique constraint; replacing rows instead", {
+        game_id: boxscore.game_id,
+        count: players.length,
+      });
+      await supabaseDelete("boxscore_players", {
+        game_id: `eq.${boxscore.game_id}`,
+      });
+      const chunks = chunkArray(players, CONFIG.upsertChunkSize);
+      for (const chunk of chunks) {
+        await supabaseInsert("boxscore_players", chunk);
+      }
     }
   }
   return players.length;
@@ -929,8 +996,9 @@ async function refreshActiveGames() {
   }, { active: Array.from(activeGameIds) });
 }
 
-async function runWithConcurrency(items, limit, fn) {
+async function runWithConcurrency(items, limit, fn, { strict = false } = {}) {
   const queue = [...items];
+  const errors = [];
   const workers = new Array(Math.min(limit, queue.length)).fill(null).map(async () => {
     while (queue.length) {
       const item = queue.shift();
@@ -938,12 +1006,19 @@ async function runWithConcurrency(items, limit, fn) {
       try {
         await fn(item);
       } catch (error) {
+        errors.push({ item, error: String(error) });
         log("Worker task failed", { item, error: String(error) });
       }
     }
   });
   await Promise.all(workers);
+  if (strict && errors.length) {
+    const e = new Error(`Concurrency batch had ${errors.length} failures`);
+    e.details = errors.slice(0, 20);
+    throw e;
+  }
 }
+
 
 function scheduleTask(name, intervalMs, fn, runImmediately = true) {
   let inFlight = false;
