@@ -144,7 +144,8 @@ const CacheKeys = {
   standings: (season, leagueId = "00", seasonType = "Regular Season") =>
     cacheKey("standings", season, leagueId, seasonType),
   teams: (season) => cacheKey("teams", season),
-  playerGameLog: (playerId, season) => cacheKey("player_gamelog", playerId, season),
+  playerGameLog: (playerId, season, seasonType = "Regular Season") =>
+    cacheKey("player_gamelog", playerId, season, seasonType),
 };
 
 function recordCacheWrite(ok) {
@@ -868,7 +869,7 @@ async function refreshPlayerGameLogs() {
           total += rows.length;
         }
         await writeCache(
-          CacheKeys.playerGameLog(playerId, season),
+          CacheKeys.playerGameLog(playerId, season, "Regular Season"),
           data,
           CONFIG.cacheTtlPlayerGameLogSec
         );

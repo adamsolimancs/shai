@@ -39,6 +39,7 @@ export function HeaderSearchBar() {
   const segments = useMemo(() => pathname.split("/").filter(Boolean), [pathname]);
   const isPlayerProfile = segments[0] === "players" && segments.length >= 2;
   const queryParam = searchParams?.get("q") ?? "";
+  const [storedQuery, setStoredQuery] = useState("");
   const showSearch =
     pathname !== "/" && pathname !== "/players" && pathname !== "/signin" && pathname !== "/signup";
   const derivedQuery = useMemo(() => {
@@ -49,23 +50,45 @@ export function HeaderSearchBar() {
       return queryParam;
     }
     if (isPlayerProfile) {
-      return decodeURIComponent(segments[1] ?? "").replace(/-/g, " ");
+      if (storedQuery) {
+        return storedQuery;
+      }
+      const segment = segments[1] ?? "";
+      if (/^\d+$/.test(segment)) {
+        return "";
+      }
+      return decodeURIComponent(segment).replace(/-/g, " ");
     }
     return "";
-  }, [showSearch, queryParam, isPlayerProfile, segments]);
+  }, [showSearch, queryParam, isPlayerProfile, segments, storedQuery]);
   const [query, setQuery] = useState(derivedQuery);
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
+    if (typeof window !== "undefined") {
+      try {
+        setStoredQuery(window.sessionStorage.getItem("lastPlayerSearch") ?? "");
+      } catch {
+        setStoredQuery("");
+      }
+    }
     const id = setTimeout(() => setQuery(derivedQuery), 0);
     return () => clearTimeout(id);
-  }, [derivedQuery]);
+  }, [derivedQuery, pathname]);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const slug = normalizeSlug(query);
     if (!slug) {
       return;
+    }
+    const rawQuery = query.trim();
+    if (rawQuery && typeof window !== "undefined") {
+      try {
+        window.sessionStorage.setItem("lastPlayerSearch", rawQuery);
+      } catch {
+        // ignore storage errors
+      }
     }
     startTransition(() => {
       router.push(`/players/${encodeURIComponent(slug)}`);

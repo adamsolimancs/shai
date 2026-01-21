@@ -1,4 +1,5 @@
 import { Suspense } from "react";
+import Link from "next/link";
 import { LeagueStandings, type LeagueStandingsConference } from "@/components/LeagueStandings";
 import HeroSearch from "@/components/HeroSearch";
 import ScoreCard from "@/components/ScoreCard";
@@ -37,6 +38,7 @@ type ScoreCardData = {
 };
 
 type PlayerHighlight = {
+  id: number;
   name: string;
   team: string;
   points: number;
@@ -138,6 +140,7 @@ async function fetchPlayerHighlights(): Promise<PlayerHighlight[]> {
     .sort((a, b) => b.points - a.points)
     .slice(0, 3)
     .map((player) => ({
+      id: player.player_id,
       name: player.player_name,
       team: player.team_abbreviation ?? "FA",
       points: player.points,
@@ -240,6 +243,7 @@ export default async function HomePage() {
 
       <section id="scores" className="mt-20">
         <SectionTitle title="Recent Games" eyebrow="Live scores" />
+        {/* TODO: if no recent games (offseason), display last season's playoff results. */}
         <div className="grid gap-4 md:grid-cols-3">
           {scores.map((game) => {
             const winner =
@@ -264,7 +268,11 @@ export default async function HomePage() {
         <SectionTitle title="Player Spotlight" eyebrow="Trending performers" />
         <div className="grid gap-6 md:grid-cols-3">
           {players.map((player) => (
-            <article key={player.name} className="rounded-3xl border border-white/10 bg-slate-900/70 p-6 shadow-lg shadow-black/30">
+            <Link
+              key={player.id}
+              href={`/players/${player.id}`}
+              className="group rounded-3xl border border-white/10 bg-slate-900/70 p-6 shadow-lg shadow-black/30 transition hover:border-[color:var(--color-app-primary)] hover:bg-slate-900/80 hover:ring-2 hover:ring-[color:var(--color-app-primary-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+            >
               <div className="flex items-center justify-between text-sm text-white/60">
                 <span className="font-semibold text-white">{player.name}</span>
                 <span>{player.team}</span>
@@ -283,7 +291,7 @@ export default async function HomePage() {
                   <dd className="mt-2 text-xl font-semibold text-white">{player.assists.toFixed(1)}</dd>
                 </div>
               </dl>
-            </article>
+            </Link>
           ))}
         </div>
       </section>

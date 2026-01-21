@@ -49,5 +49,6 @@ def teams_key(settings: Settings, season: str) -> str:
     return cache_key(settings, "teams", season)
 
 
-def player_gamelog_key(settings: Settings, player_id: int, season: str) -> str:
-    return cache_key(settings, "player_gamelog", str(player_id), season)
+def player_gamelog_key(settings: Settings, player_id: int, season: str, season_type: str) -> str:
+    season_type = (season_type or "Regular Season").strip()
+    return cache_key(settings, "player_gamelog", str(player_id), season, season_type)

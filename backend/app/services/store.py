@@ -101,12 +101,17 @@ async def fetch_player_gamelog(
     *,
     player_id: int,
     season: str,
+    season_type: str,
     date_from: date | None,
     date_to: date | None,
 ) -> list[dict[str, Any]]:
+    normalized_season_type = (season_type or "Regular Season").strip().lower()
     rows = await supabase.select("player_game_logs", filters={"player_id": f"eq.{player_id}"})
     filtered = []
     for row in rows:
+        row_season_type = (row.get("season_type") or "Regular Season").strip().lower()
+        if normalized_season_type != row_season_type:
+            continue
         row_date = _parse_date(row.get("game_date"))
         if row_date is None:
             continue
