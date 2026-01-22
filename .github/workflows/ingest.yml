@@ -9,12 +9,6 @@ jobs:
   ingest:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 18
-      - name: Install worker deps
-        run: npm ci --prefix workers
       - name: Check ingest window
         id: schedule
         run: |
@@ -27,6 +21,15 @@ jobs:
           else
             echo "run_worker=false" >> "$GITHUB_OUTPUT"
           fi
+      - uses: actions/checkout@v4
+        if: steps.schedule.outputs.run_worker == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.schedule.outputs.run_worker == 'true'
+        with:
+          node-version: 18
+      - name: Install worker deps
+        if: steps.schedule.outputs.run_worker == 'true'
+        run: npm ci --prefix workers
       - name: Run worker
         if: steps.schedule.outputs.run_worker == 'true'
         env:

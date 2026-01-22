@@ -62,6 +62,12 @@ function toPlayerId(value) {
   return String(value);
 }
 
+function toNumber(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
 const CONFIG = {
   workerMode: process.env.WORKER_MODE || "cron",
   apiBaseUrl: normalizeBaseUrl(process.env.NBA_API_BASE_URL || "http://localhost:8080"),
@@ -96,14 +102,8 @@ const CONFIG = {
   playerStatsIntervalMs: Number(process.env.PLAYER_STATS_INTERVAL_MS || 6 * 60 * 60 * 1000),
   teamStatsIntervalMs: Number(process.env.TEAM_STATS_INTERVAL_MS || 60 * 60 * 1000),
   teamDetailsIntervalMs: Number(process.env.TEAM_DETAILS_INTERVAL_MS || 24 * 60 * 60 * 1000),
-  teamGameLogsIntervalMs: Number(process.env.TEAM_GAME_LOGS_INTERVAL_MS || 6 * 60 * 60 * 1000),
-  teamGameLogsSeasonsBack: Number(process.env.TEAM_GAME_LOGS_SEASONS_BACK || 1),
   playerAwardsIntervalMs: Number(process.env.PLAYER_AWARDS_INTERVAL_MS || 24 * 60 * 60 * 1000),
   playerAwardsActiveOnly: parseBoolean(process.env.PLAYER_AWARDS_ACTIVE_ONLY, true),
-  playerGameLogsIntervalMs: Number(process.env.PLAYER_GAME_LOGS_INTERVAL_MS || 24 * 60 * 60 * 1000),
-  playerGameLogsSeasonsBack: Number(process.env.PLAYER_GAME_LOGS_SEASONS_BACK || 1),
-  playerGameLogsActiveOnly: parseBoolean(process.env.PLAYER_GAME_LOGS_ACTIVE_ONLY, true),
-  playerGameLogsMaxPlayers: Number(process.env.PLAYER_GAME_LOGS_MAX_PLAYERS || 0),
   boxscoreBackfillIntervalMs: Number(
     process.env.BOXSCORE_BACKFILL_INTERVAL_MS || 60 * 60 * 1000
   ),
@@ -120,7 +120,6 @@ const CONFIG = {
   ),
   cacheTtlStandingsSec: Number(process.env.CACHE_TTL_STANDINGS_SEC || 60 * 15),
   cacheTtlTeamsSec: Number(process.env.CACHE_TTL_TEAMS_SEC || 60 * 60 * 24),
-  cacheTtlPlayerGameLogSec: Number(process.env.CACHE_TTL_PLAYER_GAMELOG_SEC || 60 * 60 * 6),
 };
 
 if (!CONFIG.apiKey) {
@@ -132,15 +131,29 @@ if (!CONFIG.supabaseUrl || !CONFIG.supabaseKey) {
   process.exit(1);
 }
 
+const NBA_STATS_HEADERS = {
+  Accept: "application/json, text/plain, */*",
+  "Accept-Language": "en-US,en;q=0.9",
+  Origin: "https://www.nba.com",
+  Referer: "https://www.nba.com/",
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+    "AppleWebKit/537.36 (KHTML, like Gecko) " +
+    "Chrome/120.0 Safari/537.36",
+  "x-nba-stats-origin": "stats",
+  "x-nba-stats-token": "true",
+};
+
 const activeGameIds = new Set();
 const statusCache = new Map();
 let cachedSeason = null;
 let cachedSeasonAt = 0;
 let cachedSupportedSeasons = null;
 let cachedSupportedSeasonsAt = 0;
-let warnedTeamGameLogs = false;
 let requestQueue = Promise.resolve();
+let statsRequestQueue = Promise.resolve();
 let lastApiRequestAt = 0;
+let lastStatsRequestAt = 0;
 let apiCircuitOpenUntil = 0;
 let apiCircuitFailures = 0;
 const cacheStats = {
@@ -182,8 +195,6 @@ const CacheKeys = {
   standings: (season, leagueId = "00", seasonType = "Regular Season") =>
     cacheKey("standings", season, leagueId, seasonType),
   teams: (season) => cacheKey("teams", season),
-  playerGameLog: (playerId, season, seasonType = "Regular Season") =>
-    cacheKey("player_gamelog", playerId, season, seasonType),
 };
 
 function recordCacheWrite(ok) {
@@ -372,26 +383,6 @@ function mapLeagueStandingRow(row, season) {
   };
 }
 
-function mapTeamAdvancedStatsRow(row, season) {
-  if (!row) return null;
-  const teamId = row.team_id ?? null;
-  const resolvedSeason = season ?? row.season ?? null;
-  if (teamId === null || teamId === undefined || !resolvedSeason) return null;
-  return {
-    season: resolvedSeason,
-    team_id: teamId,
-    ppg: row.ppg ?? row.points ?? null,
-    ppg_allowed: row.ppg_allowed ?? null,
-    ortg: row.ortg ?? null,
-    ortg_rank: row.ortg_rank ?? null,
-    drtg: row.drtg ?? null,
-    drtg_rank: row.drtg_rank ?? null,
-    apg: row.apg ?? row.assists ?? null,
-    topg: row.topg ?? row.turnovers ?? null,
-    netrtg: row.netrtg ?? null,
-  };
-}
-
 function mapTeamDetailRow(detail, teamId) {
   if (!detail) detail = {};
   const resolvedTeamId = detail.team_id ?? teamId ?? null;
@@ -434,27 +425,69 @@ function mapPlayerAwardRow(row, playerId) {
 function mapPlayerSeasonStatsRow(row, season, seasonType) {
   if (!row) return null;
   const resolvedSeason = season ?? row.season ?? null;
-  const resolvedPlayerId = toPlayerId(row.player_id ?? row.id);
+  const resolvedPlayerId = toPlayerId(
+    row.player_id ?? row.PLAYER_ID ?? row.id ?? row.PERSON_ID
+  );
   const resolvedSeasonType = seasonType ?? row.season_type ?? "Regular Season";
   if (!resolvedSeason || !resolvedPlayerId || !resolvedSeasonType) return null;
   return {
     season: resolvedSeason,
     player_id: resolvedPlayerId,
-    team_id: row.team_id ?? null,
-    games_played: row.games_played ?? null,
-    games_started: row.games_started ?? null,
-    minutes_pg: row.minutes_pg ?? row.minutes ?? null,
-    points_pg: row.points_pg ?? row.points ?? null,
-    rebounds_pg: row.rebounds_pg ?? row.rebounds ?? null,
-    assists_pg: row.assists_pg ?? row.assists ?? null,
-    steals_pg: row.steals_pg ?? row.steals ?? null,
-    blocks_pg: row.blocks_pg ?? row.blocks ?? null,
-    field_goal_pct_pg: row.field_goal_pct_pg ?? row.field_goal_pct ?? null,
-    three_point_pct_pg: row.three_point_pct_pg ?? row.three_point_pct ?? null,
-    free_throw_pct_pg: row.free_throw_pct_pg ?? row.free_throw_pct ?? null,
-    true_shooting_pct_pg: row.true_shooting_pct_pg ?? row.true_shooting_pct ?? null,
+    team_id: row.team_id ?? row.TEAM_ID ?? null,
+    games_played: toNumber(row.games_played ?? row.GP),
+    games_started: toNumber(row.games_started ?? row.GS),
+    minutes_pg: toNumber(row.minutes_pg ?? row.MIN ?? row.minutes),
+    points_pg: toNumber(row.points_pg ?? row.PTS ?? row.points),
+    rebounds_pg: toNumber(row.rebounds_pg ?? row.REB ?? row.rebounds),
+    assists_pg: toNumber(row.assists_pg ?? row.AST ?? row.assists),
+    steals_pg: toNumber(row.steals_pg ?? row.STL ?? row.steals),
+    blocks_pg: toNumber(row.blocks_pg ?? row.BLK ?? row.blocks),
+    field_goal_pct_pg: toNumber(row.field_goal_pct_pg ?? row.FG_PCT ?? row.field_goal_pct),
+    three_point_pct_pg: toNumber(
+      row.three_point_pct_pg ?? row.FG3_PCT ?? row.three_point_pct
+    ),
+    free_throw_pct_pg: toNumber(row.free_throw_pct_pg ?? row.FT_PCT ?? row.free_throw_pct),
+    true_shooting_pct_pg: toNumber(
+      row.true_shooting_pct_pg ?? row.TS_PCT ?? row.true_shooting_pct
+    ),
     season_type: resolvedSeasonType,
   };
+}
+
+function extractResultSetRows(payload, targetName) {
+  const resultSets = payload?.resultSets || payload?.resultSet || [];
+  const sets = Array.isArray(resultSets) ? resultSets : [resultSets];
+  const target =
+    sets.find(
+      (set) =>
+        String(set?.name || "")
+          .trim()
+          .toLowerCase() === targetName.toLowerCase()
+    ) || sets[0];
+  if (!target || !Array.isArray(target.headers) || !Array.isArray(target.rowSet)) {
+    return [];
+  }
+  return target.rowSet.map((row) => {
+    const record = {};
+    target.headers.forEach((header, index) => {
+      record[header] = row[index];
+    });
+    return record;
+  });
+}
+
+function applyRanks(rows, valueKey, rankKey, descending = true) {
+  const sorted = rows
+    .filter((row) => row[valueKey] !== null && row[valueKey] !== undefined)
+    .sort((a, b) => {
+      if (descending) {
+        return (b[valueKey] ?? 0) - (a[valueKey] ?? 0);
+      }
+      return (a[valueKey] ?? 0) - (b[valueKey] ?? 0);
+    });
+  sorted.forEach((row, index) => {
+    row[rankKey] = index + 1;
+  });
 }
 
 async function apiRequest(path) {
@@ -487,6 +520,26 @@ async function apiRequest(path) {
   return queued;
 }
 
+async function statsRequest(url) {
+  const queued = statsRequestQueue.then(async () => {
+    const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastStatsRequestAt));
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+    lastStatsRequestAt = Date.now();
+    return statsRequestWithRetry(url);
+  }, async () => {
+    const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastStatsRequestAt));
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+    lastStatsRequestAt = Date.now();
+    return statsRequestWithRetry(url);
+  });
+  statsRequestQueue = queued.catch(() => {});
+  return queued;
+}
+
 async function requestWithRetry(url) {
   let attempt = 0;
   let delay = CONFIG.apiRetryBaseDelayMs;
@@ -514,10 +567,11 @@ async function requestWithRetry(url) {
       throw new Error(`API ${response.status}: ${body}`);
     }
     const retryAfter = Number(response.headers.get("retry-after"));
-    const waitMs =
+    const baseWaitMs =
       Number.isFinite(retryAfter) && retryAfter > 0
         ? retryAfter * 1000
         : delay + Math.floor(Math.random() * 200);
+    const waitMs = Math.max(baseWaitMs, 30_000);
     log("API request throttled; backing off", {
       status: response.status,
       wait_ms: waitMs,
@@ -527,6 +581,41 @@ async function requestWithRetry(url) {
     attempt += 1;
   }
   throw new Error("API request failed after retries");
+}
+
+async function statsRequestWithRetry(url) {
+  let attempt = 0;
+  let delay = CONFIG.apiRetryBaseDelayMs;
+  while (attempt <= CONFIG.apiRetryMax) {
+    const response = await fetch(url, {
+      headers: NBA_STATS_HEADERS,
+    });
+    if (response.ok) {
+      return response.json();
+    }
+    const body = await response.text();
+    const retryable = response.status === 429 || response.status >= 500;
+    if (!retryable) {
+      throw new Error(`NBA stats ${response.status}: ${body}`);
+    }
+    if (attempt >= CONFIG.apiRetryMax) {
+      throw new Error(`NBA stats ${response.status}: ${body}`);
+    }
+    const retryAfter = Number(response.headers.get("retry-after"));
+    const baseWaitMs =
+      Number.isFinite(retryAfter) && retryAfter > 0
+        ? retryAfter * 1000
+        : delay + Math.floor(Math.random() * 200);
+    const waitMs = Math.max(baseWaitMs, 30_000);
+    log("NBA stats request throttled; backing off", {
+      status: response.status,
+      wait_ms: waitMs,
+    });
+    await sleep(waitMs);
+    delay *= 2;
+    attempt += 1;
+  }
+  throw new Error("NBA stats request failed after retries");
 }
 
 function dedupeRowsForConflict(rows, onConflict) {
@@ -547,7 +636,11 @@ function dedupeRowsForConflict(rows, onConflict) {
   return Array.from(seen.values());
 }
 
-async function supabaseInsert(table, rows) {
+function shouldRecordIngestionState(table) {
+  return Boolean(table && table !== "ingestion_state");
+}
+
+async function supabaseInsertRaw(table, rows) {
   if (!rows || rows.length === 0) return;
   const url = new URL(`${CONFIG.supabaseUrl}/rest/v1/${table}`);
   const response = await fetch(url.toString(), {
@@ -567,7 +660,26 @@ async function supabaseInsert(table, rows) {
   }
 }
 
-async function supabaseDelete(table, filters) {
+async function supabaseInsert(table, rows, options = {}) {
+  const recordState = options.recordState !== false && shouldRecordIngestionState(table);
+  const cursor = options.cursor ?? null;
+  if (recordState) {
+    await updateIngestionState(table, "running", cursor, null);
+  }
+  try {
+    await supabaseInsertRaw(table, rows);
+    if (recordState) {
+      await updateIngestionState(table, "ok", cursor, null);
+    }
+  } catch (error) {
+    if (recordState) {
+      await updateIngestionState(table, "failed", cursor, String(error));
+    }
+    throw error;
+  }
+}
+
+async function supabaseDeleteRaw(table, filters) {
   const url = new URL(`${CONFIG.supabaseUrl}/rest/v1/${table}`);
   Object.entries(filters || {}).forEach(([key, value]) => {
     if (value !== undefined && value !== null) {
@@ -589,6 +701,25 @@ async function supabaseDelete(table, filters) {
   }
 }
 
+async function supabaseDelete(table, filters, options = {}) {
+  const recordState = options.recordState !== false && shouldRecordIngestionState(table);
+  const cursor = options.cursor ?? null;
+  if (recordState) {
+    await updateIngestionState(table, "running", cursor, null);
+  }
+  try {
+    await supabaseDeleteRaw(table, filters);
+    if (recordState) {
+      await updateIngestionState(table, "ok", cursor, null);
+    }
+  } catch (error) {
+    if (recordState) {
+      await updateIngestionState(table, "failed", cursor, String(error));
+    }
+    throw error;
+  }
+}
+
 function isNoUniqueConstraintError(error) {
   const message = String(error || "");
   return (
@@ -601,7 +732,7 @@ function isCircuitOpenError(error) {
   return error instanceof CircuitOpenError || String(error).includes("API circuit open");
 }
 
-async function supabaseUpsert(table, rows, onConflict) {
+async function supabaseUpsertRaw(table, rows, onConflict) {
   if (!rows || rows.length === 0) return;
   const payload = dedupeRowsForConflict(rows, onConflict);
   if (!payload || payload.length === 0) return;
@@ -622,21 +753,43 @@ async function supabaseUpsert(table, rows, onConflict) {
   });
   if (!response.ok) {
     const body = await response.text();
+    throw new Error(`Supabase ${table} upsert failed: ${response.status} ${body}`);
+  }
+}
+
+async function supabaseUpsert(table, rows, onConflict, options = {}) {
+  const recordState = options.recordState !== false && shouldRecordIngestionState(table);
+  const cursor = options.cursor ?? null;
+  if (recordState) {
+    await updateIngestionState(table, "running", cursor, null);
+  }
+  try {
+    await supabaseUpsertRaw(table, rows, onConflict);
+    if (recordState) {
+      await updateIngestionState(table, "ok", cursor, null);
+    }
+  } catch (error) {
+    const message = String(error || "");
     const isDuplicateConflict =
-      response.status === 500 &&
-      (body.includes("\"code\":\"21000\"") ||
-        body.includes("ON CONFLICT DO UPDATE command cannot affect row a second time"));
-    if (isDuplicateConflict && payload.length > 1) {
+      message.includes("\"code\":\"21000\"") ||
+      message.includes("ON CONFLICT DO UPDATE command cannot affect row a second time");
+    if (isDuplicateConflict && Array.isArray(rows) && rows.length > 1) {
       log("Supabase upsert conflict detected; retrying rows individually", {
         table,
-        count: payload.length,
+        count: rows.length,
       });
-      for (const row of payload) {
-        await supabaseUpsert(table, [row], onConflict);
+      for (const row of rows) {
+        await supabaseUpsertRaw(table, [row], onConflict);
+      }
+      if (recordState) {
+        await updateIngestionState(table, "ok", cursor, null);
       }
       return;
     }
-    throw new Error(`Supabase ${table} upsert failed: ${response.status} ${body}`);
+    if (recordState) {
+      await updateIngestionState(table, "failed", cursor, message);
+    }
+    throw error;
   }
 }
 
@@ -661,6 +814,27 @@ async function supabaseSelect(table, query) {
   return response.json();
 }
 
+async function supabaseSelectAll(table, query, pageSize = 1000) {
+  const rows = [];
+  let offset = 0;
+  while (true) {
+    const chunk = await supabaseSelect(table, {
+      ...query,
+      limit: pageSize,
+      offset,
+    });
+    if (!Array.isArray(chunk) || chunk.length === 0) {
+      break;
+    }
+    rows.push(...chunk);
+    if (chunk.length < pageSize) {
+      break;
+    }
+    offset += pageSize;
+  }
+  return rows;
+}
+
 async function updateIngestionState(entity, status, cursor, errorMessage) {
   const now = new Date().toISOString();
   const row = {
@@ -674,7 +848,7 @@ async function updateIngestionState(entity, status, cursor, errorMessage) {
   if (status === "ok") {
     row.last_success_at = now;
   }
-  await supabaseUpsert("ingestion_state", [row], "source,entity");
+  await supabaseUpsertRaw("ingestion_state", [row], "source,entity");
 }
 
 async function getIngestionState(entity) {
@@ -801,20 +975,94 @@ async function getSeasonsToSyncWithOptions(options = {}) {
   return combined;
 }
 
-async function getRecentSeasons(count) {
-  const supported = await getSupportedSeasons();
-  const currentSeason = await getSeason();
-  const currentIndex = supported.indexOf(currentSeason);
-  if (currentIndex === -1) {
-    return supported.slice(-Math.max(1, count));
-  }
-  const start = Math.max(0, currentIndex - Math.max(1, count) + 1);
-  return supported.slice(start, currentIndex + 1);
-}
-
 async function fetchTeamsForSeason(season) {
   const payload = await apiRequest(`/v1/teams?season=${season}`);
   return payload.data || [];
+}
+
+async function fetchGamesFromApi(season) {
+  let page = 1;
+  const pageSize = 200;
+  const games = [];
+  while (true) {
+    const payload = await apiRequest(
+      `/v1/games?season=${season}&page=${page}&page_size=${pageSize}`
+    );
+    const rows = payload.data || [];
+    games.push(...rows);
+    const nextPage = payload.meta?.pagination?.next;
+    if (!nextPage) break;
+    page = nextPage;
+  }
+  return games;
+}
+
+async function loadGamesForSeason(season) {
+  const seasonYear = seasonToYear(season);
+  const query = {
+    select: "game_id,home_team_id,home_team_score,away_team_id,away_team_score",
+  };
+  if (seasonYear !== null && seasonYear !== undefined) {
+    query.season = `eq.${seasonYear}`;
+  }
+  const rows = await supabaseSelectAll("games", query);
+  if (rows.length) {
+    return rows;
+  }
+  return fetchGamesFromApi(season);
+}
+
+async function fetchBoxscoreAdvancedTeamStats(gameId) {
+  const url = new URL("https://stats.nba.com/stats/boxscoreadvancedv2");
+  url.searchParams.set("GameID", gameId);
+  url.searchParams.set("StartPeriod", "0");
+  url.searchParams.set("EndPeriod", "0");
+  url.searchParams.set("StartRange", "0");
+  url.searchParams.set("EndRange", "0");
+  url.searchParams.set("RangeType", "0");
+  const payload = await statsRequest(url.toString());
+  return extractResultSetRows(payload, "TeamStats");
+}
+
+async function fetchLeagueDashPlayerStats(season, seasonType) {
+  const url = new URL("https://stats.nba.com/stats/leaguedashplayerstats");
+  const params = {
+    Season: season,
+    SeasonType: seasonType,
+    PerMode: "PerGame",
+    MeasureType: "Base",
+    LeagueID: "00",
+    PlusMinus: "N",
+    PaceAdjust: "N",
+    Rank: "N",
+    Outcome: "",
+    Location: "",
+    Month: "0",
+    SeasonSegment: "",
+    DateFrom: "",
+    DateTo: "",
+    OpponentTeamID: "0",
+    VsConference: "",
+    VsDivision: "",
+    GameSegment: "",
+    Period: "0",
+    LastNGames: "0",
+    GameScope: "",
+    PlayerExperience: "",
+    PlayerPosition: "",
+    StarterBench: "",
+    TwoWay: "",
+    Conference: "",
+    Division: "",
+    PORound: "0",
+    ShotClockRange: "",
+    DistanceRange: "",
+  };
+  Object.entries(params).forEach(([key, value]) => {
+    url.searchParams.set(key, String(value));
+  });
+  const payload = await statsRequest(url.toString());
+  return extractResultSetRows(payload, "LeagueDashPlayerStats");
 }
 
 async function fetchPlayerIds(season, { activeOnly = false, maxPlayers = 0 } = {}) {
@@ -968,13 +1216,122 @@ async function refreshStandings() {
 
 async function refreshTeamStats() {
   const seasons = await getSeasonsToSync();
-  await withIngestionState("team_stats", async () => {
+  await withIngestionState("team_advanced_stats", async () => {
     for (const season of seasons) {
-      const payload = await apiRequest(`/v1/teams/stats?season=${season}`);
-      const rows = (payload.data || [])
-        .map((row) => mapTeamAdvancedStatsRow(row, season))
-        .filter(Boolean);
-      await supabaseUpsert("team_advanced_stats", rows, "season,team_id");
+      const games = await loadGamesForSeason(season);
+      const aggregates = new Map();
+
+      const ensureEntry = (teamId) => {
+        if (!aggregates.has(teamId)) {
+          aggregates.set(teamId, {
+            team_id: teamId,
+            games_played: 0,
+            points_for: 0,
+            points_against: 0,
+            ortg_sum: 0,
+            ortg_count: 0,
+            drtg_sum: 0,
+            drtg_count: 0,
+            netrtg_sum: 0,
+            netrtg_count: 0,
+            assists_sum: 0,
+            assists_count: 0,
+            turnovers_sum: 0,
+            turnovers_count: 0,
+          });
+        }
+        return aggregates.get(teamId);
+      };
+
+      for (const game of games) {
+        const homeId = toNumber(game.home_team_id ?? game.HOME_TEAM_ID);
+        const awayId = toNumber(game.away_team_id ?? game.AWAY_TEAM_ID);
+        const homeScore = toNumber(game.home_team_score ?? game.HOME_TEAM_SCORE);
+        const awayScore = toNumber(game.away_team_score ?? game.AWAY_TEAM_SCORE);
+        if (homeId !== null && homeScore !== null) {
+          const entry = ensureEntry(homeId);
+          entry.games_played += 1;
+          entry.points_for += homeScore;
+          if (awayScore !== null) {
+            entry.points_against += awayScore;
+          }
+        }
+        if (awayId !== null && awayScore !== null) {
+          const entry = ensureEntry(awayId);
+          entry.games_played += 1;
+          entry.points_for += awayScore;
+          if (homeScore !== null) {
+            entry.points_against += homeScore;
+          }
+        }
+      }
+
+      const gameIds = games
+        .filter((game) => {
+          const homeScore = toNumber(game.home_team_score ?? game.HOME_TEAM_SCORE);
+          const awayScore = toNumber(game.away_team_score ?? game.AWAY_TEAM_SCORE);
+          return Boolean(game.game_id) && homeScore !== null && awayScore !== null;
+        })
+        .map((game) => game.game_id);
+
+      await runWithConcurrency(gameIds, CONFIG.boxscoreConcurrency, async (gameId) => {
+        const teamRows = await fetchBoxscoreAdvancedTeamStats(gameId);
+        for (const row of teamRows) {
+          const teamId = toNumber(row.TEAM_ID);
+          if (teamId === null) continue;
+          const entry = ensureEntry(teamId);
+          const ortg = toNumber(row.OFF_RATING ?? row.OFF_RTG ?? row.E_OFF_RATING);
+          if (ortg !== null) {
+            entry.ortg_sum += ortg;
+            entry.ortg_count += 1;
+          }
+          const drtg = toNumber(row.DEF_RATING ?? row.DEF_RTG ?? row.E_DEF_RATING);
+          if (drtg !== null) {
+            entry.drtg_sum += drtg;
+            entry.drtg_count += 1;
+          }
+          const netrtg = toNumber(row.NET_RATING ?? row.NET_RTG ?? row.NETRTG);
+          if (netrtg !== null) {
+            entry.netrtg_sum += netrtg;
+            entry.netrtg_count += 1;
+          }
+          const assists = toNumber(row.AST);
+          if (assists !== null) {
+            entry.assists_sum += assists;
+            entry.assists_count += 1;
+          }
+          const turnovers = toNumber(row.TOV ?? row.TO);
+          if (turnovers !== null) {
+            entry.turnovers_sum += turnovers;
+            entry.turnovers_count += 1;
+          }
+        }
+      });
+
+      const rows = [];
+      for (const entry of aggregates.values()) {
+        const gamesPlayed = entry.games_played || 0;
+        rows.push({
+          season,
+          team_id: entry.team_id,
+          ppg: gamesPlayed ? entry.points_for / gamesPlayed : null,
+          ppg_allowed: gamesPlayed ? entry.points_against / gamesPlayed : null,
+          ortg: entry.ortg_count ? entry.ortg_sum / entry.ortg_count : null,
+          ortg_rank: null,
+          drtg: entry.drtg_count ? entry.drtg_sum / entry.drtg_count : null,
+          drtg_rank: null,
+          apg: entry.assists_count ? entry.assists_sum / entry.assists_count : null,
+          topg: entry.turnovers_count ? entry.turnovers_sum / entry.turnovers_count : null,
+          netrtg: entry.netrtg_count ? entry.netrtg_sum / entry.netrtg_count : null,
+        });
+      }
+
+      applyRanks(rows, "ortg", "ortg_rank", true);
+      applyRanks(rows, "drtg", "drtg_rank", false);
+
+      if (rows.length) {
+        await supabaseUpsert("team_advanced_stats", rows, "season,team_id");
+      }
       logUpsert("team_advanced_stats", rows.length, { season });
     }
   }, { seasons });
@@ -994,15 +1351,6 @@ async function refreshTeamDetails() {
     });
     logUpsert("team_details", teams.length, { season });
   }, { season });
-}
-
-async function refreshTeamGameLogs() {
-  await withIngestionState("team_game_logs", async () => {
-    if (!warnedTeamGameLogs) {
-      warnedTeamGameLogs = true;
-      log("team_game_logs ingestion skipped (table not in schema)");
-    }
-  }, { skipped: true });
 }
 
 async function refreshPlayerAwards() {
@@ -1026,56 +1374,16 @@ async function refreshPlayerAwards() {
   }, { season, player_count: playerIds.length });
 }
 
-async function refreshPlayerGameLogs() {
-  const seasons = await getRecentSeasons(CONFIG.playerGameLogsSeasonsBack);
-  const currentSeason = await getSeason();
-  const playerIds = await fetchPlayerIds(currentSeason, {
-    activeOnly: CONFIG.playerGameLogsActiveOnly,
-    maxPlayers: CONFIG.playerGameLogsMaxPlayers,
-  });
-  await withIngestionState("player_game_logs", async () => {
-    let total = 0;
-    await runWithConcurrency(playerIds, CONFIG.boxscoreConcurrency, async (playerId) => {
-      for (const season of seasons) {
-        const payload = await apiRequest(`/v1/players/${playerId}/gamelog?season=${season}`);
-        const data = payload.data || [];
-        total += data.length;
-        await writeCache(
-          CacheKeys.playerGameLog(playerId, season, "Regular Season"),
-          data,
-          CONFIG.cacheTtlPlayerGameLogSec
-        );
-      }
-    });
-    log("Cached player_game_logs", {
-      seasons,
-      row_count: total,
-      player_count: playerIds.length,
-    });
-  }, { seasons, player_count: playerIds.length });
-}
-
 async function refreshPlayerSeasonStatsForSeason(season) {
-  let page = 1;
-  const pageSize = 200;
-  let total = 0;
   const seasonType = "Regular Season";
-  while (true) {
-    const payload = await apiRequest(
-      `/v1/players/stats?season=${season}&page=${page}&page_size=${pageSize}`
-    );
-    const rows = (payload.data || [])
-      .map((row) => mapPlayerSeasonStatsRow(row, season, seasonType))
-      .filter(Boolean);
-    if (rows.length) {
-      await supabaseUpsert("player_season_stats", rows, "season,player_id,season_type");
-      total += rows.length;
-    }
-    const nextPage = payload.meta?.pagination?.next;
-    if (!nextPage) break;
-    page = nextPage;
+  const payloadRows = await fetchLeagueDashPlayerStats(season, seasonType);
+  const rows = payloadRows
+    .map((row) => mapPlayerSeasonStatsRow(row, season, seasonType))
+    .filter(Boolean);
+  if (rows.length) {
+    await supabaseUpsert("player_season_stats", rows, "season,player_id,season_type");
   }
-  logUpsert("player_season_stats", total, { season });
+  logUpsert("player_season_stats", rows.length, { season });
 }
 
 async function refreshPlayerSeasonStats() {
@@ -1402,11 +1710,9 @@ async function runCron() {
   await runCronTask("players", CONFIG.playersIntervalMs, refreshPlayers);
   await runCronTask("league_standings", CONFIG.standingsIntervalMs, refreshStandings);
   await runCronTask("player_awards", CONFIG.playerAwardsIntervalMs, refreshPlayerAwards);
-  await runCronTask("player_game_logs", CONFIG.playerGameLogsIntervalMs, refreshPlayerGameLogs);
   await runCronTask("player_season_stats", CONFIG.playerStatsIntervalMs, refreshPlayerSeasonStats);
-  await runCronTask("team_stats", CONFIG.teamStatsIntervalMs, refreshTeamStats);
+  await runCronTask("team_advanced_stats", CONFIG.teamStatsIntervalMs, refreshTeamStats);
   await runCronTask("team_details", CONFIG.teamDetailsIntervalMs, refreshTeamDetails);
-  await runCronTask("team_game_logs", CONFIG.teamGameLogsIntervalMs, refreshTeamGameLogs);
   await runCronTask("boxscores", CONFIG.boxscoreBackfillIntervalMs, refreshRecentBoxscores);
 }
 
@@ -1417,11 +1723,9 @@ async function runLive() {
   scheduleTask("players", CONFIG.playersIntervalMs, refreshPlayers, true);
   scheduleTask("standings", CONFIG.standingsIntervalMs, refreshStandings, true);
   scheduleTask("player-awards", CONFIG.playerAwardsIntervalMs, refreshPlayerAwards, true);
-  scheduleTask("player-game-logs", CONFIG.playerGameLogsIntervalMs, refreshPlayerGameLogs, true);
   scheduleTask("player-season-stats", CONFIG.playerStatsIntervalMs, refreshPlayerSeasonStats, true);
-  scheduleTask("team-stats", CONFIG.teamStatsIntervalMs, refreshTeamStats, true);
+  scheduleTask("team-advanced-stats", CONFIG.teamStatsIntervalMs, refreshTeamStats, true);
   scheduleTask("team-details", CONFIG.teamDetailsIntervalMs, refreshTeamDetails, true);
-  scheduleTask("team-game-logs", CONFIG.teamGameLogsIntervalMs, refreshTeamGameLogs, true);
   scheduleTask("boxscores-backfill", CONFIG.boxscoreBackfillIntervalMs, refreshRecentBoxscores, true);
 }
 
