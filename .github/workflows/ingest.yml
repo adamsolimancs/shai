@@ -2,7 +2,7 @@ name: Ingestion Cron
 
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -15,7 +15,20 @@ jobs:
           node-version: 18
       - name: Install worker deps
         run: npm ci --prefix workers
+      - name: Check ingest window
+        id: schedule
+        run: |
+          hour=$(TZ="America/New_York" date +%H)
+          minute=$(TZ="America/New_York" date +%M)
+          if [ "$hour" -ge 18 ] && [ "$hour" -le 23 ]; then
+            echo "run_worker=true" >> "$GITHUB_OUTPUT"
+          elif [ "$minute" -eq 00 ]; then
+            echo "run_worker=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Run worker
+        if: steps.schedule.outputs.run_worker == 'true'
         env:
           WORKER_MODE: cron
           CRON_MIN_INTERVAL_MS: 60000

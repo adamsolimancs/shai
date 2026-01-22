@@ -19,5 +19,4 @@ backend/.env
 
 # database stuff
 /tables
-schema.sql
 /supabase

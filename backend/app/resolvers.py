@@ -63,11 +63,13 @@ class NameResolver:
 
     def _apply_data(self, data: dict[str, dict[str, Any]]) -> None:
         self.players = data["players"]
-        self.players_by_id = {
-            int(record["id"]): record
-            for record in self.players.values()
-            if record.get("id") is not None
-        }
+        self.players_by_id = {}
+        for record in self.players.values():
+            try:
+                player_id = int(record["id"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            self.players_by_id[player_id] = record
         self.teams = data["teams"]
 
     def _merge_data(
@@ -174,18 +176,26 @@ class NameResolver:
             key = _normalize(str(name))
             if not key:
                 continue
+            try:
+                player_id = int(row["player_id"])
+            except (TypeError, ValueError, KeyError):
+                player_id = None
             players[key] = {
-                "id": int(row.get("id")),
+                "id": player_id,
                 "name": name,
-                "team_id": row.get("team_id"),
+                "team_id": row.get("current_team_id"),
             }
         teams = {}
         for row in teams_rows:
             display = f"{row.get('city', '')} {row.get('name', '')}".strip()
             key = _normalize(display)
             abbreviation = row.get("abbreviation")
+            try:
+                team_id = int(row["team_id"])
+            except (TypeError, ValueError, KeyError):
+                team_id = None
             teams[key] = {
-                "id": int(row.get("id")),
+                "id": team_id,
                 "name": display,
                 "abbreviation": abbreviation,
             }

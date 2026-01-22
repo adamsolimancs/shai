@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import httpx
 from typing import Annotated, Any, Literal
 from datetime import date
 
@@ -48,7 +47,6 @@ from ..services.store import (
     fetch_boxscore,
     fetch_games,
     fetch_league_standings,
-    fetch_player_gamelog,
     fetch_teams,
 )
 from ..services.news import NewsService
@@ -250,7 +248,7 @@ async def games(
     data: list[Any] = []
     cache_meta = CacheMeta(hit=False, stale=False)
     source: str | None = None
-    if supabase:
+    if supabase and not per_team:
         nocache_allowed = _allow_nocache(request, settings, nocache)
         use_scoreboard_cache = (
             not per_team
@@ -334,42 +332,29 @@ async def player_gamelog(
     validate_date_range(start, end)
     normalized_season_type = (season_type or "Regular Season").strip()
     if normalized_season_type.lower() != "regular season":
-        result = await client.get_player_gamelog(player_id, season, normalized_season_type, start, end)
-        _log_data_source(request, _source_from_cache(result.cache, "api"), result.cache)
-        return success(request, result.data, cache=result.cache)
-    if not supabase:
-        raise HTTPException(status_code=503, detail="Supabase not configured.")
-    nocache_allowed = _allow_nocache(request, settings, nocache)
-    key = player_gamelog_key(settings, player_id, season, normalized_season_type)
-    try:
-        data, cache_meta = await get_or_set_cache(
-            cache=cache,
-            redis_client=request.app.state.redis,
-            key=key,
-            ttl=TTLS.player_gamelog,
-            fetcher=lambda: fetch_player_gamelog(
-                supabase,
-                player_id=player_id,
-                season=season,
-                season_type=normalized_season_type,
-                date_from=start,
-                date_to=end,
-            ),
-            nocache=nocache_allowed,
-        )
-    except httpx.HTTPStatusError as exc:
-        if exc.response.status_code != 404:
-            raise
-        logger.warning(
-            "player_game_logs table missing; falling back to nba_api",
-            extra={"player_id": player_id, "season": season},
-        )
         result = await client.get_player_gamelog(
             player_id, season, normalized_season_type, start, end
         )
         _log_data_source(request, _source_from_cache(result.cache, "api"), result.cache)
         return success(request, result.data, cache=result.cache)
-    _log_data_source(request, _source_from_cache(cache_meta, "db"), cache_meta)
+    nocache_allowed = _allow_nocache(request, settings, nocache)
+    key = player_gamelog_key(settings, player_id, season, normalized_season_type)
+
+    async def fetcher() -> list[PlayerGameLog]:
+        result = await client.get_player_gamelog(
+            player_id, season, normalized_season_type, start, end
+        )
+        return result.data
+
+    data, cache_meta = await get_or_set_cache(
+        cache=cache,
+        redis_client=request.app.state.redis,
+        key=key,
+        ttl=TTLS.player_gamelog,
+        fetcher=fetcher,
+        nocache=nocache_allowed,
+    )
+    _log_data_source(request, _source_from_cache(cache_meta, "api"), cache_meta)
     return success(request, data, cache=cache_meta)
 
 
