@@ -134,26 +134,15 @@ export default async function ScoresPage() {
 
   return (
     <div className="space-y-12">
-      <header className="space-y-6">
+      <header className="space-y-2">
         <div>
           <p className="text-xs uppercase tracking-[0.5em] text-white/60">Season scoreboard</p>
           <h1 className="mt-3 text-4xl font-semibold text-white">Catch up on the latest NBA slate</h1>
         </div>
-        <dl className="grid gap-4 rounded-3xl border border-white/10 bg-slate-950/40 p-6 text-center sm:grid-cols-3">
-          {highlights.map((metric) => (
-            <div key={metric.label} className="space-y-2">
-              <dt className="text-xs uppercase tracking-[0.4em] text-white/40">{metric.label}</dt>
-              <dd className="text-3xl font-semibold text-white">{metric.value}</dd>
-              <p className="text-xs text-white/60">{metric.subtext}</p>
-            </div>
-          ))}
-        </dl>
       </header>
-
       <section className="space-y-6">
         <div>
-          <p className="text-xs uppercase tracking-[0.4em] text-white/40">Game log</p>
-          <h2 className="mt-2 text-2xl font-semibold text-white">Latest results</h2>
+          <h2 className="text-2xl font-semibold text-white">Latest results</h2>
         </div>
         {grouped.length === 0 ? (
           <div className="rounded-3xl border border-white/10 bg-slate-950/40 p-10 text-center text-white/70">

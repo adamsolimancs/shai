@@ -6,6 +6,8 @@ if (typeof fetch !== "function") {
   process.exit(1);
 }
 
+const { cache } = require("./cache");
+
 function normalizeBaseUrl(value) {
   if (!value) return value;
   const trimmed = value
@@ -21,6 +23,43 @@ function normalizeBaseUrl(value) {
 function parseBoolean(value, fallback = false) {
   if (value === undefined || value === null || value === "") return fallback;
   return ["1", "true", "yes", "y", "on"].includes(String(value).toLowerCase());
+}
+
+function toText(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "string") return value;
+  return JSON.stringify(value);
+}
+
+function seasonToYear(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  const text = String(value).trim();
+  if (!text) return null;
+  if (/^2\d{4}$/.test(text)) {
+    return Number(text.slice(1));
+  }
+  const match = text.match(/^(\d{4})/);
+  if (match) {
+    return Number(match[1]);
+  }
+  const numeric = Number(text);
+  return Number.isFinite(numeric) ? Math.trunc(numeric) : null;
+}
+
+function normalizeBooleanText(value) {
+  if (value === undefined || value === null) return null;
+  const text = String(value).toLowerCase();
+  if (["1", "true", "yes", "y", "on"].includes(text)) return "true";
+  if (["0", "false", "no", "n", "off"].includes(text)) return "false";
+  return text;
+}
+
+function toPlayerId(value) {
+  if (value === undefined || value === null || value === "") return null;
+  return String(value);
 }
 
 const CONFIG = {
@@ -44,6 +83,10 @@ const CONFIG = {
   apiMinIntervalMs: Number(process.env.API_MIN_INTERVAL_MS || 250),
   apiRetryMax: Number(process.env.API_RETRY_MAX || 4),
   apiRetryBaseDelayMs: Number(process.env.API_RETRY_BASE_DELAY_MS || 750),
+  apiCircuitBreakerMaxFailures: Number(process.env.API_CIRCUIT_BREAKER_MAX_FAILURES || 5),
+  apiCircuitBreakerCooldownMs: Number(
+    process.env.API_CIRCUIT_BREAKER_COOLDOWN_MS || 5 * 60 * 1000
+  ),
   gamesIntervalMs: Number(process.env.GAMES_INTERVAL_MS || 6 * 60 * 60 * 1000),
   livePollIntervalMs: Number(process.env.LIVE_GAMES_INTERVAL_MS || 5000),
   scoreboardIntervalMs: Number(process.env.SCOREBOARD_INTERVAL_MS || 10000),
@@ -68,6 +111,16 @@ const CONFIG = {
   statusRefreshMs: Number(process.env.STATUS_REFRESH_MS || 60 * 1000),
   boxscoreConcurrency: Number(process.env.BOXSCORE_CONCURRENCY || 3),
   upsertChunkSize: Number(process.env.UPSERT_CHUNK_SIZE || 200),
+  cacheKeyPrefix: process.env.CACHE_KEY_PREFIX || "nba:serve",
+  cacheTtlScoreboardLiveSec: Number(process.env.CACHE_TTL_SCOREBOARD_LIVE_SEC || 5),
+  cacheTtlScoreboardFinalSec: Number(process.env.CACHE_TTL_SCOREBOARD_FINAL_SEC || 60 * 60),
+  cacheTtlBoxscoreLiveSec: Number(process.env.CACHE_TTL_BOXSCORE_LIVE_SEC || 5),
+  cacheTtlBoxscoreFinalSec: Number(
+    process.env.CACHE_TTL_BOXSCORE_FINAL_SEC || 60 * 60 * 12
+  ),
+  cacheTtlStandingsSec: Number(process.env.CACHE_TTL_STANDINGS_SEC || 60 * 15),
+  cacheTtlTeamsSec: Number(process.env.CACHE_TTL_TEAMS_SEC || 60 * 60 * 24),
+  cacheTtlPlayerGameLogSec: Number(process.env.CACHE_TTL_PLAYER_GAMELOG_SEC || 60 * 60 * 6),
 };
 
 if (!CONFIG.apiKey) {
@@ -85,8 +138,16 @@ let cachedSeason = null;
 let cachedSeasonAt = 0;
 let cachedSupportedSeasons = null;
 let cachedSupportedSeasonsAt = 0;
+let warnedTeamGameLogs = false;
 let requestQueue = Promise.resolve();
 let lastApiRequestAt = 0;
+let apiCircuitOpenUntil = 0;
+let apiCircuitFailures = 0;
+const cacheStats = {
+  writes: 0,
+  failures: 0,
+  lastLogAt: 0,
+};
 
 process.on("unhandledRejection", (reason) => {
   console.error("Unhandled rejection", reason);
@@ -107,6 +168,75 @@ function logUpsert(table, count, extra) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function cacheKey(...parts) {
+  const prefix = CONFIG.cacheKeyPrefix.replace(/:+$/, "");
+  const joined = parts.map((part) => String(part).replace(/^:+|:+$/g, "")).join(":");
+  return joined ? `${prefix}:${joined}` : prefix;
+}
+
+const CacheKeys = {
+  scoreboard: (date) => cacheKey("scoreboard", date),
+  boxscore: (gameId) => cacheKey("boxscore", gameId),
+  standings: (season, leagueId = "00", seasonType = "Regular Season") =>
+    cacheKey("standings", season, leagueId, seasonType),
+  teams: (season) => cacheKey("teams", season),
+  playerGameLog: (playerId, season, seasonType = "Regular Season") =>
+    cacheKey("player_gamelog", playerId, season, seasonType),
+};
+
+function recordCacheWrite(ok) {
+  if (ok) {
+    cacheStats.writes += 1;
+  } else {
+    cacheStats.failures += 1;
+  }
+  const now = Date.now();
+  if (now - cacheStats.lastLogAt > 60 * 1000) {
+    cacheStats.lastLogAt = now;
+    log("Cache write stats", {
+      writes: cacheStats.writes,
+      failures: cacheStats.failures,
+    });
+  }
+}
+
+async function writeCache(key, payload, ttlSeconds) {
+  if (!cache) return;
+  try {
+    await cache.set(key, payload, { ex: ttlSeconds });
+    recordCacheWrite(true);
+  } catch (error) {
+    recordCacheWrite(false);
+    log("Redis cache write failed", { key, error: String(error) });
+  }
+}
+
+class CircuitOpenError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "CircuitOpenError";
+  }
+}
+
+function isCircuitOpen() {
+  return Date.now() < apiCircuitOpenUntil;
+}
+
+function recordApiSuccess() {
+  apiCircuitFailures = 0;
+}
+
+function recordApiFailure() {
+  apiCircuitFailures += 1;
+  if (apiCircuitFailures >= CONFIG.apiCircuitBreakerMaxFailures) {
+    apiCircuitFailures = 0;
+    apiCircuitOpenUntil = Date.now() + CONFIG.apiCircuitBreakerCooldownMs;
+    log("API circuit opened; cooling down", {
+      cooldown_ms: CONFIG.apiCircuitBreakerCooldownMs,
+    });
+  }
 }
 
 function formatDateInTZ(timeZone, date = new Date()) {
@@ -174,9 +304,168 @@ function seasonsMatch(a, b) {
   return left.every((season, index) => season === right[index]);
 }
 
+function mapTeamRow(team) {
+  if (!team) return null;
+  const teamId = team.team_id ?? team.id ?? null;
+  if (teamId === null || teamId === undefined) return null;
+  return {
+    team_id: teamId,
+    abbreviation: team.abbreviation ?? null,
+    city: team.city ?? null,
+    name: team.name ?? null,
+    conference: team.conference ?? null,
+    division: team.division ?? null,
+  };
+}
+
+function mapPlayerRow(player) {
+  if (!player) return null;
+  const playerId = toPlayerId(player.player_id ?? player.id);
+  if (!playerId) return null;
+  return {
+    player_id: playerId,
+    full_name: player.full_name ?? null,
+    current_team_id: player.current_team_id ?? player.team_id ?? null,
+    is_active: normalizeBooleanText(player.is_active),
+  };
+}
+
+function mapGameRow(game, season) {
+  if (!game) return null;
+  const gameId = game.game_id ?? null;
+  if (!gameId) return null;
+  return {
+    game_id: gameId,
+    date: toText(game.date),
+    home_team_id: game.home_team_id ?? null,
+    home_team_name: game.home_team_name ?? null,
+    home_team_score: game.home_team_score ?? null,
+    away_team_id: game.away_team_id ?? null,
+    away_team_name: game.away_team_name ?? null,
+    away_team_score: game.away_team_score ?? null,
+    season: seasonToYear(season ?? game.season),
+  };
+}
+
+function mapLeagueStandingRow(row, season) {
+  if (!row) return null;
+  const teamId = row.team_id ?? null;
+  const resolvedSeason = season ?? row.season ?? null;
+  if (teamId === null || teamId === undefined || !resolvedSeason) return null;
+  return {
+    season: resolvedSeason,
+    team_id: teamId,
+    conference: row.conference ?? null,
+    conference_rank: row.conference_rank ?? null,
+    division: row.division ?? null,
+    division_rank: row.division_rank ?? null,
+    wins: row.wins ?? null,
+    losses: row.losses ?? null,
+    win_pct: row.win_pct ?? null,
+    games_back: row.games_back ?? null,
+    division_games_back: row.division_games_back ?? null,
+    record: row.record ?? null,
+    home_record: row.home_record ?? null,
+    road_record: row.road_record ?? null,
+    last_ten: row.last_ten ?? null,
+    streak: row.streak ?? null,
+  };
+}
+
+function mapTeamAdvancedStatsRow(row, season) {
+  if (!row) return null;
+  const teamId = row.team_id ?? null;
+  const resolvedSeason = season ?? row.season ?? null;
+  if (teamId === null || teamId === undefined || !resolvedSeason) return null;
+  return {
+    season: resolvedSeason,
+    team_id: teamId,
+    ppg: row.ppg ?? row.points ?? null,
+    ppg_allowed: row.ppg_allowed ?? null,
+    ortg: row.ortg ?? null,
+    ortg_rank: row.ortg_rank ?? null,
+    drtg: row.drtg ?? null,
+    drtg_rank: row.drtg_rank ?? null,
+    apg: row.apg ?? row.assists ?? null,
+    topg: row.topg ?? row.turnovers ?? null,
+    netrtg: row.netrtg ?? null,
+  };
+}
+
+function mapTeamDetailRow(detail, teamId) {
+  if (!detail) detail = {};
+  const resolvedTeamId = detail.team_id ?? teamId ?? null;
+  if (resolvedTeamId === null || resolvedTeamId === undefined) return null;
+  return {
+    team_id: resolvedTeamId,
+    year_founded:
+      detail.year_founded === undefined || detail.year_founded === null
+        ? null
+        : String(detail.year_founded),
+    arena: detail.arena ?? null,
+    arena_capacity: detail.arena_capacity ?? null,
+    owner: detail.owner ?? null,
+    general_manager: detail.general_manager ?? null,
+    head_coach: detail.head_coach ?? null,
+    dleague_affiliation: detail.dleague_affiliation ?? null,
+    championships: toText(detail.championships),
+    conference_titles: toText(detail.conference_titles),
+    division_titles: toText(detail.division_titles),
+    hall_of_famers: toText(detail.hall_of_famers),
+    retired_numbers: toText(detail.retired_numbers),
+    social_sites: toText(detail.social_sites),
+  };
+}
+
+function mapPlayerAwardRow(row, playerId) {
+  if (!row) return null;
+  const resolvedPlayerId = toPlayerId(playerId);
+  if (!resolvedPlayerId || !row.season || !row.description) return null;
+  return {
+    player_id: resolvedPlayerId,
+    season: row.season,
+    description: row.description,
+    subtype1: row.subtype1 ?? null,
+    month: row.month ?? null,
+    all_nba_team_number: row.all_nba_team_number ?? null,
+  };
+}
+
+function mapPlayerSeasonStatsRow(row, season, seasonType) {
+  if (!row) return null;
+  const resolvedSeason = season ?? row.season ?? null;
+  const resolvedPlayerId = toPlayerId(row.player_id ?? row.id);
+  const resolvedSeasonType = seasonType ?? row.season_type ?? "Regular Season";
+  if (!resolvedSeason || !resolvedPlayerId || !resolvedSeasonType) return null;
+  return {
+    season: resolvedSeason,
+    player_id: resolvedPlayerId,
+    team_id: row.team_id ?? null,
+    games_played: row.games_played ?? null,
+    games_started: row.games_started ?? null,
+    minutes_pg: row.minutes_pg ?? row.minutes ?? null,
+    points_pg: row.points_pg ?? row.points ?? null,
+    rebounds_pg: row.rebounds_pg ?? row.rebounds ?? null,
+    assists_pg: row.assists_pg ?? row.assists ?? null,
+    steals_pg: row.steals_pg ?? row.steals ?? null,
+    blocks_pg: row.blocks_pg ?? row.blocks ?? null,
+    field_goal_pct_pg: row.field_goal_pct_pg ?? row.field_goal_pct ?? null,
+    three_point_pct_pg: row.three_point_pct_pg ?? row.three_point_pct ?? null,
+    free_throw_pct_pg: row.free_throw_pct_pg ?? row.free_throw_pct ?? null,
+    true_shooting_pct_pg: row.true_shooting_pct_pg ?? row.true_shooting_pct ?? null,
+    season_type: resolvedSeasonType,
+  };
+}
+
 async function apiRequest(path) {
+  if (isCircuitOpen()) {
+    throw new CircuitOpenError("API circuit open; skipping request");
+  }
   const url = path.startsWith("http") ? path : `${CONFIG.apiBaseUrl}${path}`;
   const queued = requestQueue.then(async () => {
+    if (isCircuitOpen()) {
+      throw new CircuitOpenError("API circuit open; skipping request");
+    }
     const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastApiRequestAt));
     if (waitMs > 0) {
       await sleep(waitMs);
@@ -184,6 +473,9 @@ async function apiRequest(path) {
     lastApiRequestAt = Date.now();
     return requestWithRetry(url);
   }, async () => {
+    if (isCircuitOpen()) {
+      throw new CircuitOpenError("API circuit open; skipping request");
+    }
     const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastApiRequestAt));
     if (waitMs > 0) {
       await sleep(waitMs);
@@ -209,13 +501,16 @@ async function requestWithRetry(url) {
       if (!payload || !payload.ok) {
         throw new Error(`API error: ${JSON.stringify(payload)}`);
       }
+      recordApiSuccess();
       return payload;
     }
     const body = await response.text();
-    if (response.status !== 429 && response.status < 500) {
+    const retryable = response.status === 429 || response.status >= 500;
+    if (!retryable) {
       throw new Error(`API ${response.status}: ${body}`);
     }
     if (attempt >= CONFIG.apiRetryMax) {
+      recordApiFailure();
       throw new Error(`API ${response.status}: ${body}`);
     }
     const retryAfter = Number(response.headers.get("retry-after"));
@@ -300,6 +595,10 @@ function isNoUniqueConstraintError(error) {
     message.includes("\"code\":\"42P10\"") ||
     message.includes("no unique or exclusion constraint matching the ON CONFLICT specification")
   );
+}
+
+function isCircuitOpenError(error) {
+  return error instanceof CircuitOpenError || String(error).includes("API circuit open");
 }
 
 async function supabaseUpsert(table, rows, onConflict) {
@@ -547,8 +846,10 @@ async function refreshTeams() {
   const season = await getSeason();
   await withIngestionState("teams", async () => {
     const payload = await apiRequest(`/v1/teams?season=${season}`);
-    await supabaseUpsert("teams", payload.data, "id");
-    logUpsert("teams", payload.data.length, { season });
+    const rows = (payload.data || []).map(mapTeamRow).filter(Boolean);
+    await supabaseUpsert("teams", rows, "team_id");
+    await writeCache(CacheKeys.teams(season), payload.data, CONFIG.cacheTtlTeamsSec);
+    logUpsert("teams", rows.length, { season });
   }, { season });
 }
 
@@ -563,7 +864,7 @@ async function refreshGames() {
         const payload = await apiRequest(
           `/v1/games?season=${season}&page=${page}&page_size=${pageSize}`
         );
-        const rows = payload.data || [];
+        const rows = (payload.data || []).map((row) => mapGameRow(row, season)).filter(Boolean);
         if (rows.length) {
           await supabaseUpsert("games", rows, "game_id");
           total += rows.length;
@@ -585,9 +886,9 @@ async function refreshPlayersForSeason(season) {
     const payload = await apiRequest(
       `/v1/players?season=${season}&page=${page}&page_size=${pageSize}`
     );
-    const rows = payload.data || [];
+    const rows = (payload.data || []).map(mapPlayerRow).filter(Boolean);
     if (rows.length) {
-      await supabaseUpsert("players", rows, "id");
+      await supabaseUpsert("players", rows, "player_id");
       total += rows.length;
     }
     const nextPage = payload.meta?.pagination?.next;
@@ -651,8 +952,15 @@ async function refreshStandings() {
   await withIngestionState("league_standings", async () => {
     for (const season of seasons) {
       const payload = await apiRequest(`/v1/league_standings?season=${season}`);
-      const rows = (payload.data || []).map((row) => ({ ...row, season }));
+      const rows = (payload.data || [])
+        .map((row) => mapLeagueStandingRow(row, season))
+        .filter(Boolean);
       await supabaseUpsert("league_standings", rows, "season,team_id");
+      await writeCache(
+        CacheKeys.standings(season),
+        payload.data || [],
+        CONFIG.cacheTtlStandingsSec
+      );
       logUpsert("league_standings", rows.length, { season });
     }
   }, { seasons });
@@ -663,9 +971,11 @@ async function refreshTeamStats() {
   await withIngestionState("team_stats", async () => {
     for (const season of seasons) {
       const payload = await apiRequest(`/v1/teams/stats?season=${season}`);
-      const rows = (payload.data || []).map((row) => ({ ...row, season }));
-      await supabaseUpsert("team_stats", rows, "season,team_id");
-      logUpsert("team_stats", rows.length, { season });
+      const rows = (payload.data || [])
+        .map((row) => mapTeamAdvancedStatsRow(row, season))
+        .filter(Boolean);
+      await supabaseUpsert("team_advanced_stats", rows, "season,team_id");
+      logUpsert("team_advanced_stats", rows.length, { season });
     }
   }, { seasons });
 }
@@ -677,44 +987,22 @@ async function refreshTeamDetails() {
     await runWithConcurrency(teams, CONFIG.boxscoreConcurrency, async (team) => {
       const payload = await apiRequest(`/v1/teams/${team.id}/details`);
       const detail = payload.data || {};
-      const row = detail.team_id ? detail : { ...detail, team_id: team.id };
-      await supabaseUpsert("team_details", [row], "team_id");
+      const row = mapTeamDetailRow(detail, team.id);
+      if (row && row.team_id) {
+        await supabaseUpsert("team_details", [row], "team_id");
+      }
     });
     logUpsert("team_details", teams.length, { season });
   }, { season });
 }
 
 async function refreshTeamGameLogs() {
-  const seasons = await getRecentSeasons(CONFIG.teamGameLogsSeasonsBack);
-  const currentSeason = await getSeason();
-  const teams = await fetchTeamsForSeason(currentSeason);
-  const tasks = [];
-  for (const season of seasons) {
-    for (const team of teams) {
-      tasks.push({ season, teamId: team.id });
-    }
-  }
   await withIngestionState("team_game_logs", async () => {
-    await runWithConcurrency(tasks, CONFIG.boxscoreConcurrency, async (task) => {
-      let page = 1;
-      const pageSize = 200;
-      let total = 0;
-      while (true) {
-        const payload = await apiRequest(
-          `/v1/games?season=${task.season}&team_id=${task.teamId}&per_team=true&page=${page}&page_size=${pageSize}`
-        );
-        const rows = payload.data || [];
-        if (rows.length) {
-          await supabaseUpsert("team_game_logs", rows, "game_id,team_id");
-          total += rows.length;
-        }
-        const nextPage = payload.meta?.pagination?.next;
-        if (!nextPage) break;
-        page = nextPage;
-      }
-      logUpsert("team_game_logs", total, { season: task.season, team_id: task.teamId });
-    });
-  }, { seasons, team_count: teams.length });
+    if (!warnedTeamGameLogs) {
+      warnedTeamGameLogs = true;
+      log("team_game_logs ingestion skipped (table not in schema)");
+    }
+  }, { skipped: true });
 }
 
 async function refreshPlayerAwards() {
@@ -726,7 +1014,9 @@ async function refreshPlayerAwards() {
     let total = 0;
     await runWithConcurrency(playerIds, CONFIG.boxscoreConcurrency, async (playerId) => {
       const payload = await apiRequest(`/v1/players/${playerId}/awards`);
-      const rows = (payload.data || []).map((row) => ({ ...row, player_id: playerId }));
+      const rows = (payload.data || [])
+        .map((row) => mapPlayerAwardRow(row, playerId))
+        .filter(Boolean);
       if (rows.length) {
         await supabaseUpsert("player_awards", rows, "player_id,season,description");
         total += rows.length;
@@ -748,15 +1038,18 @@ async function refreshPlayerGameLogs() {
     await runWithConcurrency(playerIds, CONFIG.boxscoreConcurrency, async (playerId) => {
       for (const season of seasons) {
         const payload = await apiRequest(`/v1/players/${playerId}/gamelog?season=${season}`);
-        const rows = (payload.data || []).map((row) => ({ ...row, player_id: playerId }));
-        if (rows.length) {
-          await supabaseUpsert("player_game_logs", rows, "player_id,game_id");
-          total += rows.length;
-        }
+        const data = payload.data || [];
+        total += data.length;
+        await writeCache(
+          CacheKeys.playerGameLog(playerId, season, "Regular Season"),
+          data,
+          CONFIG.cacheTtlPlayerGameLogSec
+        );
       }
     });
-    logUpsert("player_game_logs", total, {
+    log("Cached player_game_logs", {
       seasons,
+      row_count: total,
       player_count: playerIds.length,
     });
   }, { seasons, player_count: playerIds.length });
@@ -766,13 +1059,16 @@ async function refreshPlayerSeasonStatsForSeason(season) {
   let page = 1;
   const pageSize = 200;
   let total = 0;
+  const seasonType = "Regular Season";
   while (true) {
     const payload = await apiRequest(
       `/v1/players/stats?season=${season}&page=${page}&page_size=${pageSize}`
     );
-    const rows = (payload.data || []).map((row) => ({ ...row, season }));
+    const rows = (payload.data || [])
+      .map((row) => mapPlayerSeasonStatsRow(row, season, seasonType))
+      .filter(Boolean);
     if (rows.length) {
-      await supabaseUpsert("player_season_stats", rows, "season,player_id");
+      await supabaseUpsert("player_season_stats", rows, "season,player_id,season_type");
       total += rows.length;
     }
     const nextPage = payload.meta?.pagination?.next;
@@ -799,83 +1095,99 @@ async function fetchBoxscore(gameId) {
 function toBoxscoreRow(boxscore) {
   return {
     game_id: boxscore.game_id,
-    status: boxscore.status,
-    game_date: boxscore.game_date,
-    start_time: boxscore.start_time,
-    arena: boxscore.arena,
-    attendance: boxscore.attendance,
-    summary: boxscore.summary,
-    officials: boxscore.officials,
-    home_team: boxscore.home_team,
-    away_team: boxscore.away_team,
-    line_score: boxscore.line_score,
-    team_totals: boxscore.team_totals,
-    starter_bench: boxscore.starter_bench,
+    status: boxscore.status || "unknown",
+    game_date: toText(boxscore.game_date),
+    start_time: toText(boxscore.start_time),
+    arena: boxscore.arena ?? null,
+    attendance:
+      boxscore.attendance === undefined || boxscore.attendance === null
+        ? null
+        : String(boxscore.attendance),
+    officials: toText(boxscore.officials),
+    home_team: toText(boxscore.home_team),
+    away_team: toText(boxscore.away_team),
+    line_score: toText(boxscore.line_score),
+    team_totals: toText(boxscore.team_totals),
   };
 }
 
 function toBoxscorePlayers(boxscore) {
-  const traditional = (boxscore.traditional_players || []).map((row) => ({
-    game_id: boxscore.game_id,
-    player_id: row.player_id,
-    player_name: row.player_name,
-    team_id: row.team_id,
-    team_abbreviation: row.team_abbreviation,
-    team_city: row.team_city,
-    minutes: row.minutes,
-    stat_type: "traditional",
-    start_position: row.start_position,
-    comment: row.comment,
-    field_goals_made: row.field_goals_made,
-    field_goals_attempted: row.field_goals_attempted,
-    field_goal_pct: row.field_goal_pct,
-    three_point_made: row.three_point_made,
-    three_point_attempted: row.three_point_attempted,
-    three_point_pct: row.three_point_pct,
-    free_throws_made: row.free_throws_made,
-    free_throws_attempted: row.free_throws_attempted,
-    free_throw_pct: row.free_throw_pct,
-    offensive_rebounds: row.offensive_rebounds,
-    defensive_rebounds: row.defensive_rebounds,
-    rebounds: row.rebounds,
-    assists: row.assists,
-    steals: row.steals,
-    blocks: row.blocks,
-    turnovers: row.turnovers,
-    fouls: row.fouls,
-    points: row.points,
-    plus_minus: row.plus_minus,
-  }));
+  const advancedByPlayer = new Map();
+  for (const row of boxscore.advanced_players || []) {
+    const playerId = toPlayerId(row.player_id);
+    if (!playerId) continue;
+    advancedByPlayer.set(playerId, {
+      offensive_rating: row.offensive_rating ?? null,
+      defensive_rating: row.defensive_rating ?? null,
+      net_rating: row.net_rating ?? null,
+      usage_pct:
+        row.usage_pct === undefined || row.usage_pct === null ? null : String(row.usage_pct),
+      true_shooting_pct: row.true_shooting_pct ?? null,
+      effective_fg_pct: row.effective_fg_pct ?? null,
+    });
+  }
 
-  const advanced = (boxscore.advanced_players || []).map((row) => ({
-    game_id: boxscore.game_id,
-    player_id: row.player_id,
-    player_name: row.player_name,
-    team_id: row.team_id,
-    team_abbreviation: row.team_abbreviation,
-    team_city: null,
-    minutes: row.minutes,
-    stat_type: "advanced",
-    start_position: null,
-    comment: null,
-    offensive_rating: row.offensive_rating,
-    defensive_rating: row.defensive_rating,
-    net_rating: row.net_rating,
-    usage_pct: row.usage_pct,
-    true_shooting_pct: row.true_shooting_pct,
-    effective_fg_pct: row.effective_fg_pct,
-    assist_pct: row.assist_pct,
-    assist_to_turnover: row.assist_to_turnover,
-    rebound_pct: row.rebound_pct,
-    offensive_rebound_pct: row.offensive_rebound_pct,
-    defensive_rebound_pct: row.defensive_rebound_pct,
-    pace: row.pace,
-    pace_per40: row.pace_per40,
-    possessions: row.possessions,
-    pie: row.pie,
-  }));
+  const combined = [];
+  const seen = new Set();
+  for (const row of boxscore.traditional_players || []) {
+    const playerId = toPlayerId(row.player_id);
+    if (!playerId) continue;
+    seen.add(playerId);
+    const advanced = advancedByPlayer.get(playerId) || {};
+    combined.push({
+      game_id: boxscore.game_id,
+      player_id: playerId,
+      player_name: row.player_name ?? null,
+      team_id: row.team_id ?? null,
+      team_abbreviation: row.team_abbreviation ?? null,
+      minutes: row.minutes ?? null,
+      stat_type: advancedByPlayer.has(playerId) ? "combined" : "traditional",
+      start_position: row.start_position ?? null,
+      field_goals_made: row.field_goals_made ?? null,
+      field_goals_attempted: row.field_goals_attempted ?? null,
+      field_goal_pct: row.field_goal_pct ?? null,
+      three_point_made: row.three_point_made ?? null,
+      three_point_attempted: row.three_point_attempted ?? null,
+      three_point_pct: row.three_point_pct ?? null,
+      free_throws_made: row.free_throws_made ?? null,
+      free_throws_attempted: row.free_throws_attempted ?? null,
+      free_throw_pct: row.free_throw_pct ?? null,
+      offensive_rebounds: row.offensive_rebounds ?? null,
+      defensive_rebounds: row.defensive_rebounds ?? null,
+      rebounds: row.rebounds ?? null,
+      assists: row.assists ?? null,
+      steals: row.steals ?? null,
+      blocks: row.blocks ?? null,
+      turnovers: row.turnovers ?? null,
+      fouls: row.fouls ?? null,
+      points: row.points ?? null,
+      plus_minus: row.plus_minus ?? null,
+      ...advanced,
+    });
+  }
 
-  return traditional.concat(advanced);
+  for (const row of boxscore.advanced_players || []) {
+    const playerId = toPlayerId(row.player_id);
+    if (!playerId || seen.has(playerId)) continue;
+    combined.push({
+      game_id: boxscore.game_id,
+      player_id: playerId,
+      player_name: row.player_name ?? null,
+      team_id: row.team_id ?? null,
+      team_abbreviation: row.team_abbreviation ?? null,
+      minutes: row.minutes ?? null,
+      stat_type: "advanced",
+      offensive_rating: row.offensive_rating ?? null,
+      defensive_rating: row.defensive_rating ?? null,
+      net_rating: row.net_rating ?? null,
+      usage_pct:
+        row.usage_pct === undefined || row.usage_pct === null ? null : String(row.usage_pct),
+      true_shooting_pct: row.true_shooting_pct ?? null,
+      effective_fg_pct: row.effective_fg_pct ?? null,
+    });
+  }
+
+  return combined;
 }
 
 async function upsertBoxscore(boxscore) {
@@ -885,7 +1197,7 @@ async function upsertBoxscore(boxscore) {
     try {
       const chunks = chunkArray(players, CONFIG.upsertChunkSize);
       for (const chunk of chunks) {
-        await supabaseUpsert("boxscore_players", chunk, "game_id,player_id,stat_type");
+        await supabaseUpsert("boxscore_players", chunk, "game_id,player_id");
       }
     } catch (error) {
       if (!isNoUniqueConstraintError(error)) {
@@ -911,6 +1223,10 @@ async function updateBoxscoreForGame(gameId) {
   const boxscore = await fetchBoxscore(gameId);
   const playersCount = await upsertBoxscore(boxscore);
   const status = boxscore.status || null;
+  const boxscoreTtl = isLiveStatus(status)
+    ? CONFIG.cacheTtlBoxscoreLiveSec
+    : CONFIG.cacheTtlBoxscoreFinalSec;
+  await writeCache(CacheKeys.boxscore(gameId), boxscore, boxscoreTtl);
   statusCache.set(gameId, { status, checkedAt: Date.now() });
   if (isFinalStatus(status) || !isLiveStatus(status)) {
     activeGameIds.delete(gameId);
@@ -928,8 +1244,14 @@ async function refreshScoreboard({ mode = CONFIG.workerMode } = {}) {
       `/v1/games?season=${season}&date_from=${today}&date_to=${today}&page=1&page_size=200`
     );
     const games = payload.data || [];
-    await supabaseUpsert("games", games, "game_id");
-    logUpsert("games", games.length, { season, date: today });
+    const rows = games.map((row) => mapGameRow(row, season)).filter(Boolean);
+    await supabaseUpsert("games", rows, "game_id");
+    logUpsert("games", rows.length, { season, date: today });
+    const scoreboardTtl =
+      today === formatDateInTZ(CONFIG.timeZone)
+        ? CONFIG.cacheTtlScoreboardLiveSec
+        : CONFIG.cacheTtlScoreboardFinalSec;
+    await writeCache(CacheKeys.scoreboard(today), games, scoreboardTtl);
 
     const gameIds = games.map((game) => game.game_id);
     if (mode === "cron") {
@@ -999,13 +1321,22 @@ async function refreshActiveGames() {
 async function runWithConcurrency(items, limit, fn, { strict = false } = {}) {
   const queue = [...items];
   const errors = [];
+  let circuitOpen = false;
   const workers = new Array(Math.min(limit, queue.length)).fill(null).map(async () => {
-    while (queue.length) {
+    while (queue.length && !circuitOpen) {
       const item = queue.shift();
       if (item === undefined) return;
       try {
         await fn(item);
       } catch (error) {
+        if (isCircuitOpenError(error)) {
+          if (!circuitOpen) {
+            log("API circuit open; halting task batch", { item });
+          }
+          circuitOpen = true;
+          errors.push({ item, error: String(error) });
+          return;
+        }
         errors.push({ item, error: String(error) });
         log("Worker task failed", { item, error: String(error) });
       }
@@ -1024,6 +1355,10 @@ function scheduleTask(name, intervalMs, fn, runImmediately = true) {
   let inFlight = false;
   const run = async () => {
     if (inFlight) return;
+    if (isCircuitOpen()) {
+      log("API circuit open; skipping task", { task: name });
+      return;
+    }
     inFlight = true;
     try {
       await fn();
@@ -1046,6 +1381,10 @@ log("Worker starting", {
 
 async function runCronTask(entity, intervalMs, fn) {
   if (!(await shouldRun(entity, intervalMs))) {
+    return;
+  }
+  if (isCircuitOpen()) {
+    log("API circuit open; skipping cron task", { task: entity });
     return;
   }
   try {

@@ -12,15 +12,18 @@ from typing import Any
 from rapidfuzz import fuzz, process
 
 from .cache import CacheBackend
+from .supabase import SupabaseClient
 
 logger = logging.getLogger(__name__)
 
 try:
     from nba_api.stats.endpoints import commonallplayers as commonallplayers_module
     from nba_api.stats.endpoints import franchisehistory as franchisehistory_module
+    from nba_api.stats.static import players as static_players_module
 except Exception:  # pragma: no cover - nba_api only required at runtime
     commonallplayers_module = None
     franchisehistory_module = None
+    static_players_module = None
 
 
 def _normalize(value: str) -> str:
@@ -47,12 +50,37 @@ class NameResolver:
     """Resolves free-form player or team names into canonical IDs."""
 
     CACHE_KEY = "resolver:data"
+    MIN_PLAYER_ROWS = 2000
 
-    def __init__(self, cache: CacheBackend):
+    def __init__(self, cache: CacheBackend, supabase: SupabaseClient | None = None):
         self.cache = cache
+        self.supabase = supabase
         self.players: dict[str, dict[str, Any]] = {}
+        self.players_by_id: dict[int, dict[str, Any]] = {}
         self.teams: dict[str, dict[str, Any]] = {}
         self.last_refreshed: datetime | None = None
+        self._fallback_attempted = False
+
+    def _apply_data(self, data: dict[str, dict[str, Any]]) -> None:
+        self.players = data["players"]
+        self.players_by_id = {}
+        for record in self.players.values():
+            try:
+                player_id = int(record["id"])
+            except (TypeError, ValueError, KeyError):
+                continue
+            self.players_by_id[player_id] = record
+        self.teams = data["teams"]
+
+    def _merge_data(
+        self,
+        fallback: dict[str, dict[str, Any]],
+        primary: dict[str, dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        return {
+            "players": {**fallback["players"], **primary["players"]},
+            "teams": {**fallback["teams"], **primary["teams"]},
+        }
 
     async def initialize(self) -> None:
         cached = await self.cache.get_stale(self.CACHE_KEY)
@@ -65,13 +93,35 @@ class NameResolver:
         await self.refresh()
 
     async def refresh(self) -> None:
-        try:
-            data = await asyncio.get_running_loop().run_in_executor(None, self._fetch_latest)
-        except Exception:
-            logger.exception("resolver refresh failed; falling back to cached data")
-            return
-        self.players = data["players"]
-        self.teams = data["teams"]
+        self._fallback_attempted = False
+        data: dict[str, dict[str, Any]] | None = None
+        if self.supabase:
+            try:
+                data = await self._fetch_from_db()
+            except Exception:
+                logger.exception("resolver db refresh failed; attempting nba_api fallback")
+        if data:
+            if len(data["players"]) < self.MIN_PLAYER_ROWS:
+                logger.warning(
+                    "resolver player list seems incomplete; merging nba_api fallback",
+                    extra={"player_count": len(data["players"])},
+                )
+                try:
+                    fallback = await asyncio.get_running_loop().run_in_executor(
+                        None, self._fetch_latest
+                    )
+                    data = self._merge_data(fallback, data)
+                    self._fallback_attempted = True
+                except Exception:
+                    logger.exception("resolver nba_api fallback failed; using db results")
+        if data is None:
+            try:
+                data = await asyncio.get_running_loop().run_in_executor(None, self._fetch_latest)
+                self._fallback_attempted = True
+            except Exception:
+                logger.exception("resolver refresh failed; falling back to cached data")
+                return
+        self._apply_data(data)
         self.last_refreshed = datetime.now(tz=UTC)
         payload = {
             "players": self.players,
@@ -115,20 +165,134 @@ class NameResolver:
                 teams[_normalize(abbreviation)] = teams[key]
         return {"players": players, "teams": teams}
 
+    async def _fetch_from_db(self) -> dict[str, dict[str, Any]]:
+        if not self.supabase:
+            raise RuntimeError("Supabase client unavailable")
+        players_rows = await self.supabase.select_all("players", order="full_name.asc")
+        teams_rows = await self.supabase.select_all("teams", order="name.asc")
+        players = {}
+        for row in players_rows:
+            name = row.get("full_name") or ""
+            key = _normalize(str(name))
+            if not key:
+                continue
+            try:
+                player_id = int(row["player_id"])
+            except (TypeError, ValueError, KeyError):
+                player_id = None
+            players[key] = {
+                "id": player_id,
+                "name": name,
+                "team_id": row.get("current_team_id"),
+            }
+        teams = {}
+        for row in teams_rows:
+            display = f"{row.get('city', '')} {row.get('name', '')}".strip()
+            key = _normalize(display)
+            abbreviation = row.get("abbreviation")
+            try:
+                team_id = int(row["team_id"])
+            except (TypeError, ValueError, KeyError):
+                team_id = None
+            teams[key] = {
+                "id": team_id,
+                "name": display,
+                "abbreviation": abbreviation,
+            }
+            if row.get("name"):
+                teams[_normalize(str(row["name"]))] = teams[key]
+            if abbreviation:
+                teams[_normalize(str(abbreviation))] = teams[key]
+        return {"players": players, "teams": teams}
+
     def resolve_player(self, query: str) -> Resolution | None:
+        return self._resolve_player(query, allow_fallback=True)
+
+    def _resolve_player(self, query: str, allow_fallback: bool) -> Resolution | None:
         if not query:
+            return None
+        raw = query.strip()
+        if raw.isdigit():
+            player_id = int(raw)
+            record = self.players_by_id.get(player_id)
+            if record:
+                return Resolution(id=player_id, name=record["name"], confidence=1.0)
             return None
         normalized = _normalize(query)
         if normalized in self.players:
             record = self.players[normalized]
             return Resolution(id=record["id"], name=record["name"], confidence=1.0)
+        tokens = [token for token in normalized.split() if token]
+        if tokens:
+            best: tuple[float, dict[str, Any]] | None = None
+            for key, record in self.players.items():
+                name_tokens = key.split()
+                if normalized in name_tokens:
+                    score = 0.95
+                elif all(token in name_tokens for token in tokens):
+                    score = 0.9
+                elif key.startswith(normalized):
+                    score = 0.85
+                elif normalized in key:
+                    score = 0.75
+                else:
+                    continue
+                if not best or score > best[0]:
+                    best = (score, record)
+            if best:
+                return Resolution(
+                    id=best[1]["id"],
+                    name=best[1]["name"],
+                    confidence=best[0],
+                )
         choices = list(self.players.keys())
         match = process.extractOne(normalized, choices, scorer=fuzz.WRatio)
         if not match:
-            return None
+            return self._fallback_player(query, allow_fallback)
         best_key, score, _ = match
+        if score < 70:
+            return self._fallback_player(query, allow_fallback)
         record = self.players[best_key]
         return Resolution(id=record["id"], name=record["name"], confidence=score / 100.0)
+
+    def _fallback_player(self, query: str, allow_fallback: bool) -> Resolution | None:
+        if not allow_fallback:
+            return None
+        static_resolution = self._resolve_from_static_players(query)
+        if static_resolution:
+            return static_resolution
+        if self._fallback_attempted:
+            return None
+        try:
+            fallback = self._fetch_latest()
+        except Exception:
+            logger.exception("resolver nba_api fallback failed for player search")
+            self._fallback_attempted = True
+            return None
+        self._fallback_attempted = True
+        if self.players:
+            merged = self._merge_data(fallback, {"players": self.players, "teams": self.teams})
+            self._apply_data(merged)
+        else:
+            self._apply_data(fallback)
+        return self._resolve_player(query, allow_fallback=False)
+
+    def _resolve_from_static_players(self, query: str) -> Resolution | None:
+        if not static_players_module:
+            return None
+        try:
+            matches = static_players_module.find_players_by_full_name(query)
+        except Exception:
+            logger.exception("static player lookup failed")
+            return None
+        if not matches:
+            return None
+        match = matches[0]
+        player_id = match.get("id")
+        full_name = match.get("full_name")
+        if player_id is None or not full_name:
+            return None
+        return Resolution(id=int(player_id), name=str(full_name), confidence=0.95)
 
     def resolve_team(self, query: str) -> Resolution | None:
         if not query:

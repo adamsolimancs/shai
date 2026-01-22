@@ -76,7 +76,7 @@ async def test_get_player_career_stats(monkeypatch):
         return sample, CacheMeta(hit=True, stale=False)
 
     monkeypatch.setattr(client, "_cached_call", fake_cached_call)
-    result = await client.get_player_career_stats(2544)
+    result = await client.get_player_career_stats(2544, "Regular Season")
     assert len(result.data) == 1
     assert result.data[0].season_id == "2023-24"
     assert result.data[0].field_goal_pct == pytest.approx(0.495)

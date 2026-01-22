@@ -233,7 +233,7 @@ class NBAStatsClient:
     ) -> ServiceResult:
         season = validate_season(season)
         league_id = league_id or "00"
-        season_type = season_type or "Regular Season"
+        season_type = (season_type or "Regular Season").strip()
         key = f"league_standings:{league_id}:{season}:{season_type}"
 
         def fetch() -> list[dict[str, Any]]:
@@ -266,16 +266,19 @@ class NBAStatsClient:
         self,
         player_id: int,
         season: str,
+        season_type: str,
         date_from: date | None,
         date_to: date | None,
     ) -> ServiceResult:
         season = validate_season(season)
-        key = f"player_gamelog:{player_id}:{season}:{date_from}:{date_to}"
+        season_type = (season_type or "Regular Season").strip()
+        key = f"player_gamelog:{player_id}:{season}:{season_type}:{date_from}:{date_to}"
 
         def fetch() -> list[dict[str, Any]]:
             endpoint = playergamelog.PlayerGameLog(
                 player_id=player_id,
                 season=season,
+                season_type_all_star=season_type,
                 date_from_nullable=date_from.isoformat() if date_from else "",
                 date_to_nullable=date_to.isoformat() if date_to else "",
             )
@@ -296,13 +299,26 @@ class NBAStatsClient:
                 continue
         return ServiceResult(logs, cache_meta)
 
-    async def get_player_career_stats(self, player_id: int) -> ServiceResult:
-        key = f"player_career:{player_id}"
+    async def get_player_career_stats(self, player_id: int, season_type: str) -> ServiceResult:
+        season_type = (season_type or "Regular Season").strip()
+        key = f"player_career:{player_id}:{season_type}"
+        dataset_name = (
+            "SeasonTotalsPostSeason"
+            if season_type.lower() == "playoffs"
+            else "SeasonTotalsRegularSeason"
+        )
 
         def fetch() -> list[dict[str, Any]]:
             endpoint = playercareerstats.PlayerCareerStats(player_id=player_id)
-            df = endpoint.get_data_frames()[0]
-            return cast(list[dict[str, Any]], df.to_dict("records"))
+            payload = endpoint.get_dict()
+            result_sets = payload.get("resultSets", [])
+            for result_set in result_sets:
+                if result_set.get("name") != dataset_name:
+                    continue
+                headers = result_set.get("headers", [])
+                rows = result_set.get("rowSet") or result_set.get("data") or []
+                return [dict(zip(headers, row)) for row in rows if headers and row]
+            return []
 
         rows, cache_meta = await self._cached_call(key, AGGREGATE_TTL, fetch)
         stats = [self._normalize_career_row(row) for row in rows]
@@ -477,16 +493,19 @@ class NBAStatsClient:
         season: str,
         measure: str,
         per_mode: str,
+        season_type: str,
         team_id: int | None,
         page: int,
         page_size: int,
     ) -> tuple[list[PlayerStatsRow], CacheMeta, dict[str, Any]]:
         season = validate_season(season)
-        key = f"player_stats:{season}:{measure}:{per_mode}:{team_id}"
+        season_type = season_type or "Regular Season"
+        key = f"player_stats:{season}:{season_type}:{measure}:{per_mode}:{team_id}"
 
         def fetch() -> list[dict[str, Any]]:
             endpoint = leaguedashplayerstats.LeagueDashPlayerStats(
                 season=season,
+                season_type_all_star=season_type,
                 measure_type_detailed_defense=measure,
                 per_mode_detailed=per_mode,
                 team_id_nullable=team_id,

@@ -2,7 +2,7 @@ name: Ingestion Cron
 
 on:
   schedule:
-    - cron: "*/5 * * * *" # GitHub doesn't guarantee 1-minute cron
+    - cron: "*/10 * * * *"
   workflow_dispatch:
 
 jobs:
@@ -13,7 +13,22 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 18
+      - name: Install worker deps
+        run: npm ci --prefix workers
+      - name: Check ingest window
+        id: schedule
+        run: |
+          hour=$(TZ="America/New_York" date +%H)
+          minute=$(TZ="America/New_York" date +%M)
+          if [ "$hour" -ge 18 ] && [ "$hour" -le 23 ]; then
+            echo "run_worker=true" >> "$GITHUB_OUTPUT"
+          elif [ "$minute" -eq 00 ]; then
+            echo "run_worker=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Run worker
+        if: steps.schedule.outputs.run_worker == 'true'
         env:
           WORKER_MODE: cron
           CRON_MIN_INTERVAL_MS: 60000
@@ -26,5 +41,8 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_SCHEMA: public
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          CACHE_KEY_PREFIX: nba:serve
           NBA_TIME_ZONE: America/New_York
         run: node workers/worker-live.js

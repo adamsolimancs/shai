@@ -11,7 +11,6 @@ const trendingTerms = [
   "League Leaders",
   "Jalen Brunson",
   "Celtics Defensive Rating",
-  "Jokic Triple Double",
   "Thunder Playoff Odds",
   "Anthony Edwards Highlights",
   "Knicks Injury Report",
@@ -19,7 +18,6 @@ const trendingTerms = [
   "Heat Zone Defense",
   "LeBron 40k Points",
   "Pacers Pace Stats",
-  "Giannis Shot Chart",
   "2025 Rookie of the Year",
   "Spurs Head Coach",
   "NBA Power Rankings",
@@ -61,6 +59,14 @@ export default function HeroSearch() {
     event.preventDefault();
     const normalized = normalizeQuery(query);
     if (!normalized) return;
+    const rawQuery = query.trim();
+    if (rawQuery && typeof window !== "undefined") {
+      try {
+        window.sessionStorage.setItem("lastPlayerSearch", rawQuery);
+      } catch {
+        // ignore storage errors
+      }
+    }
     startTransition(() => {
       router.push(`/players/${encodeURIComponent(normalized)}`);
     });

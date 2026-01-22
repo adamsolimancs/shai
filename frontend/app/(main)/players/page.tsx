@@ -36,14 +36,6 @@ type SearchParams = {
 
 const DIRECTORY_LIMIT = 60;
 
-function slugify(name: string): string {
-  return name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-}
-
 function formatNumber(value: number, digits = 1) {
   return value.toFixed(digits);
 }
@@ -55,18 +47,31 @@ function extractParam(params: SearchParams, key: string): string {
   return "";
 }
 
-export default async function PlayersPage({ searchParams = {} }: { searchParams?: SearchParams }) {
-  const query = extractParam(searchParams, "q").trim();
-  const activeParam = extractParam(searchParams, "active");
+type PlayersPageProps = {
+  searchParams?: SearchParams | Promise<SearchParams>;
+};
+
+export default async function PlayersPage({ searchParams }: PlayersPageProps) {
+  const resolvedSearchParams = await Promise.resolve(searchParams ?? {});
+  const query = extractParam(resolvedSearchParams, "q").trim();
+  const activeParam = extractParam(resolvedSearchParams, "active");
+  const seasonTypeParam = extractParam(resolvedSearchParams, "season_type");
   const active = activeParam === "true" ? true : activeParam === "false" ? false : undefined;
+  const seasonType =
+    seasonTypeParam.toLowerCase() === "playoffs" ? "Playoffs" : "Regular Season";
 
   const requestParams = new URLSearchParams({ season: DEFAULT_SEASON, page_size: "150", page: "1" });
   if (query) requestParams.set("search", query);
   if (active !== undefined) requestParams.set("active", String(active));
+  const statsParams = new URLSearchParams({
+    season: DEFAULT_SEASON,
+    season_type: seasonType,
+    page_size: "60",
+  });
 
   const [directory, stats] = await Promise.all([
     nbaFetch<Player[]>(`/v1/players?${requestParams.toString()}`),
-    nbaFetch<PlayerStatsRow[]>(`/v1/players/stats?season=${DEFAULT_SEASON}&page_size=60`),
+    nbaFetch<PlayerStatsRow[]>(`/v1/players/stats?${statsParams.toString()}`),
   ]);
 
   const scoringLeaders = [...stats].sort((a, b) => b.points - a.points).slice(0, 5);
@@ -114,6 +119,18 @@ export default async function PlayersPage({ searchParams = {} }: { searchParams?
             <option value="true">Active roster</option>
             <option value="false">Inactive / alumni</option>
           </select>
+          <label className="text-xs uppercase tracking-[0.3em] text-white/60" htmlFor="player-season-type">
+            Season type
+          </label>
+          <select
+            id="player-season-type"
+            name="season_type"
+            defaultValue={seasonType}
+            className="rounded-2xl border border-white/10 bg-transparent px-4 py-2.5 text-sm text-white focus:border-white/40 focus:outline-none"
+          >
+            <option value="Regular Season">Regular season</option>
+            <option value="Playoffs">Playoffs</option>
+          </select>
           <button
             type="submit"
             className="rounded-2xl border border-white/20 px-5 py-2 text-sm font-semibold text-white transition hover:border-white/40"
@@ -126,7 +143,9 @@ export default async function PlayersPage({ searchParams = {} }: { searchParams?
       <section className="space-y-4">
         <div>
           <p className="text-xs uppercase tracking-[0.4em] text-white/40">Leaderboards</p>
-          <h2 className="mt-2 text-2xl font-semibold text-white">Season pace checks</h2>
+          <h2 className="mt-2 text-2xl font-semibold text-white">
+            {seasonType === "Playoffs" ? "Playoff pace checks" : "Season pace checks"}
+          </h2>
         </div>
         <div className="grid gap-4 lg:grid-cols-3">
           {leaderboards.map((board) => (
@@ -134,7 +153,7 @@ export default async function PlayersPage({ searchParams = {} }: { searchParams?
               <p className="text-xs uppercase tracking-[0.4em] text-white/50">{board.label}</p>
               <ol className="mt-4 space-y-3 text-sm">
                 {board.rows.map((row, index) => {
-                  const slug = encodeURIComponent(slugify(row.player_name));
+                  const slug = encodeURIComponent(String(row.player_id));
                   return (
                     <li key={row.player_id}>
                       <Link

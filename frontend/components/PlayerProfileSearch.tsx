@@ -26,6 +26,14 @@ export default function PlayerProfileSearch({ initialValue = "" }: PlayerProfile
     if (!slug) {
       return;
     }
+    const rawQuery = value.trim();
+    if (rawQuery && typeof window !== "undefined") {
+      try {
+        window.sessionStorage.setItem("lastPlayerSearch", rawQuery);
+      } catch {
+        // ignore storage errors
+      }
+    }
     startTransition(() => {
       router.push(`/players/${encodeURIComponent(slug)}`);
     });
