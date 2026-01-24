@@ -38,16 +38,18 @@ export default function ScoreCard({
 }: ScoreCardProps) {
   const isLanding = variant === "landing";
   const outerClasses = isLanding
-    ? "group block rounded-3xl border border-[color:var(--color-app-border)] bg-linear-to-br from-[color:var(--color-app-background-soft)] via-[color:var(--color-app-surface)] to-[color:var(--color-app-surface-soft)] p-5 text-[color:var(--color-app-foreground)] shadow-lg shadow-black/5 transition-all hover:border-[color:var(--color-app-border-strong)] hover:from-[color:rgba(var(--color-app-primary-rgb)_/_0.05)] hover:via-[color:rgba(var(--color-app-primary-rgb)_/_0.08)] hover:to-[color:rgba(var(--color-app-primary-light-rgb)_/_0.12)] hover:shadow-black/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-app-primary-soft)]"
+    ? "group block rounded-3xl border border-[color:var(--color-app-border)] bg-linear-to-br from-[color:var(--color-app-background-soft)] via-[color:var(--color-app-surface)] to-[color:var(--color-app-surface-soft)] p-3 text-[color:var(--color-app-foreground)] shadow-lg shadow-black/5 transition-all hover:border-[color:var(--color-app-border-strong)] hover:from-[color:rgba(var(--color-app-primary-rgb)_/_0.05)] hover:via-[color:rgba(var(--color-app-primary-rgb)_/_0.08)] hover:to-[color:rgba(var(--color-app-primary-light-rgb)_/_0.12)] hover:shadow-black/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-app-primary-soft)] sm:p-5"
     : "rounded-3xl border border-white/10 bg-slate-950/60 p-5 text-white shadow-lg shadow-black/30 transition hover:border-white/20 hover:bg-slate-900/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20";
 
   const meta = isLanding ? (
-    <div className="flex flex-col gap-1 text-[0.65rem] uppercase tracking-[0.3em] text-[color:var(--color-app-foreground-muted)] sm:flex-row sm:items-center sm:justify-between">
-      <span className="text-base font-semibold normal-case tracking-normal text-[color:var(--color-app-foreground)]">
+    <div className="flex flex-col gap-1 text-[0.6rem] uppercase tracking-[0.25em] text-[color:var(--color-app-foreground-muted)] sm:flex-row sm:items-center sm:justify-between sm:text-[0.65rem] sm:tracking-[0.3em]">
+      <span className="text-sm font-semibold normal-case tracking-normal text-[color:var(--color-app-foreground)] sm:text-base">
         {timeLabel ?? "Tipoff TBA"}
       </span>
       {locationLabel ? (
-        <p className="text-[0.65rem] font-medium uppercase tracking-[0.2em] text-[color:var(--color-app-foreground-muted)]">{locationLabel}</p>
+        <p className="text-[0.6rem] font-medium uppercase tracking-[0.2em] text-[color:var(--color-app-foreground-muted)] sm:text-[0.65rem]">
+          {locationLabel}
+        </p>
       ) : null}
     </div>
   ) : (
@@ -58,11 +60,11 @@ export default function ScoreCard({
   );
 
   const rowBase = isLanding
-    ? "flex items-center justify-between rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-soft)] px-4 py-3 transition group-hover:border-[color:var(--color-app-border-strong)] group-hover:bg-[color:var(--color-app-background-soft)]"
+    ? "flex items-center justify-between rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-soft)] px-3 py-2 transition group-hover:border-[color:var(--color-app-border-strong)] group-hover:bg-[color:var(--color-app-background-soft)] sm:px-4 sm:py-3"
     : "flex items-center justify-between rounded-2xl px-4 py-3 text-white";
 
   const rows = (
-    <div className="mt-4 space-y-3 text-lg font-semibold">
+    <div className="mt-3 space-y-2 text-base font-semibold sm:mt-4 sm:space-y-3 sm:text-lg">
       <div className={`${rowBase} ${isLanding ? "" : scoreboardRowTone(winner, "away")}`}>
         <span>{away.name ?? "Away"}</span>
         <span>{Number.isFinite(away.score ?? NaN) ? away.score : "—"}</span>

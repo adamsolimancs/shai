@@ -1065,6 +1065,61 @@ async function fetchLeagueDashPlayerStats(season, seasonType) {
   return extractResultSetRows(payload, "LeagueDashPlayerStats");
 }
 
+async function fetchLeagueDashPlayerBioStats(season, seasonType) {
+  const url = new URL("https://stats.nba.com/stats/leaguedashplayerbiostats");
+  const params = {
+    Season: season,
+    SeasonType: seasonType,
+    PerMode: "PerGame",
+    LeagueID: "00",
+    PlusMinus: "N",
+    PaceAdjust: "N",
+    Rank: "N",
+    Outcome: "",
+    Location: "",
+    Month: "0",
+    SeasonSegment: "",
+    DateFrom: "",
+    DateTo: "",
+    OpponentTeamID: "0",
+    VsConference: "",
+    VsDivision: "",
+    GameSegment: "",
+    Period: "0",
+    LastNGames: "0",
+    GameScope: "",
+    PlayerExperience: "",
+    PlayerPosition: "",
+    StarterBench: "",
+    TwoWay: "",
+    Conference: "",
+    Division: "",
+    PORound: "0",
+    ShotClockRange: "",
+    DistanceRange: "",
+  };
+  Object.entries(params).forEach(([key, value]) => {
+    url.searchParams.set(key, String(value));
+  });
+  const payload = await statsRequest(url.toString());
+  return extractResultSetRows(payload, "LeagueDashPlayerBioStats");
+}
+
+function mapPlayerBioRow(row) {
+  if (!row) return null;
+  const playerId = toPlayerId(row.PLAYER_ID ?? row.player_id ?? row.PERSON_ID ?? row.id);
+  if (!playerId) return null;
+  return {
+    player_id: playerId,
+    height: toText(row.PLAYER_HEIGHT ?? row.HEIGHT),
+    weight: toNumber(row.PLAYER_WEIGHT ?? row.WEIGHT),
+    draft_year: toNumber(row.DRAFT_YEAR),
+    draft_pick: toText(row.DRAFT_NUMBER ?? row.DRAFT_PICK),
+    country: toText(row.COUNTRY),
+    college: toText(row.COLLEGE),
+  };
+}
+
 async function fetchPlayerIds(season, { activeOnly = false, maxPlayers = 0 } = {}) {
   let page = 1;
   const pageSize = 200;
@@ -1144,6 +1199,17 @@ async function refreshPlayersForSeason(season) {
     page = nextPage;
   }
   logUpsert("players", total, { season });
+
+  try {
+    const bioRows = await fetchLeagueDashPlayerBioStats(season, "Regular Season");
+    const updates = (bioRows || []).map(mapPlayerBioRow).filter(Boolean);
+    if (updates.length) {
+      await supabaseUpsert("players", updates, "player_id");
+      logUpsert("players_bio", updates.length, { season });
+    }
+  } catch (error) {
+    log("Failed to refresh player bio stats", { season, error: String(error) });
+  }
 }
 
 async function refreshPlayers() {

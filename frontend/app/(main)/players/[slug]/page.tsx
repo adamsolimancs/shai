@@ -67,6 +67,22 @@ type TeamStatsRow = {
   plus_minus?: number | null;
 };
 
+type LeagueStandingRow = {
+  team_id: number;
+  team_name?: string | null;
+  team_city?: string | null;
+  team_abbreviation?: string | null;
+  wins: number;
+  losses: number;
+  win_pct: number;
+};
+
+type RecordLike = {
+  wins: number;
+  losses: number;
+  win_pct: number;
+};
+
 type Player = {
   id: number;
   full_name: string;
@@ -381,9 +397,49 @@ function deriveRating(stats?: SeasonStats, career?: PlayerCareerStatsRow[]): num
   return Math.max(floor, Math.round(bounded));
 }
 
-function formatRecord(stats?: TeamStatsRow): string | undefined {
+function formatRecord(stats?: RecordLike): string | undefined {
   if (!stats) return undefined;
   return `${stats.wins}-${stats.losses} (${Math.round(stats.win_pct * 100)}% W)`;
+}
+
+function formatStandingTeamName(row?: LeagueStandingRow): string | undefined {
+  if (!row) return undefined;
+  const full = `${row.team_city ?? ""} ${row.team_name ?? ""}`.trim();
+  return full || row.team_name || row.team_abbreviation || undefined;
+}
+
+function latestTeamAbbreviation(gamelog: PlayerGameLog[]): string | null {
+  let latest = -Infinity;
+  let latestTeam: string | null = null;
+  for (const game of gamelog) {
+    const time = new Date(game.game_date).getTime();
+    if (Number.isNaN(time) || time <= latest) {
+      continue;
+    }
+    latest = time;
+    latestTeam = game.team_abbreviation || null;
+  }
+  return latestTeam;
+}
+
+function resolveCurrentTeamRow(
+  rows: PlayerCareerStatsRow[],
+  gamelog: PlayerGameLog[],
+  seasonId: string,
+): PlayerCareerStatsRow | undefined {
+  const latestTeam = latestTeamAbbreviation(gamelog);
+  if (latestTeam) {
+    const match = rows.find(
+      (row) => row.season_id === seasonId && row.team_abbreviation === latestTeam,
+    );
+    if (match) {
+      return match;
+    }
+  }
+  return (
+    rows.find((row) => row.season_id === seasonId && row.team_abbreviation !== "TOT") ||
+    rows.find((row) => row.season_id === seasonId)
+  );
 }
 
 function selectSeasonRow(rows: PlayerCareerStatsRow[], seasonId: string): PlayerCareerStatsRow | undefined {
@@ -457,11 +513,40 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
 
     const seasonRow = selectSeasonRow(career, DEFAULT_SEASON);
     const statsSeasonId = seasonRow?.season_id ?? DEFAULT_SEASON;
+    const isActive = seasonRow?.season_id === DEFAULT_SEASON;
+    const currentTeamRow = isActive
+      ? resolveCurrentTeamRow(career, gamelog, DEFAULT_SEASON)
+      : seasonRow;
+    const teamId = currentTeamRow?.team_id ?? seasonRow?.team_id;
+    const currentTeamAbbr =
+      currentTeamRow?.team_abbreviation ??
+      latestTeamAbbreviation(gamelog) ??
+      seasonRow?.team_abbreviation ??
+      null;
+    let standingsRow: LeagueStandingRow | undefined;
+    if (isActive && teamId != null && teamId > 0) {
+      try {
+        const standings = await nbaFetch<LeagueStandingRow[]>(
+          `/v1/league_standings?season=${DEFAULT_SEASON}&league_id=00&season_type=Regular%20Season`,
+          { next: { revalidate: 900 } },
+        );
+        standingsRow = standings.find((row) => row.team_id === teamId);
+        if (!standingsRow && currentTeamAbbr) {
+          standingsRow = standings.find(
+            (row) => row.team_abbreviation?.toLowerCase() === currentTeamAbbr.toLowerCase(),
+          );
+        }
+      } catch (error) {
+        if (process.env.NODE_ENV !== "production") {
+          console.error("Failed to load league standings", error);
+        }
+      }
+    }
     let teamStats: TeamStatsRow[] = [];
-    if (seasonRow?.team_id != null) {
+    if ((!isActive || !standingsRow) && teamId != null && teamId > 0) {
       try {
         teamStats = await nbaFetch<TeamStatsRow[]>(
-          `/v1/teams/${seasonRow.team_id}/stats?season=${statsSeasonId}&measure=Base&per_mode=PerGame`,
+          `/v1/teams/${teamId}/stats?season=${statsSeasonId}&measure=Base&per_mode=PerGame`,
           { next: { revalidate: 1800 } },
         );
       } catch (error) {
@@ -490,9 +575,8 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
         }
       : undefined;
 
-    const teamRecord = formatRecord(teamStats[0]);
+    const teamRecord = isActive ? formatRecord(standingsRow ?? teamStats[0]) : undefined;
     const rating = deriveRating(stats, career);
-    const isActive = seasonRow?.season_id === DEFAULT_SEASON;
     const scoutingReport = stats
       ? isActive
         ? `${resolution.player?.name ?? query} is pacing ${stats.pts.toFixed(1)} / ${stats.reb.toFixed(1)} / ${stats.ast.toFixed(1)} this season.`
@@ -508,8 +592,8 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
       slug,
       playerId,
       name: resolution.player?.name ?? query,
-      team: teamStats[0]?.team_name ?? seasonRow?.team_abbreviation ?? resolution.player?.abbreviation ?? "Free Agent",
-      teamAbbreviation: seasonRow?.team_abbreviation ?? teamStats[0]?.team_abbreviation ?? null,
+      team: formatStandingTeamName(standingsRow) ?? teamStats[0]?.team_name ?? currentTeamRow?.team_abbreviation ?? resolution.player?.abbreviation ?? "Free Agent",
+      teamAbbreviation: standingsRow?.team_abbreviation ?? currentTeamRow?.team_abbreviation ?? teamStats[0]?.team_abbreviation ?? null,
       headshot: `${HEADSHOT_BASE}/${playerId}.png`,
       rating,
       scoutingReport,
@@ -523,7 +607,7 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
           insights: [
             { label: "Games played", value: String(seasonRow?.games_played ?? "—") },
             { label: "Games started", value: String(seasonRow?.games_started ?? "—") },
-            { label: "Wins / Losses", value: teamRecord ?? "—" },
+            ...(isActive ? [{ label: "Wins / Losses", value: teamRecord ?? "—" }] : []),
           ],
         }
         : undefined,
@@ -680,7 +764,7 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
             <div className="grid gap-3 sm:grid-cols-3">
               <InfoPill label="Age" value={profile.age ? `${profile.age}` : "—"} />
               <InfoPill label="Experience" value={profile.experience} />
-              <InfoPill label="Team record" value={profile.currentSeason?.teamRecord ?? "—"} />
+              {isActive ? <InfoPill label="Team record" value={profile.currentSeason?.teamRecord ?? "—"} /> : null}
             </div>
             <div className="flex items-center gap-4 rounded-2xl border border-[color:var(--color-app-border)] bg-[color:rgba(var(--color-app-foreground-rgb),0.05)] p-3">
               <p className="text-[0.65rem] uppercase tracking-[0.4em] text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">Career rating</p>

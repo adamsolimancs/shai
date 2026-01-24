@@ -117,6 +117,18 @@ type LeagueStanding = {
   eliminated_conference?: boolean | number | null;
 };
 
+type NewsArticle = {
+  id: string;
+  source: string;
+  title: string;
+  summary: string;
+  url: string;
+  published_at: string;
+  image_url?: string | null;
+};
+
+const NEWS_DATE = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
+
 async function fetchRecentGames(): Promise<ScoreCardData[]> {
   const games = await nbaFetch<Game[]>(`/v1/games?season=${DEFAULT_SEASON}&page_size=6`, { next: { revalidate: 120 } });
   return games.slice(0, 6).map((game) => ({
@@ -156,6 +168,14 @@ async function fetchLeagueStandings(): Promise<LeagueStanding[]> {
   );
 }
 
+async function fetchNews(): Promise<NewsArticle[]> {
+  return nbaFetch<NewsArticle[]>("/v1/news", { next: { revalidate: 300 } });
+}
+
+function formatNewsDate(value: string): string {
+  return NEWS_DATE.format(new Date(value));
+}
+
 function formatStandingRecord(row: LeagueStanding): string {
   return `${row.wins}-${row.losses}`;
 }
@@ -181,24 +201,49 @@ function buildConferenceBuckets(rows: LeagueStanding[]) {
   }));
 }
 
-const SectionTitle = ({ title, eyebrow }: { title: string; eyebrow: string }) => (
-  <div className="mb-8">
-    <p className="text-xs uppercase tracking-[0.35em] text-blue-300/80">{eyebrow}</p>
-    <h2 className="mt-2 text-2xl font-semibold text-white">{title}</h2>
+const SectionTitle = ({
+  title,
+  eyebrow,
+  link,
+}: {
+  title: string;
+  eyebrow: string;
+  link?: { href: string; label: string };
+}) => (
+  <div className="mb-6 flex flex-col gap-3 sm:mb-8 sm:flex-row sm:items-end sm:justify-between">
+    <div>
+      <p className="text-[0.6rem] uppercase tracking-[0.3em] text-blue-300/80 sm:text-xs sm:tracking-[0.35em]">
+        {eyebrow}
+      </p>
+      <h2 className="mt-2 text-xl font-semibold text-white sm:text-2xl">{title}</h2>
+    </div>
+    {link ? (
+      <Link
+        href={link.href}
+        className="text-sm font-semibold text-blue-200 transition hover:text-blue-100"
+      >
+        {link.label}
+      </Link>
+    ) : null}
   </div>
 );
 
 const HeroSection = () => (
-  <section className="flex flex-col gap-10 text-center md:gap-16">
+  <section className="flex flex-col gap-8 text-center sm:gap-12 md:gap-16">
     <div>
-      <h1 className="pb-2 text-5xl tracking-[0.2em] text-(--foreground)">WELCOME TO ShAI</h1>
-      <p className="mt-4 text-base text-(--foreground-muted)/70 md:text-lg">
+      <h1 className="pb-2 text-3xl tracking-[0.12em] text-(--foreground) sm:text-4xl sm:tracking-[0.16em] md:text-5xl md:tracking-[0.2em]">
+        WELCOME TO ShAI
+      </h1>
+      <p className="mt-3 text-sm text-(--foreground-muted)/70 sm:mt-4 sm:text-base md:text-lg">
         AI that speaks basketball: real-time stats, player insights, and predictive analytics powered by AI.
       </p>
     </div>
     <Suspense
       fallback={
-        <div className="mx-auto h-[68px] w-full max-w-3xl animate-pulse rounded-full border border-white/10 bg-white/5" aria-hidden="true" />
+        <div
+          className="mx-auto h-[52px] w-full max-w-3xl animate-pulse rounded-full border border-white/10 bg-white/5 sm:h-[68px]"
+          aria-hidden="true"
+        />
       }
     >
       <HeroSearch />
@@ -207,12 +252,16 @@ const HeroSection = () => (
 );
 
 export default async function HomePage() {
-  const [scores, players, leagueStandings] = await Promise.all([
+  const [scores, players, leagueStandings, news] = await Promise.all([
     fetchRecentGames(),
     fetchPlayerHighlights(),
     fetchLeagueStandings(),
+    fetchNews(),
   ]);
   const conferenceBuckets = buildConferenceBuckets(leagueStandings);
+  const stories = [...news]
+    .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())
+    .slice(0, 4);
   const conferences: LeagueStandingsConference[] = conferenceBuckets.map((bucket) => ({
     id: bucket.conference.toLowerCase(),
     title: `${bucket.conference} Conference`,
@@ -241,10 +290,10 @@ export default async function HomePage() {
     <>
       <HeroSection />
 
-      <section id="scores" className="mt-20">
-        <SectionTitle title="Recent Games" eyebrow="Live scores" />
+      <section id="scores" className="mt-12 sm:mt-16 lg:mt-20">
+        <SectionTitle title="Recent Games" eyebrow="Live scores" link={{ href: "/scores", label: "View all scores →" }} />
         {/* TODO: if no recent games (offseason), display last season's playoff results. */}
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-3 sm:gap-4 md:grid-cols-3">
           {scores.map((game) => {
             const winner =
               game.homeScore === game.awayScore ? "even" : game.homeScore > game.awayScore ? "home" : "away";
@@ -264,31 +313,37 @@ export default async function HomePage() {
         </div>
       </section>
 
-      <section id="players" className="mt-20">
-        <SectionTitle title="Player Spotlight" eyebrow="Trending performers" />
-        <div className="grid gap-6 md:grid-cols-3">
+      <section id="players" className="mt-12 sm:mt-16 lg:mt-20">
+        <SectionTitle title="Player Spotlight" eyebrow="Trending performers" link={{ href: "/players", label: "View all players →" }} />
+        <div className="grid gap-4 sm:gap-6 md:grid-cols-3">
           {players.map((player) => (
             <Link
               key={player.id}
               href={`/players/${player.id}`}
-              className="group rounded-3xl border border-white/10 bg-slate-900/70 p-6 shadow-lg shadow-black/30 transition hover:border-[color:var(--color-app-primary)] hover:bg-slate-900/80 hover:ring-2 hover:ring-[color:var(--color-app-primary-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+              className="group rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/30 transition hover:border-[color:var(--color-app-primary)] hover:bg-slate-900/80 hover:ring-2 hover:ring-[color:var(--color-app-primary-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30 sm:p-6"
             >
-              <div className="flex items-center justify-between text-sm text-white/60">
+              <div className="flex items-center justify-between text-xs text-white/60 sm:text-sm">
                 <span className="font-semibold text-white">{player.name}</span>
                 <span>{player.team}</span>
               </div>
-              <dl className="mt-6 grid grid-cols-3 gap-3 text-center text-sm">
+              <dl className="mt-4 grid grid-cols-3 gap-2 text-center text-sm sm:mt-6 sm:gap-3">
                 <div>
-                  <dt className="text-xs uppercase tracking-[0.3em] text-white/50">PTS</dt>
-                  <dd className="mt-2 text-xl font-semibold text-white">{player.points.toFixed(1)}</dd>
+                  <dt className="text-[0.6rem] uppercase tracking-[0.3em] text-white/50 sm:text-xs">PTS</dt>
+                  <dd className="mt-1 text-lg font-semibold text-white sm:mt-2 sm:text-xl">
+                    {player.points.toFixed(1)}
+                  </dd>
                 </div>
                 <div>
-                  <dt className="text-xs uppercase tracking-[0.3em] text-white/50">REB</dt>
-                  <dd className="mt-2 text-xl font-semibold text-white">{player.rebounds.toFixed(1)}</dd>
+                  <dt className="text-[0.6rem] uppercase tracking-[0.3em] text-white/50 sm:text-xs">REB</dt>
+                  <dd className="mt-1 text-lg font-semibold text-white sm:mt-2 sm:text-xl">
+                    {player.rebounds.toFixed(1)}
+                  </dd>
                 </div>
                 <div>
-                  <dt className="text-xs uppercase tracking-[0.3em] text-white/50">AST</dt>
-                  <dd className="mt-2 text-xl font-semibold text-white">{player.assists.toFixed(1)}</dd>
+                  <dt className="text-[0.6rem] uppercase tracking-[0.3em] text-white/50 sm:text-xs">AST</dt>
+                  <dd className="mt-1 text-lg font-semibold text-white sm:mt-2 sm:text-xl">
+                    {player.assists.toFixed(1)}
+                  </dd>
                 </div>
               </dl>
             </Link>
@@ -296,9 +351,57 @@ export default async function HomePage() {
         </div>
       </section>
 
-      <section id="conference" className="mt-20">
-        <SectionTitle title="League Standings" eyebrow="Team directory" />
+      <section id="conference" className="mt-12 sm:mt-16 lg:mt-20">
+        <SectionTitle title="League Standings" eyebrow="Team directory" link={{ href: "/teams", label: "View all teams →" }} />
         <LeagueStandings conferences={conferences} />
+      </section>
+
+      <section id="news" className="mt-12 sm:mt-16 lg:mt-20">
+        <div className="mb-6 flex flex-col gap-3 sm:mb-8 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className="text-[0.6rem] uppercase tracking-[0.3em] text-blue-300/80 sm:text-xs sm:tracking-[0.35em]">
+              Latest updates
+            </p>
+            <h2 className="mt-2 text-xl font-semibold text-white sm:text-2xl">News</h2>
+          </div>
+          <Link
+            href="/news"
+            className="text-sm font-semibold text-blue-200 transition hover:text-blue-100"
+          >
+            View all news →
+          </Link>
+        </div>
+        <div className="grid gap-3 sm:gap-4 md:grid-cols-2">
+          {stories.length === 0 ? (
+            <div className="rounded-3xl border border-white/10 bg-slate-950/60 p-6 text-center text-sm text-white/70 md:col-span-2">
+              No news items yet. Check back soon.
+            </div>
+          ) : (
+            stories.map((story) => (
+              <article
+                key={story.id}
+                className="rounded-3xl border border-white/10 bg-slate-950/60 p-4 text-white"
+              >
+                <p className="text-[0.6rem] uppercase tracking-[0.3em] text-white/50 sm:text-xs">
+                  {story.source}
+                </p>
+                <h3 className="mt-2 text-base font-semibold text-white sm:text-lg">{story.title}</h3>
+                <p className="mt-2 text-sm text-white/70">{story.summary}</p>
+                <div className="mt-3 flex items-center justify-between text-xs text-white/60">
+                  <span>{formatNewsDate(story.published_at)}</span>
+                  <a
+                    href={story.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-semibold text-blue-200 hover:text-blue-100"
+                  >
+                    Read
+                  </a>
+                </div>
+              </article>
+            ))
+          )}
+        </div>
       </section>
     </>
   );
