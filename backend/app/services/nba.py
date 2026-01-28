@@ -476,16 +476,27 @@ class NBAStatsClient:
             )
             return ServiceResult([], CacheMeta(hit=False, stale=True))
         stats: list[TeamStatsRow] = []
+        skipped = 0
+        sample_error: dict[str, Any] | None = None
         for row in rows:
             try:
                 normalized = self._normalize_team_stats(row)
                 stats.append(TeamStatsRow(**normalized))
             except (KeyError, TypeError, ValueError, ValidationError) as exc:
-                logger.warning(
-                    "Skipping malformed team stats row",
-                    extra={"error": str(exc), "row": row},
-                )
+                skipped += 1
+                if sample_error is None:
+                    sample_error = {
+                        "error": str(exc),
+                        "team_id": row.get("TEAM_ID") if isinstance(row, dict) else None,
+                        "team_name": row.get("TEAM_NAME") if isinstance(row, dict) else None,
+                        "keys": list(row.keys())[:10] if isinstance(row, dict) else None,
+                    }
                 continue
+        if skipped:
+            logger.warning(
+                "Skipped malformed team stats rows",
+                extra={"count": skipped, "sample": sample_error, "season": season},
+            )
         return ServiceResult(stats, cache_meta)
 
     async def get_player_stats(
