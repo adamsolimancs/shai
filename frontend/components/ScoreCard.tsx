@@ -1,4 +1,5 @@
 import Link from "next/link";
+import type { ReactNode } from "react";
 
 type TeamScore = {
   name?: string | null;
@@ -8,7 +9,7 @@ type TeamScore = {
 export type ScoreCardProps = {
   href?: string;
   variant?: "landing" | "scoreboard";
-  timeLabel?: string;
+  timeLabel?: ReactNode;
   locationLabel?: string;
   status?: string | null;
   footerLabel?: string;
