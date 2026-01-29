@@ -20,6 +20,7 @@ from nba_api.stats.endpoints import (
     boxscoretraditionalv2,
     commonallplayers,
     leaguedashplayerstats,
+    leaguedashplayerbiostats,
     leaguedashteamstats,
     leaguegamefinder,
     leaguestandingsv3,
@@ -41,6 +42,7 @@ from ..schemas import (
     LeagueStanding,
     MetaResponse,
     Player,
+    PlayerBio,
     PlayerAward,
     PlayerCareerStatsRow,
     PlayerGameLog,
@@ -233,7 +235,7 @@ class NBAStatsClient:
     ) -> ServiceResult:
         season = validate_season(season)
         league_id = league_id or "00"
-        season_type = season_type or "Regular Season"
+        season_type = (season_type or "Regular Season").strip()
         key = f"league_standings:{league_id}:{season}:{season_type}"
 
         def fetch() -> list[dict[str, Any]]:
@@ -266,16 +268,19 @@ class NBAStatsClient:
         self,
         player_id: int,
         season: str,
+        season_type: str,
         date_from: date | None,
         date_to: date | None,
     ) -> ServiceResult:
         season = validate_season(season)
-        key = f"player_gamelog:{player_id}:{season}:{date_from}:{date_to}"
+        season_type = (season_type or "Regular Season").strip()
+        key = f"player_gamelog:{player_id}:{season}:{season_type}:{date_from}:{date_to}"
 
         def fetch() -> list[dict[str, Any]]:
             endpoint = playergamelog.PlayerGameLog(
                 player_id=player_id,
                 season=season,
+                season_type_all_star=season_type,
                 date_from_nullable=date_from.isoformat() if date_from else "",
                 date_to_nullable=date_to.isoformat() if date_to else "",
             )
@@ -296,13 +301,26 @@ class NBAStatsClient:
                 continue
         return ServiceResult(logs, cache_meta)
 
-    async def get_player_career_stats(self, player_id: int) -> ServiceResult:
-        key = f"player_career:{player_id}"
+    async def get_player_career_stats(self, player_id: int, season_type: str) -> ServiceResult:
+        season_type = (season_type or "Regular Season").strip()
+        key = f"player_career:{player_id}:{season_type}"
+        dataset_name = (
+            "SeasonTotalsPostSeason"
+            if season_type.lower() == "playoffs"
+            else "SeasonTotalsRegularSeason"
+        )
 
         def fetch() -> list[dict[str, Any]]:
             endpoint = playercareerstats.PlayerCareerStats(player_id=player_id)
-            df = endpoint.get_data_frames()[0]
-            return cast(list[dict[str, Any]], df.to_dict("records"))
+            payload = endpoint.get_dict()
+            result_sets = payload.get("resultSets", [])
+            for result_set in result_sets:
+                if result_set.get("name") != dataset_name:
+                    continue
+                headers = result_set.get("headers", [])
+                rows = result_set.get("rowSet") or result_set.get("data") or []
+                return [dict(zip(headers, row)) for row in rows if headers and row]
+            return []
 
         rows, cache_meta = await self._cached_call(key, AGGREGATE_TTL, fetch)
         stats = [self._normalize_career_row(row) for row in rows]
@@ -329,6 +347,35 @@ class NBAStatsClient:
                 )
                 continue
         return ServiceResult(awards, cache_meta)
+
+    async def get_player_bio(self, player_id: int, season: str) -> ServiceResult:
+        season = validate_season(season)
+        key = f"player_bio:{season}"
+
+        def fetch() -> list[dict[str, Any]]:
+            endpoint = leaguedashplayerbiostats.LeagueDashPlayerBioStats(
+                season=season,
+                season_type_all_star="Regular Season",
+            )
+            df = endpoint.get_data_frames()[0]
+            return cast(list[dict[str, Any]], df.to_dict("records"))
+
+        rows, cache_meta = await self._cached_call(key, AGGREGATE_TTL, fetch)
+        row = next(
+            (item for item in rows if self._safe_int(item.get("PLAYER_ID")) == player_id),
+            None,
+        )
+        if not row:
+            return ServiceResult(None, cache_meta)
+        try:
+            normalized = self._normalize_player_bio(row)
+            return ServiceResult(PlayerBio(**normalized), cache_meta)
+        except (KeyError, TypeError, ValueError, ValidationError) as exc:
+            logger.warning(
+                "Skipping malformed player bio row",
+                extra={"error": str(exc), "row": row},
+            )
+            return ServiceResult(None, cache_meta)
 
     async def get_team_details(self, team_id: int) -> ServiceResult:
         key = f"team_details:{team_id}"
@@ -460,16 +507,27 @@ class NBAStatsClient:
             )
             return ServiceResult([], CacheMeta(hit=False, stale=True))
         stats: list[TeamStatsRow] = []
+        skipped = 0
+        sample_error: dict[str, Any] | None = None
         for row in rows:
             try:
                 normalized = self._normalize_team_stats(row)
                 stats.append(TeamStatsRow(**normalized))
             except (KeyError, TypeError, ValueError, ValidationError) as exc:
-                logger.warning(
-                    "Skipping malformed team stats row",
-                    extra={"error": str(exc), "row": row},
-                )
+                skipped += 1
+                if sample_error is None:
+                    sample_error = {
+                        "error": str(exc),
+                        "team_id": row.get("TEAM_ID") if isinstance(row, dict) else None,
+                        "team_name": row.get("TEAM_NAME") if isinstance(row, dict) else None,
+                        "keys": list(row.keys())[:10] if isinstance(row, dict) else None,
+                    }
                 continue
+        if skipped:
+            logger.warning(
+                "Skipped malformed team stats rows",
+                extra={"count": skipped, "sample": sample_error, "season": season},
+            )
         return ServiceResult(stats, cache_meta)
 
     async def get_player_stats(
@@ -477,16 +535,19 @@ class NBAStatsClient:
         season: str,
         measure: str,
         per_mode: str,
+        season_type: str,
         team_id: int | None,
         page: int,
         page_size: int,
     ) -> tuple[list[PlayerStatsRow], CacheMeta, dict[str, Any]]:
         season = validate_season(season)
-        key = f"player_stats:{season}:{measure}:{per_mode}:{team_id}"
+        season_type = season_type or "Regular Season"
+        key = f"player_stats:{season}:{season_type}:{measure}:{per_mode}:{team_id}"
 
         def fetch() -> list[dict[str, Any]]:
             endpoint = leaguedashplayerstats.LeagueDashPlayerStats(
                 season=season,
+                season_type_all_star=season_type,
                 measure_type_detailed_defense=measure,
                 per_mode_detailed=per_mode,
                 team_id_nullable=team_id,
@@ -1427,6 +1488,58 @@ class NBAStatsClient:
             "month": clean(row.get("MONTH")),
             "week": clean(row.get("WEEK")),
             "all_nba_team_number": clean_int(row.get("ALL_NBA_TEAM_NUMBER")),
+        }
+
+    def _normalize_player_bio(self, row: dict[str, Any]) -> dict[str, Any]:
+        def clean_text(value: Any) -> str | None:
+            if value in (None, "", " "):
+                return None
+            text = str(value).strip()
+            if not text:
+                return None
+            lowered = text.lower()
+            if lowered in {"none", "n/a"}:
+                return None
+            return text
+
+        def is_undrafted(value: Any) -> bool:
+            return isinstance(value, str) and value.strip().lower() == "undrafted"
+
+        height = clean_text(row.get("PLAYER_HEIGHT"))
+        height_inches = self._coerce_int(row.get("PLAYER_HEIGHT_INCHES"))
+        if not height and height_inches:
+            feet, inches = divmod(height_inches, 12)
+            height = f"{feet}-{inches}"
+
+        weight = self._coerce_int(row.get("PLAYER_WEIGHT"))
+
+        draft_year_raw = row.get("DRAFT_YEAR")
+        draft_round_raw = row.get("DRAFT_ROUND")
+        draft_number_raw = row.get("DRAFT_NUMBER")
+        undrafted = any(
+            is_undrafted(value) for value in (draft_year_raw, draft_round_raw, draft_number_raw)
+        )
+        draft_year = None if undrafted else self._coerce_int(draft_year_raw)
+        draft_round = None if undrafted else self._coerce_int(draft_round_raw)
+        draft_number = None if undrafted else self._coerce_int(draft_number_raw)
+
+        draft_pick: str | None = None
+        if undrafted:
+            draft_pick = "Undrafted"
+        elif draft_round and draft_number:
+            draft_pick = f"Round {draft_round}, Pick {draft_number}"
+        elif draft_number:
+            draft_pick = f"Pick {draft_number}"
+        elif draft_round:
+            draft_pick = f"Round {draft_round}"
+
+        return {
+            "height": height,
+            "weight": weight,
+            "draft_year": draft_year,
+            "draft_pick": draft_pick,
+            "college": clean_text(row.get("COLLEGE")),
+            "country": clean_text(row.get("COUNTRY")),
         }
 
     def _dataset_to_rows(self, dataset: Any) -> list[dict[str, Any]]:

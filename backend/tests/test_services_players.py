@@ -76,9 +76,44 @@ async def test_get_player_career_stats(monkeypatch):
         return sample, CacheMeta(hit=True, stale=False)
 
     monkeypatch.setattr(client, "_cached_call", fake_cached_call)
-    result = await client.get_player_career_stats(2544)
+    result = await client.get_player_career_stats(2544, "Regular Season")
     assert len(result.data) == 1
     assert result.data[0].season_id == "2023-24"
     assert result.data[0].field_goal_pct == pytest.approx(0.495)
     assert result.data[0].three_point_pct == pytest.approx(0.41)
     assert result.data[0].free_throw_pct == pytest.approx(0.75)
+
+
+@pytest.mark.asyncio
+async def test_get_player_bio(monkeypatch):
+    settings = Settings()
+    cache = InMemoryCacheBackend(settings)
+    resolver = NameResolver(cache)
+    client = NBAStatsClient(settings, cache, resolver)
+
+    sample = [
+        {
+            "PLAYER_ID": 123,
+            "PLAYER_HEIGHT": "6-6",
+            "PLAYER_HEIGHT_INCHES": 78,
+            "PLAYER_WEIGHT": "210",
+            "COLLEGE": "Duke",
+            "COUNTRY": "USA",
+            "DRAFT_YEAR": "2019",
+            "DRAFT_ROUND": "1",
+            "DRAFT_NUMBER": "3",
+        }
+    ]
+
+    async def fake_cached_call(key, ttl, fetcher):
+        return sample, CacheMeta(hit=True, stale=False)
+
+    monkeypatch.setattr(client, "_cached_call", fake_cached_call)
+    result = await client.get_player_bio(123, "2024-25")
+    assert result.data is not None
+    assert result.data.height == "6-6"
+    assert result.data.weight == 210
+    assert result.data.draft_year == 2019
+    assert result.data.draft_pick == "Round 1, Pick 3"
+    assert result.data.college == "Duke"
+    assert result.data.country == "USA"

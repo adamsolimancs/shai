@@ -1,0 +1,51 @@
+name: Ingestion Cron
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check ingest window
+        id: schedule
+        run: |
+          hour=$(TZ="America/New_York" date +%H)
+          minute=$(TZ="America/New_York" date +%M)
+          if [ "$hour" -ge 18 ] && [ "$hour" -le 23 ]; then
+            echo "run_worker=true" >> "$GITHUB_OUTPUT"
+          elif [ "$minute" -eq 00 ]; then
+            echo "run_worker=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_worker=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.schedule.outputs.run_worker == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.schedule.outputs.run_worker == 'true'
+        with:
+          node-version: 18
+      - name: Install worker deps
+        if: steps.schedule.outputs.run_worker == 'true'
+        run: npm ci --prefix workers
+      - name: Run worker
+        if: steps.schedule.outputs.run_worker == 'true'
+        env:
+          WORKER_MODE: cron
+          CRON_MIN_INTERVAL_MS: 60000
+          HISTORIC_SEASONS_BACK: 2
+          PLAYERS_HISTORIC_MODE: once
+          PLAYERS_HISTORIC_SEASONS_BACK: 2
+          API_MIN_INTERVAL_MS: 1500
+          NBA_API_BASE_URL: ${{ secrets.NBA_API_BASE_URL }}
+          NBA_API_KEY: ${{ secrets.NBA_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_SCHEMA: public
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          CACHE_KEY_PREFIX: nba:serve
+          NBA_TIME_ZONE: America/New_York
+        run: node workers/worker-live.js

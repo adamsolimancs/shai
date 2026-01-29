@@ -22,6 +22,7 @@ from .resolvers import NameResolver
 from .schemas import ErrorDetail, ErrorEnvelope
 from .services.nba import NBAStatsClient
 from .services.news import NewsService
+from .supabase import SupabaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.log_level)
     cache, redis_client = await init_cache(settings)
-    resolver = NameResolver(cache)
+    supabase = None
+    if settings.supabase_url and settings.supabase_key:
+        supabase = SupabaseClient(settings)
+    resolver = NameResolver(cache, supabase)
     await resolver.initialize()
     nba_client = NBAStatsClient(settings, cache, resolver)
     news_client = NewsService(settings, cache)
@@ -40,6 +44,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.settings = settings
     app.state.cache = cache
     app.state.redis = redis_client
+    app.state.supabase = supabase
     app.state.resolver = resolver
     app.state.nba_client = nba_client
     app.state.news_client = news_client
@@ -53,6 +58,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         for task in getattr(app.state, "background_tasks", []):
             task.cancel()
         await cache.close()
+        if supabase:
+            await supabase.close()
         await news_client.close()
 
 

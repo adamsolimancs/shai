@@ -6,8 +6,10 @@ from typing import Any, cast
 
 from fastapi import Request
 
+from .cache import CacheBackend
 from .config import Settings, get_settings
 from .rate_limit import RateLimiter
+from .supabase import SupabaseClient
 from .resolvers import NameResolver
 from .services.nba import NBAStatsClient
 from .services.news import NewsService
@@ -27,6 +29,14 @@ def get_nba_client(request: Request) -> NBAStatsClient:
 
 def get_news_client(request: Request) -> NewsService:
     return cast(NewsService, request.app.state.news_client)
+
+
+def get_cache_backend(request: Request) -> CacheBackend:
+    return cast(CacheBackend, request.app.state.cache)
+
+
+def get_supabase_client(request: Request) -> SupabaseClient | None:
+    return cast(SupabaseClient | None, request.app.state.supabase)
 
 
 def get_resolver(request: Request) -> NameResolver:

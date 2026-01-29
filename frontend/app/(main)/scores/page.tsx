@@ -1,3 +1,4 @@
+import LocalGameTime from "@/components/LocalGameTime";
 import ScoreCard from "@/components/ScoreCard";
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
 
@@ -13,9 +14,11 @@ type Game = {
 
 type EnhancedGame = {
   id: string;
+  rawDate: string;
   dateKey: string;
   dateLabel: string;
-  tipLabel: string;
+  timeFallback: string;
+  showTime: boolean;
   status: string;
   home: { name: string; score: number };
   away: { name: string; score: number };
@@ -31,10 +34,71 @@ type HighlightMetric = {
 };
 
 const DATE_FORMATTER = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "short", day: "numeric" });
-const TIME_FORMATTER = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" });
+const DATE_ONLY_FORMATTER = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
+
+const DATE_ONLY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+const MIDNIGHT_TIME_REGEX = /T00:00:00/;
+
+function isFinalStatus(status?: string | null): boolean {
+  if (!status) return false;
+  return /(final|final\/ot|final\/2ot|game end|completed)/i.test(status);
+}
+
+function hasTimeInfo(value: string): boolean {
+  if (!value) return false;
+  if (DATE_ONLY_REGEX.test(value)) return false;
+  if (MIDNIGHT_TIME_REGEX.test(value)) return false;
+  return /T\d{2}:\d{2}/.test(value);
+}
+
+function formatDateOnly(value: string): string {
+  if (!value) return "TBD";
+  const dateOnlyMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (dateOnlyMatch) {
+    const [, year, month, day] = dateOnlyMatch;
+    return DATE_ONLY_FORMATTER.format(new Date(Number(year), Number(month) - 1, Number(day)));
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  if (MIDNIGHT_TIME_REGEX.test(value)) {
+    return DATE_ONLY_FORMATTER.format(new Date(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()));
+  }
+  return DATE_ONLY_FORMATTER.format(parsed);
+}
+
+function buildTimeFallback(value: string, showTime: boolean): string {
+  const dateLabel = formatDateOnly(value);
+  if (!showTime) return dateLabel;
+  if (!hasTimeInfo(value)) {
+    return `${dateLabel} · TBD`;
+  }
+  return dateLabel;
+}
+
+function parseGameDate(value: string): Date {
+  if (DATE_ONLY_REGEX.test(value)) {
+    const [year, month, day] = value.split("-").map(Number);
+    return new Date(year, month - 1, day);
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return new Date();
+  }
+  if (MIDNIGHT_TIME_REGEX.test(value)) {
+    return new Date(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate());
+  }
+  return parsed;
+}
+
+function toDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 
 function enhanceGame(game: Game): EnhancedGame {
-  const date = new Date(game.date);
+  const date = parseGameDate(game.date);
   const homeScore = Number.isFinite(game.home_team_score) ? game.home_team_score : 0;
   const awayScore = Number.isFinite(game.away_team_score) ? game.away_team_score : 0;
   const margin = Math.abs(homeScore - awayScore);
@@ -42,13 +106,17 @@ function enhanceGame(game: Game): EnhancedGame {
   let winner: "home" | "away" | "even" = "even";
   if (homeScore > awayScore) winner = "home";
   if (awayScore > homeScore) winner = "away";
+  const status = game.status || "Final";
+  const showTime = !isFinalStatus(status);
 
   return {
     id: game.game_id,
-    dateKey: date.toISOString().slice(0, 10),
+    rawDate: game.date,
+    dateKey: toDateKey(date),
     dateLabel: DATE_FORMATTER.format(date),
-    tipLabel: TIME_FORMATTER.format(date),
-    status: game.status || "Final",
+    timeFallback: buildTimeFallback(game.date, showTime),
+    showTime,
+    status,
     home: { name: game.home_team_name, score: homeScore },
     away: { name: game.away_team_name, score: awayScore },
     winner,
@@ -134,26 +202,15 @@ export default async function ScoresPage() {
 
   return (
     <div className="space-y-12">
-      <header className="space-y-6">
+      <header className="space-y-2">
         <div>
           <p className="text-xs uppercase tracking-[0.5em] text-white/60">Season scoreboard</p>
           <h1 className="mt-3 text-4xl font-semibold text-white">Catch up on the latest NBA slate</h1>
         </div>
-        <dl className="grid gap-4 rounded-3xl border border-white/10 bg-slate-950/40 p-6 text-center sm:grid-cols-3">
-          {highlights.map((metric) => (
-            <div key={metric.label} className="space-y-2">
-              <dt className="text-xs uppercase tracking-[0.4em] text-white/40">{metric.label}</dt>
-              <dd className="text-3xl font-semibold text-white">{metric.value}</dd>
-              <p className="text-xs text-white/60">{metric.subtext}</p>
-            </div>
-          ))}
-        </dl>
       </header>
-
       <section className="space-y-6">
         <div>
-          <p className="text-xs uppercase tracking-[0.4em] text-white/40">Game log</p>
-          <h2 className="mt-2 text-2xl font-semibold text-white">Latest results</h2>
+          <h2 className="text-2xl font-semibold text-white">Latest results</h2>
         </div>
         {grouped.length === 0 ? (
           <div className="rounded-3xl border border-white/10 bg-slate-950/40 p-10 text-center text-white/70">
@@ -172,13 +229,11 @@ export default async function ScoresPage() {
                     <ScoreCard
                       key={game.id}
                       href={`/boxscore/${game.id}`}
-                      variant="scoreboard"
-                      timeLabel={game.tipLabel}
+                      timeLabel={<LocalGameTime value={game.rawDate} fallback={game.timeFallback} showTime={game.showTime} />}
                       status={game.status}
                       home={{ name: game.home.name, score: game.home.score }}
                       away={{ name: game.away.name, score: game.away.score }}
                       winner={game.winner}
-                      footerLabel={`Margin: ${game.margin === 0 ? "OT thriller" : `${game.margin} pts`}`}
                     />
                   ))}
                 </div>
