@@ -78,6 +78,15 @@ class Player(BaseModel):
     is_active: bool = True
 
 
+class PlayerBio(BaseModel):
+    height: str | None = None
+    weight: int | None = None
+    draft_year: int | None = None
+    draft_pick: str | None = None
+    college: str | None = None
+    country: str | None = None
+
+
 class Game(BaseModel):
     game_id: str
     date: date

@@ -32,6 +32,7 @@ from ..schemas import (
     PaginationMeta,
     Player,
     PlayerAward,
+    PlayerBio,
     PlayerCareerStatsRow,
     PlayerGameLog,
     PlayerStatsRow,
@@ -458,6 +459,19 @@ async def player_awards(
     player_id: int,
 ) -> Envelope[list[PlayerAward]]:
     result = await client.get_player_awards(player_id)
+    _log_data_source(request, _source_from_cache(result.cache, "api"), result.cache)
+    return success(request, result.data, cache=result.cache)
+
+
+@router.get("/players/{player_id}/bio", response_model=Envelope[PlayerBio | None])
+async def player_bio(
+    request: Request,
+    client: NBAClientDep,
+    player_id: int,
+    season: str = Query(_season_for_date(date.today()), description="Season like 2024-25"),
+) -> Envelope[PlayerBio | None]:
+    validate_season(season)
+    result = await client.get_player_bio(player_id, season)
     _log_data_source(request, _source_from_cache(result.cache, "api"), result.cache)
     return success(request, result.data, cache=result.cache)
 
