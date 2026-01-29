@@ -235,6 +235,37 @@ body {
   animation: shine 5s linear infinite;
 }
 
+.skeleton-block {
+  position: relative;
+  overflow: hidden;
+}
+
+.skeleton-block::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-120%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(var(--color-app-foreground-rgb), 0.12),
+    transparent
+  );
+  animation: skeleton-shimmer 1.6s ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+  100% {
+    transform: translateX(120%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-block::after {
+    animation: none;
+  }
+}
+
 /* Light palette overrides for legacy dark utilities */
 .text-white {
   color: var(--color-app-foreground) !important;

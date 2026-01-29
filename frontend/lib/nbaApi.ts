@@ -18,6 +18,7 @@ type ErrorEnvelope = {
 };
 
 const DEFAULT_REVALIDATE_SECONDS = 300;
+const DEFAULT_CACHE: RequestCache = "no-store";
 export const DEFAULT_SEASON = process.env.NBA_DEFAULT_SEASON || "2025-26";
 
 export async function nbaFetch<T>(
@@ -33,14 +34,23 @@ export async function nbaFetch<T>(
     console.log("NBA Fetch:", url);
   }
 
-  const response = await fetch(url, {
+  const cache = init?.cache ?? DEFAULT_CACHE;
+  const requestInit: RequestInit & { next?: { revalidate?: number } } = {
     ...init,
+    cache,
     headers: {
       "x-api-key": API_KEY,
       ...(init?.headers || {}),
     },
-    next: init?.next ?? { revalidate: DEFAULT_REVALIDATE_SECONDS },
-  });
+  };
+
+  if (cache !== "no-store") {
+    requestInit.next = init?.next ?? { revalidate: DEFAULT_REVALIDATE_SECONDS };
+  } else if ("next" in requestInit) {
+    delete requestInit.next;
+  }
+
+  const response = await fetch(url, requestInit);
 
   if (!response.ok) {
     const errorBody = await safeJson(response);

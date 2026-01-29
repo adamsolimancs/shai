@@ -1,12 +1,17 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { Metadata } from "next";
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
 import { containsBannedTerm } from "@/lib/utils";
 import AwardsAccordion from "@/components/AwardsAccordion";
+import AwardSummaryChips from "@/components/AwardSummaryChips";
 import PlayerCareerResume from "@/components/PlayerCareerResume";
+
+export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
+export const revalidate = 0;
 
 type ResolutionPayload = {
   id: number;
@@ -67,6 +72,22 @@ type TeamStatsRow = {
   plus_minus?: number | null;
 };
 
+type LeagueStandingRow = {
+  team_id: number;
+  team_name?: string | null;
+  team_city?: string | null;
+  team_abbreviation?: string | null;
+  wins: number;
+  losses: number;
+  win_pct: number;
+};
+
+type RecordLike = {
+  wins: number;
+  losses: number;
+  win_pct: number;
+};
+
 type Player = {
   id: number;
   full_name: string;
@@ -84,6 +105,15 @@ type PlayerAward = {
   month?: string | null;
   week?: string | null;
   all_nba_team_number?: number | null;
+};
+
+type PlayerBio = {
+  height?: string | null;
+  weight?: number | null;
+  draft_year?: number | null;
+  draft_pick?: string | null;
+  college?: string | null;
+  country?: string | null;
 };
 
 type PlayerProfile = {
@@ -108,6 +138,8 @@ type PlayerProfile = {
   recentGames: PlayerGameLog[];
   awards: PlayerAward[];
   rings: number;
+  ringSeasons: string[];
+  bio?: PlayerBio | null;
 };
 
 type SeasonStats = {
@@ -204,43 +236,134 @@ function createSeededGenerator(seedSource: string): () => number {
   };
 }
 
-const normalizeAwardSummary = (awards: PlayerAward[], ringCount: number) => {
+const awardText = (award: PlayerAward): string =>
+  [award.description, award.award_type, award.subtype1, award.subtype2, award.subtype3]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+
+const isAllStarAward = (text: string) => /all[-\s]?star/.test(text);
+const isAllNbaAward = (text: string) => /all[-\s]?nba/.test(text);
+const isAllDefenseAward = (text: string) => /all[-\s]?(defense|defensive)/.test(text);
+const isClutchAward = (text: string) => text.includes("clutch") || text.includes("cpoy");
+const isFinalsMvpAward = (text: string) =>
+  text.includes("finals most valuable player") || text.match(/\bfinals mvp\b/);
+const isCupMvpAward = (text: string) =>
+  text.includes("cup most valuable player") ||
+  text.includes("nba cup mvp") ||
+  text.includes("in-season tournament mvp") ||
+  text.includes("tournament mvp");
+const isRookieOfYearAward = (text: string) =>
+  text.includes("rookie of the year") || text.match(/\broy\b/);
+const isDefensivePlayerOfYearAward = (text: string) =>
+  text.includes("defensive player of the year") || text.match(/\bdpoy\b/);
+const isOlympicGoldMedal = (text: string) => text.includes("olympic gold medal");
+const isOlympicSilverMedal = (text: string) => text.includes("olympic silver medal");
+const isOlympicBronzeMedal = (text: string) => text.includes("olympic bronze medal");
+const MVP_EXCLUDE = /finals|all[-\s]?star|cup|tournament|sporting news|conference|playoffs|summer league|g league|d-league/;
+const isRegularSeasonMvp = (text: string) => {
+  if (!text.includes("most valuable player") && !text.match(/\bmvp\b/)) {
+    return false;
+  }
+  return !MVP_EXCLUDE.test(text);
+};
+
+const awardRank = (award: PlayerAward): number => {
+  const text = awardText(award);
+  if (isRegularSeasonMvp(text)) return 0;
+  if (isFinalsMvpAward(text)) return 1;
+  if (isCupMvpAward(text)) return 2;
+  if (isDefensivePlayerOfYearAward(text)) return 3;
+  if (isRookieOfYearAward(text)) return 4;
+  if (isAllNbaAward(text)) return 5;
+  if (isAllDefenseAward(text)) return 6;
+  if (isAllStarAward(text)) return 7;
+  if (isOlympicGoldMedal(text)) return 8;
+  if (isOlympicSilverMedal(text)) return 9;
+  if (isOlympicBronzeMedal(text)) return 10;
+  if (isClutchAward(text)) return 11;
+  return 12;
+};
+
+const seasonSortKey = (season: string | undefined): number => {
+  if (!season) return 0;
+  const trimmed = season.trim();
+  const startYear = Number.parseInt(trimmed.slice(0, 4), 10);
+  if (Number.isNaN(startYear)) return 0;
+  if (!trimmed.includes("-")) return startYear;
+  const suffix = trimmed.slice(trimmed.indexOf("-") + 1);
+  const endSuffix = Number.parseInt(suffix, 10);
+  if (Number.isNaN(endSuffix)) return startYear;
+  const centuryBase = Math.floor(startYear / 100) * 100;
+  let endYear = centuryBase + endSuffix;
+  if (endYear < startYear) {
+    endYear += 100;
+  }
+  return endYear;
+};
+
+const sortSeasons = (seasons: Iterable<string>) =>
+  [...seasons].sort((a, b) => seasonSortKey(b) - seasonSortKey(a));
+
+const sortAwards = (awards: PlayerAward[]) =>
+  [...awards].sort((a, b) => {
+    const seasonDelta = seasonSortKey(b.season) - seasonSortKey(a.season);
+    if (seasonDelta !== 0) return seasonDelta;
+    const rankDelta = awardRank(a) - awardRank(b);
+    if (rankDelta !== 0) return rankDelta;
+    return (a.description ?? "").localeCompare(b.description ?? "");
+  });
+
+const normalizeAwardSummary = (awards: PlayerAward[], ringCount: number, ringSeasons?: string[]) => {
   const summary = {
-    allStar: 0,
-    allNba: 0,
-    allDefense: 0,
-    mvp: 0,
-    cpoy: 0,
+    allStar: new Set<string>(),
+    allNba: new Set<string>(),
+    allDefense: new Set<string>(),
+    mvp: new Set<string>(),
+    finalsMvp: new Set<string>(),
+    cupMvp: new Set<string>(),
+    dpoy: new Set<string>(),
+    roy: new Set<string>(),
+    olympicGold: new Set<string>(),
+    olympicSilver: new Set<string>(),
+    olympicBronze: new Set<string>(),
+    cpoy: new Set<string>(),
   };
 
   awards.forEach((award) => {
-    const haystack = `${award.description ?? ""} ${award.award_type ?? ""}`.toLowerCase();
-    if (haystack.match(/all[-\s]?star/)) {
-      summary.allStar += 1;
-    }
-    if (haystack.match(/all[-\s]?nba/)) {
-      summary.allNba += 1;
-    }
-    if (haystack.match(/all[-\s]?(defense|defensive)/)) {
-      summary.allDefense += 1;
-    }
-    if (haystack.includes("clutch") || haystack.includes("cpoy")) {
-      summary.cpoy += 1;
-    }
-    const isFinals = haystack.includes("finals");
-    if ((haystack.includes("mvp") || haystack.includes("most valuable player")) && !isFinals) {
-      summary.mvp += 1;
-    }
+    if (!award.season) return;
+    const text = awardText(award);
+    if (!text) return;
+    if (isAllStarAward(text)) summary.allStar.add(award.season);
+    if (isAllNbaAward(text)) summary.allNba.add(award.season);
+    if (isAllDefenseAward(text)) summary.allDefense.add(award.season);
+    if (isClutchAward(text)) summary.cpoy.add(award.season);
+    if (isRegularSeasonMvp(text)) summary.mvp.add(award.season);
+    if (isFinalsMvpAward(text)) summary.finalsMvp.add(award.season);
+    if (isCupMvpAward(text)) summary.cupMvp.add(award.season);
+    if (isDefensivePlayerOfYearAward(text)) summary.dpoy.add(award.season);
+    if (isRookieOfYearAward(text)) summary.roy.add(award.season);
+    if (isOlympicGoldMedal(text)) summary.olympicGold.add(award.season);
+    if (isOlympicSilverMedal(text)) summary.olympicSilver.add(award.season);
+    if (isOlympicBronzeMedal(text)) summary.olympicBronze.add(award.season);
   });
 
-  const items: { label: string; count: number }[] = [];
-  if (summary.allStar) items.push({ label: "All-Star", count: summary.allStar });
-  if (summary.allNba) items.push({ label: "All-NBA", count: summary.allNba });
-  if (summary.allDefense) items.push({ label: "All-Defense", count: summary.allDefense });
-  if (summary.mvp) items.push({ label: "MVP", count: summary.mvp });
-  if (summary.cpoy) items.push({ label: "CPOY", count: summary.cpoy });
-  if (ringCount) items.push({ label: "Rings", count: ringCount });
-  return items;
+  const ordered = [
+    { label: "MVP", count: summary.mvp.size, seasons: sortSeasons(summary.mvp) },
+    { label: "Finals MVP", count: summary.finalsMvp.size, seasons: sortSeasons(summary.finalsMvp) },
+    { label: "Cup MVP", count: summary.cupMvp.size, seasons: sortSeasons(summary.cupMvp) },
+    { label: "Rings", count: ringCount, seasons: ringSeasons?.length ? sortSeasons(new Set(ringSeasons)) : undefined },
+    { label: "DPOY", count: summary.dpoy.size, seasons: sortSeasons(summary.dpoy) },
+    { label: "ROTY", count: summary.roy.size, seasons: sortSeasons(summary.roy) },
+    { label: "All-NBA", count: summary.allNba.size, seasons: sortSeasons(summary.allNba) },
+    { label: "All-Defense", count: summary.allDefense.size, seasons: sortSeasons(summary.allDefense) },
+    { label: "All-Star", count: summary.allStar.size, seasons: sortSeasons(summary.allStar) },
+    { label: "Olympic Gold", count: summary.olympicGold.size, seasons: sortSeasons(summary.olympicGold) },
+    { label: "Olympic Silver", count: summary.olympicSilver.size, seasons: sortSeasons(summary.olympicSilver) },
+    { label: "Olympic Bronze", count: summary.olympicBronze.size, seasons: sortSeasons(summary.olympicBronze) },
+    { label: "CPOY", count: summary.cpoy.size, seasons: sortSeasons(summary.cpoy) },
+  ];
+  return ordered.filter((item) => item.count > 0);
 };
 
 const filterAwards = (awards: PlayerAward[]) =>
@@ -252,11 +375,10 @@ const filterAwards = (awards: PlayerAward[]) =>
 const extractAllStarSeasons = (awards: PlayerAward[]) => {
   const set = new Set<string>();
   awards.forEach((award) => {
-    const haystack = `${award.description ?? ""} ${award.award_type ?? ""}`.toLowerCase();
-    if (haystack.match(/all[-\s]?star/)) {
-      if (award.season) {
-        set.add(award.season);
-      }
+    if (!award.season) return;
+    const text = awardText(award);
+    if (isAllStarAward(text)) {
+      set.add(award.season);
     }
   });
   return set;
@@ -283,9 +405,13 @@ function isAllStarCaliber(row: PlayerCareerStatsRow): boolean {
   return impact >= 28 || pts >= 24 || (pts >= 20 && (reb >= 9 || ast >= 7));
 }
 
-function estimateCareerAccolades(rows?: PlayerCareerStatsRow[]): { allStarSeasons: number; championships: number } {
+function estimateCareerAccolades(rows?: PlayerCareerStatsRow[]): {
+  allStarSeasons: number;
+  championships: number;
+  championshipSeasons: string[];
+} {
   if (!rows?.length) {
-    return { allStarSeasons: 0, championships: 0 };
+    return { allStarSeasons: 0, championships: 0, championshipSeasons: [] };
   }
 
   const primaryRows = new Map<string, PlayerCareerStatsRow>();
@@ -313,7 +439,11 @@ function estimateCareerAccolades(rows?: PlayerCareerStatsRow[]): { allStarSeason
     }
   }
 
-  return { allStarSeasons, championships: championSeasons.size };
+  return {
+    allStarSeasons,
+    championships: championSeasons.size,
+    championshipSeasons: [...championSeasons],
+  };
 }
 
 type CareerImpactSummary = {
@@ -381,9 +511,49 @@ function deriveRating(stats?: SeasonStats, career?: PlayerCareerStatsRow[]): num
   return Math.max(floor, Math.round(bounded));
 }
 
-function formatRecord(stats?: TeamStatsRow): string | undefined {
+function formatRecord(stats?: RecordLike): string | undefined {
   if (!stats) return undefined;
   return `${stats.wins}-${stats.losses} (${Math.round(stats.win_pct * 100)}% W)`;
+}
+
+function formatStandingTeamName(row?: LeagueStandingRow): string | undefined {
+  if (!row) return undefined;
+  const full = `${row.team_city ?? ""} ${row.team_name ?? ""}`.trim();
+  return full || row.team_name || row.team_abbreviation || undefined;
+}
+
+function latestTeamAbbreviation(gamelog: PlayerGameLog[]): string | null {
+  let latest = -Infinity;
+  let latestTeam: string | null = null;
+  for (const game of gamelog) {
+    const time = new Date(game.game_date).getTime();
+    if (Number.isNaN(time) || time <= latest) {
+      continue;
+    }
+    latest = time;
+    latestTeam = game.team_abbreviation || null;
+  }
+  return latestTeam;
+}
+
+function resolveCurrentTeamRow(
+  rows: PlayerCareerStatsRow[],
+  gamelog: PlayerGameLog[],
+  seasonId: string,
+): PlayerCareerStatsRow | undefined {
+  const latestTeam = latestTeamAbbreviation(gamelog);
+  if (latestTeam) {
+    const match = rows.find(
+      (row) => row.season_id === seasonId && row.team_abbreviation === latestTeam,
+    );
+    if (match) {
+      return match;
+    }
+  }
+  return (
+    rows.find((row) => row.season_id === seasonId && row.team_abbreviation !== "TOT") ||
+    rows.find((row) => row.season_id === seasonId)
+  );
 }
 
 function selectSeasonRow(rows: PlayerCareerStatsRow[], seasonId: string): PlayerCareerStatsRow | undefined {
@@ -407,6 +577,8 @@ function collapseCareerRows(rows: PlayerCareerStatsRow[]): PlayerCareerStatsRow[
   return [...bySeason.values()].sort((a, b) => b.season_id.localeCompare(a.season_id));
 }
 
+const noStore = { cache: "no-store" as const };
+
 async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfile | null> {
   if (!slug) {
     return null;
@@ -419,7 +591,10 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
     if (containsBannedTerm(query) || containsBannedTerm(slug)) {
       return null;
     }
-    const resolution = await nbaFetch<ResolveResult>(`/v1/resolve?player=${encodeURIComponent(query)}`);
+    const resolution = await nbaFetch<ResolveResult>(
+      `/v1/resolve?player=${encodeURIComponent(query)}`,
+      noStore,
+    );
     const playerId = resolution.player?.id;
     if (!playerId) {
       return null;
@@ -427,21 +602,19 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
     const [career, playoffsCareer, gamelog, awards] = await Promise.all([
       nbaFetch<PlayerCareerStatsRow[]>(
         `/v1/players/${playerId}/career?season_type=Regular%20Season`,
-        { next: { revalidate: 3600 } },
+        noStore,
       ),
       nbaFetch<PlayerCareerStatsRow[]>(
         `/v1/players/${playerId}/career?season_type=Playoffs`,
-        { next: { revalidate: 3600 } },
+        noStore,
       ),
       nbaFetch<PlayerGameLog[]>(
         `/v1/players/${playerId}/gamelog?season=${DEFAULT_SEASON}`,
-        { next: { revalidate: 300 } },
+        noStore,
       ),
       (async () => {
         try {
-          return await nbaFetch<PlayerAward[]>(`/v1/players/${playerId}/awards`, {
-            next: { revalidate: 3600 },
-          });
+          return await nbaFetch<PlayerAward[]>(`/v1/players/${playerId}/awards`, noStore);
         } catch (awardError) {
           if (process.env.NODE_ENV !== "production") {
             console.error("Failed to load player awards", awardError);
@@ -457,12 +630,41 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
 
     const seasonRow = selectSeasonRow(career, DEFAULT_SEASON);
     const statsSeasonId = seasonRow?.season_id ?? DEFAULT_SEASON;
+    const isActive = seasonRow?.season_id === DEFAULT_SEASON;
+    const currentTeamRow = isActive
+      ? resolveCurrentTeamRow(career, gamelog, DEFAULT_SEASON)
+      : seasonRow;
+    const teamId = currentTeamRow?.team_id ?? seasonRow?.team_id;
+    const currentTeamAbbr =
+      currentTeamRow?.team_abbreviation ??
+      latestTeamAbbreviation(gamelog) ??
+      seasonRow?.team_abbreviation ??
+      null;
+    let standingsRow: LeagueStandingRow | undefined;
+    if (isActive && teamId != null && teamId > 0) {
+      try {
+        const standings = await nbaFetch<LeagueStandingRow[]>(
+          `/v1/league_standings?season=${DEFAULT_SEASON}&league_id=00&season_type=Regular%20Season`,
+          noStore,
+        );
+        standingsRow = standings.find((row) => row.team_id === teamId);
+        if (!standingsRow && currentTeamAbbr) {
+          standingsRow = standings.find(
+            (row) => row.team_abbreviation?.toLowerCase() === currentTeamAbbr.toLowerCase(),
+          );
+        }
+      } catch (error) {
+        if (process.env.NODE_ENV !== "production") {
+          console.error("Failed to load league standings", error);
+        }
+      }
+    }
     let teamStats: TeamStatsRow[] = [];
-    if (seasonRow?.team_id != null) {
+    if ((!isActive || !standingsRow) && teamId != null && teamId > 0) {
       try {
         teamStats = await nbaFetch<TeamStatsRow[]>(
-          `/v1/teams/${seasonRow.team_id}/stats?season=${statsSeasonId}&measure=Base&per_mode=PerGame`,
-          { next: { revalidate: 1800 } },
+          `/v1/teams/${teamId}/stats?season=${statsSeasonId}&measure=Base&per_mode=PerGame`,
+          noStore,
         );
       } catch (error) {
         if (process.env.NODE_ENV !== "production") {
@@ -470,6 +672,19 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
         }
         teamStats = [];
       }
+    }
+
+    let bio: PlayerBio | null = null;
+    try {
+      bio = await nbaFetch<PlayerBio | null>(
+        `/v1/players/${playerId}/bio?season=${statsSeasonId}`,
+        noStore,
+      );
+    } catch (error) {
+      if (process.env.NODE_ENV !== "production") {
+        console.error("Failed to load player bio", error);
+      }
+      bio = null;
     }
 
     const gamesPlayed = seasonRow?.games_played ?? 0;
@@ -490,9 +705,8 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
         }
       : undefined;
 
-    const teamRecord = formatRecord(teamStats[0]);
+    const teamRecord = isActive ? formatRecord(standingsRow ?? teamStats[0]) : undefined;
     const rating = deriveRating(stats, career);
-    const isActive = seasonRow?.season_id === DEFAULT_SEASON;
     const scoutingReport = stats
       ? isActive
         ? `${resolution.player?.name ?? query} is pacing ${stats.pts.toFixed(1)} / ${stats.reb.toFixed(1)} / ${stats.ast.toFixed(1)} this season.`
@@ -502,14 +716,14 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
     const collapsedCareer = collapseCareerRows(career);
     const collapsedPlayoffs = collapseCareerRows(playoffsCareer);
     const experienceSeasons = collapsedCareer.length;
-    const { championships } = estimateCareerAccolades(career);
+    const { championships, championshipSeasons } = estimateCareerAccolades(career);
 
     return {
       slug,
       playerId,
       name: resolution.player?.name ?? query,
-      team: teamStats[0]?.team_name ?? seasonRow?.team_abbreviation ?? resolution.player?.abbreviation ?? "Free Agent",
-      teamAbbreviation: seasonRow?.team_abbreviation ?? teamStats[0]?.team_abbreviation ?? null,
+      team: formatStandingTeamName(standingsRow) ?? teamStats[0]?.team_name ?? currentTeamRow?.team_abbreviation ?? resolution.player?.abbreviation ?? "Free Agent",
+      teamAbbreviation: standingsRow?.team_abbreviation ?? currentTeamRow?.team_abbreviation ?? teamStats[0]?.team_abbreviation ?? null,
       headshot: `${HEADSHOT_BASE}/${playerId}.png`,
       rating,
       scoutingReport,
@@ -523,15 +737,17 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
           insights: [
             { label: "Games played", value: String(seasonRow?.games_played ?? "—") },
             { label: "Games started", value: String(seasonRow?.games_started ?? "—") },
-            { label: "Wins / Losses", value: teamRecord ?? "—" },
+            ...(isActive ? [{ label: "Wins / Losses", value: teamRecord ?? "—" }] : []),
           ],
         }
         : undefined,
       careerSeasons: collapsedCareer,
       careerSeasonsPlayoffs: collapsedPlayoffs,
       recentGames: gamelog.slice(0, 5),
-      awards: filterAwards(awards),
+      awards: sortAwards(filterAwards(awards)),
       rings: championships,
+      ringSeasons: sortSeasons(championshipSeasons),
+      bio,
     };
   } catch (error) {
     if (process.env.NODE_ENV !== "production") {
@@ -649,8 +865,53 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
     grade: gradeOptions[(Math.floor(seededRandom() * gradeOptions.length) + index) % gradeOptions.length],
     stats: generateMockStats(),
   }));
-  const awardSummary = normalizeAwardSummary(profile.awards, profile.rings);
+  const awardSummary = normalizeAwardSummary(profile.awards, profile.rings, profile.ringSeasons);
   const allStarSeasons = extractAllStarSeasons(profile.awards);
+  const parseHeightInches = (height?: string | null): number | null => {
+    if (!height) return null;
+    const trimmed = height.trim();
+    if (!trimmed) return null;
+    const match = trimmed.match(/^(\d+)\s*[-']\s*(\d+)/);
+    if (match) {
+      const feet = Number.parseInt(match[1], 10);
+      const inches = Number.parseInt(match[2], 10);
+      if (!Number.isNaN(feet) && !Number.isNaN(inches)) {
+        return feet * 12 + inches;
+      }
+    }
+    const asNumber = Number.parseInt(trimmed, 10);
+    return Number.isNaN(asNumber) ? null : asNumber;
+  };
+  const formatHeight = (height?: string | null): string | null => {
+    const totalInches = parseHeightInches(height);
+    if (!totalInches) return null;
+    const feet = Math.floor(totalInches / 12);
+    const inches = totalInches % 12;
+    const cm = Math.round(totalInches * 2.54);
+    return `${feet}'${inches}\" (${cm} cm)`;
+  };
+  const formatWeight = (weight?: number | null): string | null => {
+    if (!weight) return null;
+    const kg = Math.round(weight * 0.453592);
+    return `${weight} lbs (${kg} kg)`;
+  };
+  const draftDetails = [profile.bio?.draft_pick ?? null, profile.bio?.draft_year ? `${profile.bio.draft_year}` : null]
+    .filter(Boolean)
+    .join(", ");
+  const agePill = { label: "Age", value: profile.age ? `${profile.age}` : "—" };
+  const experiencePill = { label: "Experience", value: profile.experience };
+  const heightPill = { label: "Height", value: formatHeight(profile.bio?.height) };
+  const weightPill = { label: "Weight", value: formatWeight(profile.bio?.weight ?? null) };
+  const draftPill = { label: "Draft", value: draftDetails || null };
+  const collegePill = { label: "College", value: profile.bio?.college ?? null };
+  const countryPill = { label: "Country", value: profile.bio?.country ?? null };
+  const teamRecordPill = isActive ? { label: "Team record", value: profile.currentSeason?.teamRecord ?? "—" } : null;
+  const infoRows: Array<Array<{ label: string; value: string | null } | null>> = [
+    [agePill, experiencePill],
+    [heightPill, weightPill],
+    [collegePill, countryPill],
+    [draftPill, teamRecordPill],
+  ];
 
   return (
     <>
@@ -676,12 +937,35 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
                 </h1>
               </div>
             </div>
-            <p className="text-sm text-[color:var(--color-app-foreground-muted)]">{profile.scoutingReport}</p>
-            <div className="grid gap-3 sm:grid-cols-3">
-              <InfoPill label="Age" value={profile.age ? `${profile.age}` : "—"} />
-              <InfoPill label="Experience" value={profile.experience} />
-              <InfoPill label="Team record" value={profile.currentSeason?.teamRecord ?? "—"} />
-            </div>
+            <dl className="grid gap-2 rounded-2xl border border-[color:var(--color-app-border)] bg-[color:rgba(var(--color-app-foreground-rgb),0.04)] p-3 text-sm text-[color:var(--color-app-foreground)]">
+              {infoRows.map((row, rowIndex) => {
+                const rowItems = row.filter(
+                  (item): item is { label: string; value: string } => Boolean(item?.value),
+                );
+                if (rowItems.length === 0) {
+                  return null;
+                }
+                return (
+                  <div key={`row-${rowIndex}`} className="grid gap-2 sm:grid-cols-2">
+                    {rowItems.map((pill) => (
+                      <div
+                        key={`${pill.label}-${pill.value}`}
+                        className={`flex items-baseline justify-between gap-3 border-b border-[color:rgba(var(--color-app-foreground-rgb),0.08)] py-2 sm:border-b-0 sm:border-r sm:pr-4 sm:last:border-r-0 ${
+                          rowItems.length === 1 ? "sm:col-span-2" : ""
+                        }`}
+                      >
+                        <dt className="text-xs uppercase tracking-[0.3em] text-[color:rgba(var(--color-app-foreground-rgb),0.55)]">
+                          {pill.label}
+                        </dt>
+                        <dd className="text-right font-semibold text-[color:var(--color-app-foreground)]">
+                          {pill.value}
+                        </dd>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </dl>
             <div className="flex items-center gap-4 rounded-2xl border border-[color:var(--color-app-border)] bg-[color:rgba(var(--color-app-foreground-rgb),0.05)] p-3">
               <p className="text-[0.65rem] uppercase tracking-[0.4em] text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">Career rating</p>
               <div className="flex flex-1 items-center gap-3">
@@ -705,23 +989,13 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
                   </span>
                 ) : null}
               </div>
-              {awardSummary.length > 0 ? (
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {awardSummary.map((item) => (
-                    <span
-                      key={item.label}
-                      className="inline-flex items-center gap-1 rounded-full border border-[color:rgba(var(--color-app-foreground-rgb),0.15)] bg-[color:rgba(var(--color-app-foreground-rgb),0.05)] px-3 py-1 text-[0.75rem] font-medium text-[color:var(--color-app-foreground)]"
-                    >
-                      {item.label}
-                      <span className="text-[color:var(--color-app-foreground-muted)]">x{item.count}</span>
-                    </span>
-                  ))}
-                </div>
-              ) : null}
+              {awardSummary.length > 0 ? <AwardSummaryChips items={awardSummary} /> : null}
               {profile.awards.length === 0 ? (
                 <p className="mt-2 text-sm text-[color:var(--color-app-foreground-muted)]">No official league awards recorded.</p>
               ) : (
-                <AwardsAccordion awards={profile.awards} />
+                <Suspense fallback={<AwardsAccordionSkeleton />}>
+                  <AwardsAccordion awards={profile.awards} />
+                </Suspense>
               )}
             </div>
           </div>
@@ -827,11 +1101,13 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
         </section>
       ) : null}
 
-      <PlayerCareerResume
-        regularSeasons={profile.careerSeasons}
-        playoffSeasons={profile.careerSeasonsPlayoffs}
-        allStarSeasons={[...allStarSeasons]}
-      />
+      <Suspense fallback={<CareerResumeSkeleton />}>
+        <PlayerCareerResume
+          regularSeasons={profile.careerSeasons}
+          playoffSeasons={profile.careerSeasonsPlayoffs}
+          allStarSeasons={[...allStarSeasons]}
+        />
+      </Suspense>
     </>
   );
 }
@@ -860,5 +1136,28 @@ const InfoPill = ({ label, value }: { label: string; value: string }) => (
   <div className="rounded-2xl border border-[color:var(--color-app-border)] bg-[color:rgba(var(--color-app-foreground-rgb),0.04)] px-4 py-3 text-sm text-[color:var(--color-app-foreground-muted)]">
     <p className="text-xs uppercase tracking-[0.3em] text-[color:rgba(var(--color-app-foreground-rgb),0.55)]">{label}</p>
     <p className="mt-1 text-base font-semibold text-[color:var(--color-app-foreground)]">{value}</p>
+  </div>
+);
+
+const AwardsAccordionSkeleton = () => (
+  <div className="mt-3 space-y-2" aria-hidden="true">
+    <div className="skeleton-block h-4 w-2/3 rounded-full bg-[color:rgba(var(--color-app-foreground-rgb),0.15)]" />
+    <div className="skeleton-block h-4 w-4/5 rounded-full bg-[color:rgba(var(--color-app-foreground-rgb),0.12)]" />
+    <div className="skeleton-block h-4 w-1/2 rounded-full bg-[color:rgba(var(--color-app-foreground-rgb),0.1)]" />
+  </div>
+);
+
+const CareerResumeSkeleton = () => (
+  <div className="mt-20 space-y-10" aria-hidden="true">
+    <div className="space-y-3">
+      <div className="skeleton-block h-3 w-32 rounded-full bg-[color:rgba(var(--color-app-primary-rgb),0.3)]" />
+      <div className="skeleton-block h-7 w-48 rounded-2xl bg-[color:rgba(var(--color-app-foreground-rgb),0.12)]" />
+    </div>
+    <div className="skeleton-block h-64 rounded-3xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-elevated)]" />
+    <div className="space-y-3">
+      <div className="skeleton-block h-3 w-28 rounded-full bg-[color:rgba(var(--color-app-primary-rgb),0.3)]" />
+      <div className="skeleton-block h-7 w-44 rounded-2xl bg-[color:rgba(var(--color-app-foreground-rgb),0.12)]" />
+    </div>
+    <div className="skeleton-block h-64 rounded-3xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-elevated)]" />
   </div>
 );

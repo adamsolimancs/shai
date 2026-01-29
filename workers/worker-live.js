@@ -122,13 +122,13 @@ const CONFIG = {
   cacheTtlTeamsSec: Number(process.env.CACHE_TTL_TEAMS_SEC || 60 * 60 * 24),
 };
 
-if (!CONFIG.apiKey) {
-  console.error("NBA_API_KEY is required.");
-  process.exit(1);
-}
-if (!CONFIG.supabaseUrl || !CONFIG.supabaseKey) {
-  console.error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
-  process.exit(1);
+function validateConfig() {
+  if (!CONFIG.apiKey) {
+    throw new Error("NBA_API_KEY is required.");
+  }
+  if (!CONFIG.supabaseUrl || !CONFIG.supabaseKey) {
+    throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
+  }
 }
 
 const NBA_STATS_HEADERS = {
@@ -540,15 +540,40 @@ async function statsRequest(url) {
   return queued;
 }
 
+function computeRetryWaitMs(delay, retryAfterSeconds) {
+  const baseWaitMs =
+    Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
+      ? retryAfterSeconds * 1000
+      : delay + Math.floor(Math.random() * 200);
+  return Math.max(baseWaitMs, 30_000);
+}
+
 async function requestWithRetry(url) {
   let attempt = 0;
   let delay = CONFIG.apiRetryBaseDelayMs;
   while (attempt <= CONFIG.apiRetryMax) {
-    const response = await fetch(url, {
-      headers: {
-        "x-api-key": CONFIG.apiKey,
-      },
-    });
+    let response;
+    try {
+      response = await fetch(url, {
+        headers: {
+          "x-api-key": CONFIG.apiKey,
+        },
+      });
+    } catch (error) {
+      if (attempt >= CONFIG.apiRetryMax) {
+        recordApiFailure();
+        throw new Error(`API request failed: ${String(error)}`);
+      }
+      const waitMs = computeRetryWaitMs(delay);
+      log("API request failed; backing off", {
+        error: String(error),
+        wait_ms: waitMs,
+      });
+      await sleep(waitMs);
+      delay *= 2;
+      attempt += 1;
+      continue;
+    }
     if (response.ok) {
       const payload = await response.json();
       if (!payload || !payload.ok) {
@@ -567,11 +592,7 @@ async function requestWithRetry(url) {
       throw new Error(`API ${response.status}: ${body}`);
     }
     const retryAfter = Number(response.headers.get("retry-after"));
-    const baseWaitMs =
-      Number.isFinite(retryAfter) && retryAfter > 0
-        ? retryAfter * 1000
-        : delay + Math.floor(Math.random() * 200);
-    const waitMs = Math.max(baseWaitMs, 30_000);
+    const waitMs = computeRetryWaitMs(delay, retryAfter);
     log("API request throttled; backing off", {
       status: response.status,
       wait_ms: waitMs,
@@ -587,9 +608,25 @@ async function statsRequestWithRetry(url) {
   let attempt = 0;
   let delay = CONFIG.apiRetryBaseDelayMs;
   while (attempt <= CONFIG.apiRetryMax) {
-    const response = await fetch(url, {
-      headers: NBA_STATS_HEADERS,
-    });
+    let response;
+    try {
+      response = await fetch(url, {
+        headers: NBA_STATS_HEADERS,
+      });
+    } catch (error) {
+      if (attempt >= CONFIG.apiRetryMax) {
+        throw new Error(`NBA stats request failed: ${String(error)}`);
+      }
+      const waitMs = computeRetryWaitMs(delay);
+      log("NBA stats request failed; backing off", {
+        error: String(error),
+        wait_ms: waitMs,
+      });
+      await sleep(waitMs);
+      delay *= 2;
+      attempt += 1;
+      continue;
+    }
     if (response.ok) {
       return response.json();
     }
@@ -602,11 +639,7 @@ async function statsRequestWithRetry(url) {
       throw new Error(`NBA stats ${response.status}: ${body}`);
     }
     const retryAfter = Number(response.headers.get("retry-after"));
-    const baseWaitMs =
-      Number.isFinite(retryAfter) && retryAfter > 0
-        ? retryAfter * 1000
-        : delay + Math.floor(Math.random() * 200);
-    const waitMs = Math.max(baseWaitMs, 30_000);
+    const waitMs = computeRetryWaitMs(delay, retryAfter);
     log("NBA stats request throttled; backing off", {
       status: response.status,
       wait_ms: waitMs,
@@ -1065,6 +1098,61 @@ async function fetchLeagueDashPlayerStats(season, seasonType) {
   return extractResultSetRows(payload, "LeagueDashPlayerStats");
 }
 
+async function fetchLeagueDashPlayerBioStats(season, seasonType) {
+  const url = new URL("https://stats.nba.com/stats/leaguedashplayerbiostats");
+  const params = {
+    Season: season,
+    SeasonType: seasonType,
+    PerMode: "PerGame",
+    LeagueID: "00",
+    PlusMinus: "N",
+    PaceAdjust: "N",
+    Rank: "N",
+    Outcome: "",
+    Location: "",
+    Month: "0",
+    SeasonSegment: "",
+    DateFrom: "",
+    DateTo: "",
+    OpponentTeamID: "0",
+    VsConference: "",
+    VsDivision: "",
+    GameSegment: "",
+    Period: "0",
+    LastNGames: "0",
+    GameScope: "",
+    PlayerExperience: "",
+    PlayerPosition: "",
+    StarterBench: "",
+    TwoWay: "",
+    Conference: "",
+    Division: "",
+    PORound: "0",
+    ShotClockRange: "",
+    DistanceRange: "",
+  };
+  Object.entries(params).forEach(([key, value]) => {
+    url.searchParams.set(key, String(value));
+  });
+  const payload = await statsRequest(url.toString());
+  return extractResultSetRows(payload, "LeagueDashPlayerBioStats");
+}
+
+function mapPlayerBioRow(row) {
+  if (!row) return null;
+  const playerId = toPlayerId(row.PLAYER_ID ?? row.player_id ?? row.PERSON_ID ?? row.id);
+  if (!playerId) return null;
+  return {
+    player_id: playerId,
+    height: toText(row.PLAYER_HEIGHT ?? row.HEIGHT),
+    weight: toNumber(row.PLAYER_WEIGHT ?? row.WEIGHT),
+    draft_year: toNumber(row.DRAFT_YEAR),
+    draft_pick: toText(row.DRAFT_NUMBER ?? row.DRAFT_PICK),
+    country: toText(row.COUNTRY),
+    college: toText(row.COLLEGE),
+  };
+}
+
 async function fetchPlayerIds(season, { activeOnly = false, maxPlayers = 0 } = {}) {
   let page = 1;
   const pageSize = 200;
@@ -1144,6 +1232,17 @@ async function refreshPlayersForSeason(season) {
     page = nextPage;
   }
   logUpsert("players", total, { season });
+
+  try {
+    const bioRows = await fetchLeagueDashPlayerBioStats(season, "Regular Season");
+    const updates = (bioRows || []).map(mapPlayerBioRow).filter(Boolean);
+    if (updates.length) {
+      await supabaseUpsert("players", updates, "player_id");
+      logUpsert("players_bio", updates.length, { season });
+    }
+  } catch (error) {
+    log("Failed to refresh player bio stats", { season, error: String(error) });
+  }
 }
 
 async function refreshPlayers() {
@@ -1682,10 +1781,19 @@ function scheduleTask(name, intervalMs, fn, runImmediately = true) {
   setInterval(run, intervalMs);
 }
 
-log("Worker starting", {
-  apiBaseUrl: CONFIG.apiBaseUrl,
-  timeZone: CONFIG.timeZone,
-});
+function startWorker() {
+  try {
+    validateConfig();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : error);
+    process.exit(1);
+  }
+
+  log("Worker starting", {
+    apiBaseUrl: CONFIG.apiBaseUrl,
+    timeZone: CONFIG.timeZone,
+  });
+}
 
 async function runCronTask(entity, intervalMs, fn) {
   if (!(await shouldRun(entity, intervalMs))) {
@@ -1729,15 +1837,48 @@ async function runLive() {
   scheduleTask("boxscores-backfill", CONFIG.boxscoreBackfillIntervalMs, refreshRecentBoxscores, true);
 }
 
-if (CONFIG.workerMode === "live") {
-  runLive();
-} else {
-  runCron()
-    .then(() => {
-      log("Cron run complete");
-    })
-    .catch((error) => {
-      console.error("Cron run failed", error);
-      process.exitCode = 1;
-    });
+if (require.main === module) {
+  startWorker();
+  if (CONFIG.workerMode === "live") {
+    runLive();
+  } else {
+    runCron()
+      .then(() => {
+        log("Cron run complete");
+      })
+      .catch((error) => {
+        console.error("Cron run failed", error);
+        process.exitCode = 1;
+      });
+  }
 }
+
+module.exports = {
+  CONFIG,
+  startWorker,
+  validateConfig,
+  normalizeBaseUrl,
+  parseBoolean,
+  toText,
+  seasonToYear,
+  normalizeBooleanText,
+  toPlayerId,
+  toNumber,
+  cacheKey,
+  formatDateInTZ,
+  getSeasonForDate,
+  normalizeConflictValue,
+  isFinalStatus,
+  isLiveStatus,
+  parseSeasonList,
+  normalizeSeasonList,
+  seasonsMatch,
+  mapTeamRow,
+  mapPlayerRow,
+  mapGameRow,
+  applyRanks,
+  computeRetryWaitMs,
+  dedupeRowsForConflict,
+  parseCursor,
+  chunkArray,
+};
