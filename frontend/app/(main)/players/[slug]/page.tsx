@@ -1,12 +1,16 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { Metadata } from "next";
-import type { ReactNode } from "react";
+import { Suspense, type ReactNode } from "react";
 
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
 import { containsBannedTerm } from "@/lib/utils";
 import AwardsAccordion from "@/components/AwardsAccordion";
 import PlayerCareerResume from "@/components/PlayerCareerResume";
+
+export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
+export const revalidate = 0;
 
 type ResolutionPayload = {
   id: number;
@@ -463,6 +467,8 @@ function collapseCareerRows(rows: PlayerCareerStatsRow[]): PlayerCareerStatsRow[
   return [...bySeason.values()].sort((a, b) => b.season_id.localeCompare(a.season_id));
 }
 
+const noStore = { cache: "no-store" as const };
+
 async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfile | null> {
   if (!slug) {
     return null;
@@ -475,7 +481,10 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
     if (containsBannedTerm(query) || containsBannedTerm(slug)) {
       return null;
     }
-    const resolution = await nbaFetch<ResolveResult>(`/v1/resolve?player=${encodeURIComponent(query)}`);
+    const resolution = await nbaFetch<ResolveResult>(
+      `/v1/resolve?player=${encodeURIComponent(query)}`,
+      noStore,
+    );
     const playerId = resolution.player?.id;
     if (!playerId) {
       return null;
@@ -483,21 +492,19 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
     const [career, playoffsCareer, gamelog, awards] = await Promise.all([
       nbaFetch<PlayerCareerStatsRow[]>(
         `/v1/players/${playerId}/career?season_type=Regular%20Season`,
-        { next: { revalidate: 3600 } },
+        noStore,
       ),
       nbaFetch<PlayerCareerStatsRow[]>(
         `/v1/players/${playerId}/career?season_type=Playoffs`,
-        { next: { revalidate: 3600 } },
+        noStore,
       ),
       nbaFetch<PlayerGameLog[]>(
         `/v1/players/${playerId}/gamelog?season=${DEFAULT_SEASON}`,
-        { next: { revalidate: 300 } },
+        noStore,
       ),
       (async () => {
         try {
-          return await nbaFetch<PlayerAward[]>(`/v1/players/${playerId}/awards`, {
-            next: { revalidate: 3600 },
-          });
+          return await nbaFetch<PlayerAward[]>(`/v1/players/${playerId}/awards`, noStore);
         } catch (awardError) {
           if (process.env.NODE_ENV !== "production") {
             console.error("Failed to load player awards", awardError);
@@ -528,7 +535,7 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
       try {
         const standings = await nbaFetch<LeagueStandingRow[]>(
           `/v1/league_standings?season=${DEFAULT_SEASON}&league_id=00&season_type=Regular%20Season`,
-          { next: { revalidate: 900 } },
+          noStore,
         );
         standingsRow = standings.find((row) => row.team_id === teamId);
         if (!standingsRow && currentTeamAbbr) {
@@ -547,7 +554,7 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
       try {
         teamStats = await nbaFetch<TeamStatsRow[]>(
           `/v1/teams/${teamId}/stats?season=${statsSeasonId}&measure=Base&per_mode=PerGame`,
-          { next: { revalidate: 1800 } },
+          noStore,
         );
       } catch (error) {
         if (process.env.NODE_ENV !== "production") {
@@ -805,7 +812,9 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
               {profile.awards.length === 0 ? (
                 <p className="mt-2 text-sm text-[color:var(--color-app-foreground-muted)]">No official league awards recorded.</p>
               ) : (
-                <AwardsAccordion awards={profile.awards} />
+                <Suspense fallback={<AwardsAccordionSkeleton />}>
+                  <AwardsAccordion awards={profile.awards} />
+                </Suspense>
               )}
             </div>
           </div>
@@ -911,11 +920,13 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
         </section>
       ) : null}
 
-      <PlayerCareerResume
-        regularSeasons={profile.careerSeasons}
-        playoffSeasons={profile.careerSeasonsPlayoffs}
-        allStarSeasons={[...allStarSeasons]}
-      />
+      <Suspense fallback={<CareerResumeSkeleton />}>
+        <PlayerCareerResume
+          regularSeasons={profile.careerSeasons}
+          playoffSeasons={profile.careerSeasonsPlayoffs}
+          allStarSeasons={[...allStarSeasons]}
+        />
+      </Suspense>
     </>
   );
 }
@@ -944,5 +955,28 @@ const InfoPill = ({ label, value }: { label: string; value: string }) => (
   <div className="rounded-2xl border border-[color:var(--color-app-border)] bg-[color:rgba(var(--color-app-foreground-rgb),0.04)] px-4 py-3 text-sm text-[color:var(--color-app-foreground-muted)]">
     <p className="text-xs uppercase tracking-[0.3em] text-[color:rgba(var(--color-app-foreground-rgb),0.55)]">{label}</p>
     <p className="mt-1 text-base font-semibold text-[color:var(--color-app-foreground)]">{value}</p>
+  </div>
+);
+
+const AwardsAccordionSkeleton = () => (
+  <div className="mt-3 space-y-2" aria-hidden="true">
+    <div className="skeleton-block h-4 w-2/3 rounded-full bg-[color:rgba(var(--color-app-foreground-rgb),0.15)]" />
+    <div className="skeleton-block h-4 w-4/5 rounded-full bg-[color:rgba(var(--color-app-foreground-rgb),0.12)]" />
+    <div className="skeleton-block h-4 w-1/2 rounded-full bg-[color:rgba(var(--color-app-foreground-rgb),0.1)]" />
+  </div>
+);
+
+const CareerResumeSkeleton = () => (
+  <div className="mt-20 space-y-10" aria-hidden="true">
+    <div className="space-y-3">
+      <div className="skeleton-block h-3 w-32 rounded-full bg-[color:rgba(var(--color-app-primary-rgb),0.3)]" />
+      <div className="skeleton-block h-7 w-48 rounded-2xl bg-[color:rgba(var(--color-app-foreground-rgb),0.12)]" />
+    </div>
+    <div className="skeleton-block h-64 rounded-3xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-elevated)]" />
+    <div className="space-y-3">
+      <div className="skeleton-block h-3 w-28 rounded-full bg-[color:rgba(var(--color-app-primary-rgb),0.3)]" />
+      <div className="skeleton-block h-7 w-44 rounded-2xl bg-[color:rgba(var(--color-app-foreground-rgb),0.12)]" />
+    </div>
+    <div className="skeleton-block h-64 rounded-3xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-elevated)]" />
   </div>
 );

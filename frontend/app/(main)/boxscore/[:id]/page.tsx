@@ -280,7 +280,7 @@ async function fetchTraditionalBoxScore(gameId: string): Promise<TraditionalBoxS
         "x-nba-stats-origin": "stats",
         "x-nba-stats-token": "true",
       },
-      next: { revalidate: 120 },
+      cache: "no-store",
     });
 
     if (!response.ok) {
