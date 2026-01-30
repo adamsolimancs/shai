@@ -48,6 +48,7 @@ from ..services.store import (
     fetch_boxscore,
     fetch_games,
     fetch_league_standings,
+    fetch_player_gamelog_from_boxscores,
     fetch_teams,
 )
 from ..services.news import NewsService
@@ -101,10 +102,11 @@ def _log_data_source(
         payload["cache_hit"] = cache_meta.hit
         payload["cache_stale"] = cache_meta.stale
     logger.info(
-        "data served",
+        f"{request.method} {request.url.path} SOURCE={source}",
         extra={
             "request_id": getattr(request.state, "request_id", None),
             "path": request.url.path,
+            "method": request.method,
             "extra": payload,
         },
     )
@@ -175,6 +177,34 @@ def _allow_nocache(request: Request, settings: Settings, nocache: bool) -> bool:
         return False
     admin_key = request.headers.get("x-admin-key")
     return bool(settings.admin_api_key and admin_key == settings.admin_api_key)
+
+
+def _row_value(row: Any, key: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(key)
+    return getattr(row, key, None)
+
+
+def _row_to_dict(row: Any) -> dict[str, Any]:
+    if isinstance(row, dict):
+        return dict(row)
+    if hasattr(row, "model_dump"):
+        return row.model_dump()
+    return dict(row)
+
+
+def _needs_shooting(data: list[Any]) -> bool:
+    for row in data:
+        if (
+            _row_value(row, "field_goals_made") is None
+            or _row_value(row, "field_goals_attempted") is None
+            or _row_value(row, "three_point_made") is None
+            or _row_value(row, "three_point_attempted") is None
+            or _row_value(row, "field_goal_pct") is None
+            or _row_value(row, "three_point_pct") is None
+        ):
+            return True
+    return False
 
 
 @router.get("/meta", response_model=Envelope[MetaResponse])
@@ -419,6 +449,22 @@ async def player_gamelog(
         )
         _log_data_source(request, _source_from_cache(result.cache, "api"), result.cache)
         return success(request, result.data, cache=result.cache)
+    if supabase:
+        try:
+            data = await fetch_player_gamelog_from_boxscores(
+                supabase,
+                player_id=player_id,
+                season=season,
+                date_from=start,
+                date_to=end,
+            )
+            if data:
+                _log_data_source(request, "db")
+                return success(request, data, cache=CacheMeta(hit=False, stale=False))
+        except Exception:
+            logger.exception(
+                "supabase player gamelog fetch failed; falling back to nba api"
+            )
     nocache_allowed = _allow_nocache(request, settings, nocache)
     key = player_gamelog_key(settings, player_id, season, normalized_season_type)
 
@@ -436,6 +482,62 @@ async def player_gamelog(
         fetcher=fetcher,
         nocache=nocache_allowed,
     )
+    if supabase and data:
+        try:
+            if _needs_shooting(data):
+                fallback = await fetch_player_gamelog_from_boxscores(
+                    supabase,
+                    player_id=player_id,
+                    season=season,
+                    date_from=start,
+                    date_to=end,
+                )
+                if fallback:
+                    fallback_by_game = {
+                        row.get("game_id"): row for row in fallback if row.get("game_id")
+                    }
+                    enriched: list[dict[str, Any]] = []
+                    for row in data:
+                        base = _row_to_dict(row)
+                        fallback_row = fallback_by_game.get(base.get("game_id"))
+                        if fallback_row:
+                            if base.get("field_goals_made") is None:
+                                base["field_goals_made"] = fallback_row.get("field_goals_made")
+                            if base.get("field_goals_attempted") is None:
+                                base["field_goals_attempted"] = fallback_row.get(
+                                    "field_goals_attempted"
+                                )
+                            if base.get("three_point_made") is None:
+                                base["three_point_made"] = fallback_row.get("three_point_made")
+                            if base.get("three_point_attempted") is None:
+                                base["three_point_attempted"] = fallback_row.get(
+                                    "three_point_attempted"
+                                )
+                            if base.get("field_goal_pct") is None:
+                                base["field_goal_pct"] = fallback_row.get("field_goal_pct")
+                            if base.get("three_point_pct") is None:
+                                base["three_point_pct"] = fallback_row.get("three_point_pct")
+                        enriched.append(base)
+                    _log_data_source(request, "db_enrich", cache_meta)
+                    return success(request, enriched, cache=cache_meta)
+        except Exception:
+            logger.exception("supabase player gamelog enrich failed; returning api result")
+    if not data and supabase:
+        try:
+            fallback = await fetch_player_gamelog_from_boxscores(
+                supabase,
+                player_id=player_id,
+                season=season,
+                date_from=start,
+                date_to=end,
+            )
+            if fallback:
+                _log_data_source(request, "db_fallback")
+                return success(request, fallback, cache=CacheMeta(hit=False, stale=False))
+        except Exception:
+            logger.exception(
+                "supabase player gamelog fallback failed; returning api result"
+            )
     _log_data_source(request, _source_from_cache(cache_meta, "api"), cache_meta)
     return success(request, data, cache=cache_meta)
 

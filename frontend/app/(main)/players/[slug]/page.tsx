@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import type { Metadata } from "next";
-import { Suspense, type ReactNode } from "react";
+import { Suspense, cache } from "react";
 
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
 import { containsBannedTerm } from "@/lib/utils";
@@ -57,6 +57,12 @@ type PlayerGameLog = {
   blocks: number | null;
   turnovers: number | null;
   plus_minus: number | null;
+  field_goals_made: number | null;
+  field_goals_attempted: number | null;
+  three_point_made: number | null;
+  three_point_attempted: number | null;
+  field_goal_pct: number | null;
+  three_point_pct: number | null;
 };
 
 type TeamStatsRow = {
@@ -220,20 +226,6 @@ function safeAverage(total: number | null | undefined, games: number | null | un
     return 0;
   }
   return total / games;
-}
-
-function createSeededGenerator(seedSource: string): () => number {
-  let seed = 0;
-  for (let i = 0; i < seedSource.length; i += 1) {
-    seed = (seed * 31 + seedSource.charCodeAt(i)) >>> 0;
-  }
-  if (seed === 0) {
-    seed = 1;
-  }
-  return () => {
-    seed = (1664525 * seed + 1013904223) >>> 0;
-    return seed / 2 ** 32;
-  };
 }
 
 const awardText = (award: PlayerAward): string =>
@@ -516,6 +508,37 @@ function formatRecord(stats?: RecordLike): string | undefined {
   return `${stats.wins}-${stats.losses} (${Math.round(stats.win_pct * 100)}% W)`;
 }
 
+function formatStat(value?: number | null): string | null {
+  if (value === null || value === undefined || !Number.isFinite(value)) return null;
+  return String(value);
+}
+
+function formatShootingLine(
+  made: number | null | undefined,
+  attempted: number | null | undefined,
+  pct: number | null | undefined,
+  label: string,
+): string | null {
+  if (
+    made === null ||
+    made === undefined ||
+    attempted === null ||
+    attempted === undefined ||
+    !Number.isFinite(made) ||
+    !Number.isFinite(attempted) ||
+    attempted <= 0
+  ) {
+    return null;
+  }
+  const safePct = pct ?? (attempted > 0 ? made / attempted : null);
+  if (safePct === null || safePct === undefined || !Number.isFinite(safePct)) {
+    return null;
+  }
+  const madeText = Math.round(made);
+  const attemptedText = Math.round(attempted);
+  return `${madeText}/${attemptedText} ${label} (${(safePct * 100).toFixed(1)}%)`;
+}
+
 function formatStandingTeamName(row?: LeagueStandingRow): string | undefined {
   if (!row) return undefined;
   const full = `${row.team_city ?? ""} ${row.team_name ?? ""}`.trim();
@@ -579,11 +602,14 @@ function collapseCareerRows(rows: PlayerCareerStatsRow[]): PlayerCareerStatsRow[
 
 const noStore = { cache: "no-store" as const };
 
-async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfile | null> {
+const fetchPlayerProfile = cache(async (slug: string | undefined): Promise<PlayerProfile | null> => {
   if (!slug) {
     return null;
   }
   try {
+    if (process.env.NODE_ENV !== "production") {
+      console.log("fetchPlayerProfile", slug);
+    }
     const query = deslugify(slug);
     if (!query) {
       return null;
@@ -696,13 +722,13 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
     };
     const stats: SeasonStats | undefined = seasonRow
       ? {
-          pts: perGame(seasonRow.points),
-          reb: perGame(seasonRow.rebounds),
-          ast: perGame(seasonRow.assists),
-          stl: perGame(seasonRow.steals),
-          blk: perGame(seasonRow.blocks),
-          mins: perGame(seasonRow.minutes),
-        }
+        pts: perGame(seasonRow.points),
+        reb: perGame(seasonRow.rebounds),
+        ast: perGame(seasonRow.assists),
+        stl: perGame(seasonRow.steals),
+        blk: perGame(seasonRow.blocks),
+        mins: perGame(seasonRow.minutes),
+      }
       : undefined;
 
     const teamRecord = isActive ? formatRecord(standingsRow ?? teamStats[0]) : undefined;
@@ -755,7 +781,7 @@ async function fetchPlayerProfile(slug: string | undefined): Promise<PlayerProfi
     }
     throw error;
   }
-}
+});
 
 export async function generateStaticParams() {
   try {
@@ -825,46 +851,10 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
     activeSeasonId && !isActive
       ? "Last Active Season"
       : `${profile.teamAbbreviation ?? "NBA"} · ${activeSeasonId ?? DEFAULT_SEASON}`;
-  const seasonRating = "A-";
-  const gradeOptions = ["A+", "A", "A-", "B+", "B"];
-  const mockMatchups = ["vs BOS", "@ LAL", "vs DEN", "@ MIA", "vs DAL", "@ PHX"];
-  const statKeys = ["PTS", "REB", "AST", "STL", "BLK", "3PM"];
-  const mockPerformanceBase = Date.UTC(2024, 0, 20);
-  const seededRandom = createSeededGenerator(`${profile.playerId}-${profile.slug}`);
-  const randomInRange = (min: number, max: number, decimals = 0) => (min + seededRandom() * (max - min)).toFixed(decimals);
-  const randomValueForStat = (label: string) => {
-    switch (label) {
-      case "PTS":
-        return randomInRange(15, 40, 0);
-      case "REB":
-        return randomInRange(5, 11, 0);
-      case "AST":
-        return randomInRange(4, 9, 0);
-      case "STL":
-      case "BLK":
-        return randomInRange(1, 3, 1);
-      case "3PM":
-        return randomInRange(1, 5, 1);
-      default:
-        return randomInRange(2, 12, 1);
-    }
-  };
-  const generateMockStats = () => {
-    const shuffled = [...statKeys]
-      .map((label) => ({ label, sort: seededRandom() }))
-      .sort((a, b) => a.sort - b.sort)
-      .map(({ label }) => label);
-    return shuffled.slice(0, 3).map((label) => ({
-      label,
-      value: randomValueForStat(label),
-    }));
-  };
-  const topPerformances = Array.from({ length: 3 }, (_, index) => ({
-    game: mockMatchups[index % mockMatchups.length],
-    date: new Date(mockPerformanceBase - index * 86400000).toLocaleDateString(),
-    grade: gradeOptions[(Math.floor(seededRandom() * gradeOptions.length) + index) % gradeOptions.length],
-    stats: generateMockStats(),
-  }));
+  const recentGames = [...profile.recentGames]
+    .filter((game) => Number.isFinite(game.minutes) && game.minutes > 0)
+    .sort((a, b) => new Date(b.game_date).getTime() - new Date(a.game_date).getTime())
+    .slice(0, 5);
   const awardSummary = normalizeAwardSummary(profile.awards, profile.rings, profile.ringSeasons);
   const allStarSeasons = extractAllStarSeasons(profile.awards);
   const parseHeightInches = (height?: string | null): number | null => {
@@ -895,9 +885,9 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
     const kg = Math.round(weight * 0.453592);
     return `${weight} lbs (${kg} kg)`;
   };
-  const draftDetails = [profile.bio?.draft_pick ?? null, profile.bio?.draft_year ? `${profile.bio.draft_year}` : null]
-    .filter(Boolean)
-    .join(", ");
+  const draftYear = profile.bio?.draft_year ? `${profile.bio.draft_year}` : null;
+  const draftPick = profile.bio?.draft_pick ?? null;
+  const draftDetails = draftYear && draftPick ? `${draftYear} - ${draftPick}` : draftYear ?? draftPick ?? "";
   const agePill = { label: "Age", value: profile.age ? `${profile.age}` : "—" };
   const experiencePill = { label: "Experience", value: profile.experience };
   const heightPill = { label: "Height", value: formatHeight(profile.bio?.height) };
@@ -905,68 +895,61 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
   const draftPill = { label: "Draft", value: draftDetails || null };
   const collegePill = { label: "College", value: profile.bio?.college ?? null };
   const countryPill = { label: "Country", value: profile.bio?.country ?? null };
-  const teamRecordPill = isActive ? { label: "Team record", value: profile.currentSeason?.teamRecord ?? "—" } : null;
   const infoRows: Array<Array<{ label: string; value: string | null } | null>> = [
     [agePill, experiencePill],
     [heightPill, weightPill],
     [collegePill, countryPill],
-    [draftPill, teamRecordPill],
+    [draftPill],
   ];
+  const infoItems = infoRows.flat().filter((item): item is { label: string; value: string } => Boolean(item?.value));
 
   return (
     <>
       <div className="grid items-stretch gap-6 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
         <section className="w-full rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface)] px-5 py-5 shadow-lg shadow-[rgba(10,31,68,0.08)]">
           <div className="flex h-full flex-col gap-4 text-[color:var(--color-app-foreground)]">
-            <div className="flex items-center gap-4">
-              <div className="shrink-0 rounded-full border border-[color:rgba(var(--color-app-foreground-rgb),0.15)] bg-[color:rgba(var(--color-app-foreground-rgb),0.08)] p-2 backdrop-blur">
-                <div
-                  className="h-28 w-28 rounded-full border border-[color:rgba(var(--color-app-foreground-rgb),0.35)] bg-cover bg-center shadow-inner shadow-black/40 md:h-32 md:w-32"
-                  style={{ backgroundImage: `url(${profile.headshot})` }}
-                />
-              </div>
-              <div>
-                <p className="text-[0.65rem] uppercase tracking-[0.45em] text-[color:rgba(var(--color-app-primary-rgb),0.65)]">
-                  {eyebrowText}
-                </p>
-                <h1 className="mt-2 text-3xl font-semibold md:text-4xl">
-                  {profile.name}
-                  <span className="ml-2 text-base font-normal text-[color:rgba(var(--color-app-foreground-rgb),0.65)]">
-                    {profile.teamAbbreviation ? `· ${profile.teamAbbreviation}` : ""}
+            <div className="grid gap-6 md:grid-cols-[minmax(0,1.1fr)_minmax(0,0.7fr)]">
+              <div className="flex flex-col items-center gap-4 text-center md:self-center md:-translate-y-3">
+                <div className="rounded-full border border-[color:rgba(var(--color-app-foreground-rgb),0.15)] bg-[color:rgba(var(--color-app-foreground-rgb),0.08)] p-2 backdrop-blur">
+                  <div
+                    className="h-28 w-28 rounded-full border border-[color:rgba(var(--color-app-foreground-rgb),0.35)] bg-cover bg-center shadow-inner shadow-black/40 md:h-32 md:w-32"
+                    style={{ backgroundImage: `url(${profile.headshot})` }}
+                  />
+                </div>
+                <div>
+                  <h1 className="text-3xl font-semibold md:text-4xl">
+                    {profile.name}
+                  </h1>
+                  <span className="mt-2 block text-[0.65rem] uppercase tracking-[0.45em] text-[color:rgba(var(--color-app-primary-rgb),0.65)]">
+                    {eyebrowText}
                   </span>
-                </h1>
+                </div>
               </div>
-            </div>
-            <dl className="grid gap-2 rounded-2xl border border-[color:var(--color-app-border)] bg-[color:rgba(var(--color-app-foreground-rgb),0.04)] p-3 text-sm text-[color:var(--color-app-foreground)]">
-              {infoRows.map((row, rowIndex) => {
-                const rowItems = row.filter(
-                  (item): item is { label: string; value: string } => Boolean(item?.value),
-                );
-                if (rowItems.length === 0) {
-                  return null;
-                }
-                return (
-                  <div key={`row-${rowIndex}`} className="grid gap-2 sm:grid-cols-2">
-                    {rowItems.map((pill) => (
+              <div className="w-full justify-self-end md:max-w-[14rem]">
+                {infoItems.length === 0 ? (
+                  <p className="text-sm text-[color:var(--color-app-foreground-muted)]">
+                    Bio details unavailable.
+                  </p>
+                ) : (
+                  <dl className="grid gap-1 text-center text-[0.7rem] text-[color:var(--color-app-foreground)] md:text-left">
+                    {infoItems.map((pill, index) => (
                       <div
                         key={`${pill.label}-${pill.value}`}
-                        className={`flex items-baseline justify-between gap-3 border-b border-[color:rgba(var(--color-app-foreground-rgb),0.08)] py-2 sm:border-b-0 sm:border-r sm:pr-4 sm:last:border-r-0 ${
-                          rowItems.length === 1 ? "sm:col-span-2" : ""
-                        }`}
+                        className={`w-full pb-1.5 ${index === infoItems.length - 1 ? "" : "border-b border-[color:rgba(var(--color-app-foreground-rgb),0.08)]"}`}
                       >
-                        <dt className="text-xs uppercase tracking-[0.3em] text-[color:rgba(var(--color-app-foreground-rgb),0.55)]">
+                        <dt className="text-[0.5rem] uppercase tracking-[0.22em] text-[color:rgba(var(--color-app-foreground-rgb),0.55)]">
                           {pill.label}
                         </dt>
-                        <dd className="text-right font-semibold text-[color:var(--color-app-foreground)]">
+                        <dd className="mt-0.5 text-[0.75rem] font-semibold text-[color:var(--color-app-foreground)]">
                           {pill.value}
                         </dd>
                       </div>
                     ))}
-                  </div>
-                );
-              })}
-            </dl>
-            <div className="flex items-center gap-4 rounded-2xl border border-[color:var(--color-app-border)] bg-[color:rgba(var(--color-app-foreground-rgb),0.05)] p-3">
+                  </dl>
+                )}
+              </div>
+            </div>
+            <div className="flex items-center gap-4 rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-background-soft)] p-4">
               <p className="text-[0.65rem] uppercase tracking-[0.4em] text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">Career rating</p>
               <div className="flex flex-1 items-center gap-3">
                 <p className="text-3xl font-semibold text-[color:var(--color-app-foreground)]">{profile.rating}</p>
@@ -981,7 +964,7 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
             <div className="rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-background-soft)] p-4">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-[0.65rem] uppercase tracking-[0.4em] text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">
-                  Career awards
+                  Accolades
                 </p>
                 {profile.awards.length > 0 ? (
                   <span className="text-xs font-semibold text-[color:var(--color-app-foreground-muted)]">
@@ -1004,102 +987,75 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-[0.6rem] uppercase tracking-[0.45em] text-[color:rgba(var(--color-app-foreground-rgb),0.55)]">Season</p>
-              <h2 className="text-xl font-semibold">Top Performances</h2>
+              <h2 className="text-xl font-semibold">Recent Games</h2>
             </div>
             <span className="text-xs text-[color:rgba(var(--color-app-foreground-rgb),0.65)]">{profile.currentSeason?.seasonId ?? DEFAULT_SEASON}</span>
           </div>
           <div className="mt-4 flex-1 space-y-3">
-            {topPerformances.map((perf, index) => (
-              <div
-                key={`${perf.game}-${index}`}
-                className="rounded-2xl border border-[color:var(--color-app-border)] bg-[color:rgba(var(--color-app-foreground-rgb),0.05)] px-4 py-3"
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.3em] text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">{perf.game}</p>
-                    <p className="text-sm text-[color:var(--color-app-foreground-muted)]">{perf.date}</p>
+            {recentGames.length === 0 ? (
+              <p className="text-sm text-[color:var(--color-app-foreground-muted)]">
+                No game logs yet for {DEFAULT_SEASON}.
+              </p>
+            ) : (
+              recentGames.map((game) => (
+                <div
+                  key={game.game_id}
+                  className="rounded-2xl border border-[color:var(--color-app-border)] bg-[color:rgba(var(--color-app-foreground-rgb),0.05)] px-4 py-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs uppercase tracking-[0.3em] text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">{game.matchup}</p>
+                      <p className="text-sm text-[color:var(--color-app-foreground-muted)]">{new Date(game.game_date).toLocaleDateString()}</p>
+                    </div>
+                    <span className="text-xs text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">{game.minutes} min</span>
                   </div>
-                  <span className="rounded-full border border-[color:rgba(var(--color-app-foreground-rgb),0.25)] px-3 py-1 text-sm font-semibold text-[color:var(--color-app-foreground)]">
-                    {perf.grade}
-                  </span>
+                  <div className="mt-3 text-sm text-[color:var(--color-app-foreground-muted)]">
+                    {(() => {
+                      const segments: string[] = [];
+                      const points = formatStat(game.points);
+                      const rebounds = formatStat(game.rebounds);
+                      const assists = formatStat(game.assists);
+                      if (points && rebounds && assists) {
+                        segments.push(`${points}/${rebounds}/${assists}`);
+                      }
+                      const steals = formatStat(game.steals);
+                      const blocks = formatStat(game.blocks);
+                      if (steals && blocks) {
+                        segments.push(`${steals} STL, ${blocks} BLK`);
+                      } else if (steals) {
+                        segments.push(`${steals} STL`);
+                      } else if (blocks) {
+                        segments.push(`${blocks} BLK`);
+                      }
+                      const fgLine = formatShootingLine(
+                        game.field_goals_made,
+                        game.field_goals_attempted,
+                        game.field_goal_pct,
+                        "FG",
+                      );
+                      const tpLine = formatShootingLine(
+                        game.three_point_made,
+                        game.three_point_attempted,
+                        game.three_point_pct,
+                        "3P",
+                      );
+                      const shooting = [fgLine, tpLine].filter(Boolean).join(", ");
+                      if (shooting) {
+                        segments.push(shooting);
+                      }
+                      return (
+                        <span className="font-semibold text-[color:var(--color-app-foreground)]">
+                          {segments.join(" — ")}
+                        </span>
+                      );
+                    })()}
+                  </div>
                 </div>
-                <div className="mt-3 flex flex-wrap gap-2 text-sm">
-                  {perf.stats.map((stat) => (
-                    <span
-                      key={stat.label}
-                      className="rounded-full border border-[color:rgba(var(--color-app-foreground-rgb),0.15)] bg-[color:rgba(var(--color-app-foreground-rgb),0.08)] px-3 py-1 text-[color:var(--color-app-foreground)]"
-                    >
-                      <span className="text-[color:var(--color-app-foreground-muted)]">{stat.label}</span>{" "}
-                      <span className="font-semibold">{stat.value}</span>
-                    </span>
-                  ))}
-                </div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         </aside>
       </div>
-
-      {profile.currentSeason?.stats ? (
-        <section className="mt-16">
-          <SectionHeading
-            eyebrow={eyebrowText}
-            title={`${profile.currentSeason.seasonId} production`}
-            rightSlot={
-              <div className="text-right text-[color:var(--color-app-foreground)]">
-                <p className="text-[0.6rem] uppercase tracking-[0.45em] text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">Season rating</p>
-                <p className="text-5xl font-black leading-none">{seasonRating}</p>
-              </div>
-            }
-          />
-          <div className="grid gap-5 md:grid-cols-3">
-            <StatCard label="Points" value={profile.currentSeason.stats.pts} suffix="PPG" />
-            <StatCard label="Rebounds" value={profile.currentSeason.stats.reb} suffix="RPG" />
-            <StatCard label="Assists" value={profile.currentSeason.stats.ast} suffix="APG" />
-            <StatCard label="Steals" value={profile.currentSeason.stats.stl} suffix="SPG" />
-            <StatCard label="Blocks" value={profile.currentSeason.stats.blk} suffix="BPG" />
-            <StatCard label="Minutes" value={profile.currentSeason.stats.mins} suffix="MPG" />
-          </div>
-          <div className="mt-10 grid gap-6 lg:grid-cols-2">
-            <div className="rounded-3xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface)] p-6">
-              <p className="text-xs uppercase tracking-[0.4em] text-[color:rgba(var(--color-app-foreground-rgb),0.55)]">Recent games</p>
-              <div className="mt-4 space-y-4">
-                {profile.recentGames.length === 0 ? (
-                  <p className="text-sm text-[color:var(--color-app-foreground-muted)]">No game logs yet for {DEFAULT_SEASON}.</p>
-                ) : (
-                  profile.recentGames.map((game) => (
-                    <div
-                      key={game.game_id}
-                      className="flex items-center justify-between rounded-2xl border border-[color:rgba(var(--color-app-foreground-rgb),0.12)] bg-[color:rgba(var(--color-app-foreground-rgb),0.04)] px-4 py-3 text-sm text-[color:var(--color-app-foreground)]"
-                    >
-                      <div>
-                        <p className="font-semibold">{game.matchup}</p>
-                        <p className="text-xs text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">{new Date(game.game_date).toLocaleDateString()}</p>
-                      </div>
-                      <div className="flex gap-4 text-right">
-                        <span>{game.points} pts</span>
-                        <span>{game.rebounds} reb</span>
-                        <span>{game.assists} ast</span>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
-            <div className="rounded-3xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface)] p-6">
-              <p className="text-xs uppercase tracking-[0.4em] text-[color:rgba(var(--color-app-foreground-rgb),0.55)]">Season insights</p>
-              <div className="mt-4 grid gap-4">
-                {profile.currentSeason.insights.map((insight) => (
-                  <div key={insight.label} className="rounded-2xl border border-[color:rgba(var(--color-app-foreground-rgb),0.12)] bg-[color:rgba(var(--color-app-foreground-rgb),0.04)] px-4 py-3">
-                    <p className="text-xs uppercase tracking-[0.3em] text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">{insight.label}</p>
-                    <p className="mt-1 text-xl font-semibold text-[color:var(--color-app-foreground)]">{insight.value}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </section>
-      ) : null}
 
       <Suspense fallback={<CareerResumeSkeleton />}>
         <PlayerCareerResume
@@ -1111,33 +1067,6 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
     </>
   );
 }
-
-const SectionHeading = ({ eyebrow, title, rightSlot }: { eyebrow: string; title: string; rightSlot?: ReactNode }) => (
-  <div className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-    <div>
-      <p className="text-xs uppercase tracking-[0.35em] text-[color:rgba(var(--color-app-primary-rgb),0.65)]">{eyebrow}</p>
-      <h2 className="mt-2 text-2xl font-semibold text-[color:var(--color-app-foreground)]">{title}</h2>
-    </div>
-    {rightSlot ? <div className="flex-shrink-0">{rightSlot}</div> : null}
-  </div>
-);
-
-const StatCard = ({ label, value, suffix }: { label: string; value: number; suffix: string }) => (
-  <article className="rounded-3xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface)] p-5 shadow-lg shadow-[rgba(10,31,68,0.1)]">
-    <p className="text-xs uppercase tracking-[0.3em] text-[color:rgba(var(--color-app-foreground-rgb),0.55)]">{label}</p>
-    <p className="mt-3 text-3xl font-semibold text-[color:var(--color-app-foreground)]">
-      {value.toFixed(1)}
-      <span className="ml-1 text-sm text-[color:var(--color-app-foreground-muted)]">{suffix}</span>
-    </p>
-  </article>
-);
-
-const InfoPill = ({ label, value }: { label: string; value: string }) => (
-  <div className="rounded-2xl border border-[color:var(--color-app-border)] bg-[color:rgba(var(--color-app-foreground-rgb),0.04)] px-4 py-3 text-sm text-[color:var(--color-app-foreground-muted)]">
-    <p className="text-xs uppercase tracking-[0.3em] text-[color:rgba(var(--color-app-foreground-rgb),0.55)]">{label}</p>
-    <p className="mt-1 text-base font-semibold text-[color:var(--color-app-foreground)]">{value}</p>
-  </div>
-);
 
 const AwardsAccordionSkeleton = () => (
   <div className="mt-3 space-y-2" aria-hidden="true">

@@ -98,6 +98,7 @@ class Game(BaseModel):
     away_team_score: int
     season: str
     location: str | None = None
+    status: str | None = None
 
 
 class LeagueStanding(BaseModel):
@@ -135,6 +136,12 @@ class PlayerGameLog(BaseModel):
     blocks: float | None = None
     turnovers: float | None = None
     plus_minus: float | None = None
+    field_goals_made: float | None = None
+    field_goals_attempted: float | None = None
+    three_point_made: float | None = None
+    three_point_attempted: float | None = None
+    field_goal_pct: float | None = None
+    three_point_pct: float | None = None
 
 
 class BoxScoreTeamLeader(BaseModel):

@@ -34,7 +34,8 @@ export async function nbaFetch<T>(
     console.log("NBA Fetch:", url);
   }
 
-  const cache = init?.cache ?? DEFAULT_CACHE;
+  const hasRevalidate = typeof init?.next?.revalidate === "number";
+  const cache = init?.cache ?? (hasRevalidate ? "force-cache" : DEFAULT_CACHE);
   const requestInit: RequestInit & { next?: { revalidate?: number } } = {
     ...init,
     cache,

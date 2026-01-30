@@ -829,6 +829,12 @@ class NBAStatsClient:
             "blocks": self._safe_float(row.get("BLK")),
             "turnovers": self._safe_float(row.get("TOV")),
             "plus_minus": self._safe_float(row.get("PLUS_MINUS")),
+            "field_goals_made": self._safe_float(row.get("FGM")),
+            "field_goals_attempted": self._safe_float(row.get("FGA")),
+            "three_point_made": self._safe_float(row.get("FG3M")),
+            "three_point_attempted": self._safe_float(row.get("FG3A")),
+            "field_goal_pct": self._safe_float(row.get("FG_PCT")),
+            "three_point_pct": self._safe_float(row.get("FG3_PCT")),
         }
 
     def _build_boxscore_details(self, game_id: str) -> dict[str, Any]:
