@@ -49,6 +49,7 @@ from ..services.store import (
     fetch_games,
     fetch_league_standings,
     fetch_player_gamelog_from_boxscores,
+    fetch_team_details,
     fetch_teams,
 )
 from ..services.news import NewsService
@@ -59,6 +60,7 @@ from ..serving_cache import (
     player_gamelog_key,
     scoreboard_key,
     standings_key,
+    team_details_key,
     teams_key,
 )
 from ..supabase import SupabaseClient
@@ -631,9 +633,30 @@ async def player_shots(
 @router.get("/teams/{team_id}/details", response_model=Envelope[TeamDetail])
 async def team_details(
     request: Request,
+    cache: CacheDep,
+    supabase: SupabaseDep,
     client: NBAClientDep,
+    settings: SettingsDep,
     team_id: int,
+    nocache: bool = Query(False, description="Bypass cache (admin only)."),
 ) -> Envelope[TeamDetail]:
+    if supabase:
+        nocache_allowed = _allow_nocache(request, settings, nocache)
+        key = team_details_key(settings, team_id)
+        try:
+            data, cache_meta = await get_or_set_cache(
+                cache=cache,
+                redis_client=request.app.state.redis,
+                key=key,
+                ttl=TTLS.team_details,
+                fetcher=lambda: fetch_team_details(supabase, team_id),
+                nocache=nocache_allowed,
+            )
+            if data is not None:
+                _log_data_source(request, _source_from_cache(cache_meta, "db"), cache_meta)
+                return success(request, data, cache=cache_meta)
+        except Exception:
+            logger.exception("supabase team details fetch failed; falling back to nba api")
     result = await client.get_team_details(team_id)
     _log_data_source(request, _source_from_cache(result.cache, "api"), result.cache)
     return success(request, result.data, cache=result.cache)

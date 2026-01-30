@@ -4,6 +4,7 @@ import { LeagueStandings, type LeagueStandingsConference } from "@/components/Le
 import HeroSearch from "@/components/HeroSearch";
 import LocalGameTime from "@/components/LocalGameTime";
 import ScoreCard from "@/components/ScoreCard";
+import StarBorder from "@/components/StarBorder";
 import { buildTimeFallback, isFinalGame } from "@/lib/gameUtils";
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
 import { slugifySegment } from "@/lib/utils";
@@ -334,10 +335,14 @@ export default async function HomePage() {
         <SectionTitle title="Player Spotlight" eyebrow="Trending performers" link={{ href: "/players", label: "View all players →" }} />
         <div className="grid gap-4 sm:gap-6 md:grid-cols-3">
           {players.map((player) => (
-            <Link
+            <StarBorder
               key={player.id}
+              as={Link}
               href={`/players/${player.id}`}
-              className="group rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/30 transition hover:border-[color:var(--color-app-primary)] hover:bg-slate-900/80 hover:ring-2 hover:ring-[color:var(--color-app-primary-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30 sm:p-6"
+              className="group block w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+              contentClassName="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/30 transition hover:border-[color:var(--color-app-primary)] hover:bg-slate-900/80 hover:ring-2 hover:ring-[color:var(--color-app-primary-soft)] sm:p-6"
+              color="var(--color-star-border)"
+              speed="5.5s"
             >
               <div className="flex items-center justify-between text-xs text-white/60 sm:text-sm">
                 <span className="font-semibold text-white">{player.name}</span>
@@ -363,7 +368,7 @@ export default async function HomePage() {
                   </dd>
                 </div>
               </dl>
-            </Link>
+            </StarBorder>
           ))}
         </div>
       </section>

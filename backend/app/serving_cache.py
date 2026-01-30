@@ -16,6 +16,7 @@ class CacheTTLs:
     boxscore_final: int = 60 * 60 * 12
     standings: int = 60 * 15
     teams: int = 60 * 60 * 24
+    team_details: int = 60 * 60 * 24
     player_gamelog: int = 60 * 60 * 6
 
 
@@ -47,6 +48,10 @@ def standings_key(settings: Settings, season: str, league_id: str, season_type: 
 
 def teams_key(settings: Settings, season: str) -> str:
     return cache_key(settings, "teams", season)
+
+
+def team_details_key(settings: Settings, team_id: int) -> str:
+    return cache_key(settings, "team_details", str(team_id))
 
 
 def player_gamelog_key(settings: Settings, player_id: int, season: str, season_type: str) -> str:

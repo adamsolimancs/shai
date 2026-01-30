@@ -4,7 +4,7 @@ import type { Metadata } from "next";
 import { Suspense, cache } from "react";
 
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
-import { containsBannedTerm } from "@/lib/utils";
+import { containsBannedTerm, slugifySegment } from "@/lib/utils";
 import AwardsAccordion from "@/components/AwardsAccordion";
 import AwardSummaryChips from "@/components/AwardSummaryChips";
 import PlayerCareerResume from "@/components/PlayerCareerResume";
@@ -847,10 +847,13 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
   }
   const activeSeasonId = profile.currentSeason?.seasonId;
   const isActive = activeSeasonId === DEFAULT_SEASON;
-  const eyebrowText =
-    activeSeasonId && !isActive
-      ? "Last Active Season"
-      : `${profile.teamAbbreviation ?? "NBA"} · ${activeSeasonId ?? DEFAULT_SEASON}`;
+  const teamLink =
+    profile.teamAbbreviation && slugifySegment(profile.teamAbbreviation)
+      ? {
+          label: profile.teamAbbreviation,
+          href: `/teams/${slugifySegment(profile.teamAbbreviation)}`,
+        }
+      : null;
   const recentGames = [...profile.recentGames]
     .filter((game) => Number.isFinite(game.minutes) && game.minutes > 0)
     .sort((a, b) => new Date(b.game_date).getTime() - new Date(a.game_date).getTime())
@@ -921,7 +924,24 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
                     {profile.name}
                   </h1>
                   <span className="mt-2 block text-[0.65rem] uppercase tracking-[0.45em] text-[color:rgba(var(--color-app-primary-rgb),0.65)]">
-                    {eyebrowText}
+                    {activeSeasonId && !isActive ? (
+                      "Last Active Season"
+                    ) : (
+                      <>
+                        {teamLink ? (
+                          <Link
+                            href={teamLink.href}
+                            className="transition hover:text-[color:var(--color-app-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:rgba(var(--color-app-primary-rgb),0.5)]"
+                          >
+                            {teamLink.label}
+                          </Link>
+                        ) : (
+                          <span>{profile.teamAbbreviation ?? "NBA"}</span>
+                        )}
+                        <span className="px-2">·</span>
+                        <span>{activeSeasonId ?? DEFAULT_SEASON}</span>
+                      </>
+                    )}
                   </span>
                 </div>
               </div>

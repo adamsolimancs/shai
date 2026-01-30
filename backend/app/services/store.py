@@ -31,6 +31,39 @@ def _parse_json(value: Any, default: Any) -> Any:
     return default
 
 
+def _parse_list(value: Any) -> list[str]:
+    parsed = _parse_json(value, [])
+    if isinstance(parsed, list):
+        cleaned: list[str] = []
+        for item in parsed:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if text:
+                cleaned.append(text)
+        return cleaned
+    if isinstance(parsed, str):
+        cleaned = parsed.strip()
+        return [cleaned] if cleaned else []
+    if parsed is None:
+        return []
+    return [str(parsed)]
+
+
+def _parse_dict(value: Any) -> dict[str, str]:
+    parsed = _parse_json(value, {})
+    if not isinstance(parsed, dict):
+        return {}
+    cleaned: dict[str, str] = {}
+    for key, item in parsed.items():
+        if item is None:
+            continue
+        text = str(item).strip()
+        if text:
+            cleaned[str(key)] = text
+    return cleaned
+
+
 def _parse_game_date(value: Any) -> date | None:
     if isinstance(value, date):
         return value
@@ -149,6 +182,37 @@ async def fetch_league_standings(
             }
         )
     return results
+
+
+async def fetch_team_details(
+    supabase: SupabaseClient, team_id: int
+) -> dict[str, Any] | None:
+    team = await supabase.select_one("teams", filters={"team_id": f"eq.{team_id}"})
+    if not team:
+        return None
+    detail = await supabase.select_one(
+        "team_details", filters={"team_id": f"eq.{team_id}"}
+    )
+    detail = detail or {}
+    return {
+        "team_id": team_id,
+        "abbreviation": team.get("abbreviation"),
+        "nickname": team.get("name"),
+        "city": team.get("city"),
+        "year_founded": _coerce_int(detail.get("year_founded")),
+        "arena": detail.get("arena"),
+        "arena_capacity": _coerce_int(detail.get("arena_capacity")),
+        "owner": detail.get("owner"),
+        "general_manager": detail.get("general_manager"),
+        "head_coach": detail.get("head_coach"),
+        "dleague_affiliation": detail.get("dleague_affiliation"),
+        "championships": _parse_list(detail.get("championships")),
+        "conference_titles": _parse_list(detail.get("conference_titles")),
+        "division_titles": _parse_list(detail.get("division_titles")),
+        "hall_of_famers": _parse_list(detail.get("hall_of_famers")),
+        "retired_numbers": _parse_list(detail.get("retired_numbers")),
+        "social_sites": _parse_dict(detail.get("social_sites")),
+    }
 
 
 async def fetch_team_by_abbr(
