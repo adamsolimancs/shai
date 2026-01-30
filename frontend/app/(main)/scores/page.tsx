@@ -168,11 +168,12 @@ export default async function ScoresPage() {
                   <p className="text-sm font-semibold tracking-[0.3em] text-white/60">{group.label}</p>
                   <span className="text-xs uppercase text-white/60">{group.games.length} games</span>
                 </div>
-                <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+                <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3 xl:mx-auto xl:max-w-6xl xl:justify-items-center">
                   {group.games.map((game) => (
                     <ScoreCard
                       key={game.id}
                       href={`/boxscore/${game.id}`}
+                      className="w-full max-w-[360px]"
                       timeLabel={<LocalGameTime value={game.rawDate} fallback={game.timeFallback} showTime={game.showTime} />}
                       status={game.status}
                       isFinal={game.isFinal}

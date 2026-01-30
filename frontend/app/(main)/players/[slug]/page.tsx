@@ -503,6 +503,16 @@ function deriveRating(stats?: SeasonStats, career?: PlayerCareerStatsRow[]): num
   return Math.max(floor, Math.round(bounded));
 }
 
+function getCareerTitle(rating: number): string {
+  if (!Number.isFinite(rating)) return "NBA Player";
+  if (rating >= 98) return "GOAT Status";
+  if (rating >= 94) return "All Time Great";
+  if (rating >= 90) return "NBA Legend";
+  if (rating >= 84) return "Solid Career";
+  if (rating >= 75) return "Streets Won't Forget";
+  return "NBA Player";
+}
+
 function formatRecord(stats?: RecordLike): string | undefined {
   if (!stats) return undefined;
   return `${stats.wins}-${stats.losses} (${Math.round(stats.win_pct * 100)}% W)`;
@@ -793,24 +803,16 @@ export async function generateStaticParams() {
 }
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> | { slug: string } }): Promise<Metadata> {
-  try {
-    const resolvedParams = await Promise.resolve(params);
-    const profile = await fetchPlayerProfile(resolvedParams.slug);
-    if (!profile) {
-      return {
-        title: "Player not found",
-        description: "We could not locate that player in the NBA data service.",
-      };
-    }
-    return {
-      title: profile.name,
-      description: `${profile.name} overview powered by nba_api data.`,
-    };
-  } catch {
-    return {
-      title: "Player profile",
-    };
-  }
+  const resolvedParams = await Promise.resolve(params);
+  const displayName = deslugify(resolvedParams.slug);
+  const isNumericSlug = /^\d+$/.test(resolvedParams.slug);
+  const name = displayName && !isNumericSlug ? displayName : "";
+  return {
+    title: name ? `${name} · Player profile` : "Player profile",
+    description: name
+      ? `Stats, awards, and scouting summary for ${name}.`
+      : "Stats, awards, and scouting summaries for NBA players.",
+  };
 }
 
 const MissingPlayer = ({ name }: { name: string }) => (
@@ -905,6 +907,7 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
     [draftPill],
   ];
   const infoItems = infoRows.flat().filter((item): item is { label: string; value: string } => Boolean(item?.value));
+  const careerTitle = getCareerTitle(profile.rating);
 
   return (
     <>
@@ -977,7 +980,7 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
                   <div className="h-1.5 rounded-full bg-[color:rgba(var(--color-app-foreground-rgb),0.15)]">
                     <div className="h-1.5 rounded-full bg-[color:var(--color-app-primary)]" style={{ width: `${Math.min(profile.rating, 100)}%` }} />
                   </div>
-                  <p className="mt-1 text-[0.7rem] text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">Per-game impact metric</p>
+                  <p className="mt-1 text-[0.7rem] text-[color:rgba(var(--color-app-foreground-rgb),0.6)]">{careerTitle}</p>
                 </div>
               </div>
             </div>

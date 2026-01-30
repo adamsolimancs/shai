@@ -19,7 +19,7 @@ const StarBorder = <T extends ElementType = "div">({
   contentClassName,
   children,
   color = "rgba(var(--color-app-primary-rgb) / 0.85)",
-  speed = "6s",
+  speed = "6.5s",
   radius = "1.5rem",
   style,
   ...rest
@@ -30,7 +30,7 @@ const StarBorder = <T extends ElementType = "div">({
     "--star-border-radius": radius,
   } as CSSProperties;
   const gradientStyle: CSSProperties = {
-    background: `radial-gradient(circle, ${color}, transparent 10%)`,
+    background: `radial-gradient(circle, ${color}, transparent 18%)`,
     animationDuration: speed,
   };
 

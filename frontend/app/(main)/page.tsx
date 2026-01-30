@@ -309,7 +309,7 @@ export default async function HomePage() {
       <section id="scores" className="mt-12 sm:mt-16 lg:mt-20">
         <SectionTitle title="Recent Games" eyebrow="Live scores" link={{ href: "/scores", label: "View all scores →" }} />
         {/* TODO: if no recent games (offseason), display last season's playoff results. */}
-        <div className="grid grid-cols-2 gap-2 sm:gap-3 md:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3 md:gap-5 lg:mx-auto lg:max-w-5xl lg:justify-items-center">
           {scores.map((game) => {
             const winner =
               game.homeScore === game.awayScore ? "even" : game.homeScore > game.awayScore ? "home" : "away";
@@ -317,6 +317,7 @@ export default async function HomePage() {
               <ScoreCard
                 key={game.id}
                 href={`/boxscore/${game.id}`}
+                className="w-full max-w-[360px]"
                 density="compact"
                 timeLabel={<LocalGameTime value={game.date} fallback={game.timeFallback} showTime={game.showTime} />}
                 locationLabel={game.location}
@@ -342,7 +343,7 @@ export default async function HomePage() {
               className="group block w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
               contentClassName="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/30 transition hover:border-[color:var(--color-app-primary)] hover:bg-slate-900/80 hover:ring-2 hover:ring-[color:var(--color-app-primary-soft)] sm:p-6"
               color="var(--color-star-border)"
-              speed="5.5s"
+              speed="6.5s"
             >
               <div className="flex items-center justify-between text-xs text-white/60 sm:text-sm">
                 <span className="font-semibold text-white">{player.name}</span>

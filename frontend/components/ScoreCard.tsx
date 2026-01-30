@@ -42,7 +42,7 @@ export default function ScoreCard({
   const losingTeam = resolvedIsFinal && winner !== "even" ? (winner === "home" ? "away" : "home") : null;
   const losingTone = isLanding ? "opacity-60 text-[color:var(--color-app-foreground-muted)]" : "opacity-55 text-white/60";
   const outerClasses = isLanding
-    ? `group block rounded-3xl border border-[color:var(--color-app-border)] bg-linear-to-br from-[color:var(--color-app-background-soft)] via-[color:var(--color-app-surface)] to-[color:var(--color-app-surface-soft)] ${isCompact ? "p-2 sm:p-3" : "p-3 sm:p-5"} text-[color:var(--color-app-foreground)] shadow-lg shadow-black/5 transition-all hover:border-[color:var(--color-app-border-strong)] hover:from-[color:rgba(var(--color-app-primary-rgb)_/_0.05)] hover:via-[color:rgba(var(--color-app-primary-rgb)_/_0.08)] hover:to-[color:rgba(var(--color-app-primary-light-rgb)_/_0.12)] hover:shadow-black/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-app-primary-soft)]`
+    ? `group block rounded-3xl border border-[color:var(--color-app-border)] bg-linear-to-br from-[color:var(--color-app-background-soft)] via-[color:var(--color-app-surface)] to-[color:var(--color-app-surface-soft)] ${isCompact ? "p-3 sm:p-4" : "p-4 sm:p-5"} text-[color:var(--color-app-foreground)] shadow-lg shadow-black/5 transition-all hover:border-[color:var(--color-app-border-strong)] hover:from-[color:rgba(var(--color-app-primary-rgb)_/_0.05)] hover:via-[color:rgba(var(--color-app-primary-rgb)_/_0.08)] hover:to-[color:rgba(var(--color-app-primary-light-rgb)_/_0.12)] hover:shadow-black/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-app-primary-soft)]`
     : "rounded-3xl border border-white/10 bg-slate-950/60 p-5 text-white shadow-lg shadow-black/30 transition hover:border-white/20 hover:bg-slate-900/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20";
 
   const meta = isLanding ? (
@@ -51,7 +51,10 @@ export default function ScoreCard({
         {timeLabel ?? "Tipoff TBA"}
       </span>
       {locationLabel ? (
-        <p className={`${isCompact ? "text-[0.55rem] sm:text-[0.6rem]" : "text-[0.6rem] sm:text-[0.65rem]"} font-medium uppercase tracking-[0.2em] text-[color:var(--color-app-foreground-muted)]`}>
+        <p
+          className={`${isCompact ? "text-[0.55rem] sm:text-[0.6rem]" : "text-[0.6rem] sm:text-[0.65rem]"} max-w-[12rem] truncate font-medium uppercase tracking-[0.2em] text-[color:var(--color-app-foreground-muted)] sm:max-w-[16rem]`}
+          title={locationLabel}
+        >
           {locationLabel}
         </p>
       ) : null}
@@ -64,22 +67,34 @@ export default function ScoreCard({
   );
 
   const rowBase = isLanding
-    ? `flex items-center justify-between ${isCompact ? "rounded-xl px-2 py-1.5 sm:px-3 sm:py-2" : "rounded-2xl px-3 py-2 sm:px-4 sm:py-3"} border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-soft)] transition group-hover:border-[color:var(--color-app-border-strong)] group-hover:bg-[color:var(--color-app-background-soft)]`
-    : "flex items-center justify-between rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white transition";
+    ? `flex min-w-0 items-center justify-between gap-3 ${isCompact ? "rounded-xl px-3 py-2 sm:px-4 sm:py-2.5" : "rounded-2xl px-4 py-3 sm:px-5 sm:py-3.5"} border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-soft)] transition group-hover:border-[color:var(--color-app-border-strong)] group-hover:bg-[color:var(--color-app-background-soft)]`
+    : "flex min-w-0 items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-white transition";
 
   const awayRowTone = `${rowBase} ${losingTeam === "away" ? losingTone : ""}`;
   const homeRowTone = `${rowBase} ${losingTeam === "home" ? losingTone : ""}`;
 
+  const renderTeamRow = (team: TeamScore, tone: string, fallback: string) => {
+    const score = Number.isFinite(team.score ?? NaN) ? team.score : "—";
+    return (
+      <div className={tone}>
+        <span className="min-w-0 flex-1 truncate pr-3" title={team.name ?? fallback}>
+          {team.name ?? fallback}
+        </span>
+        <span className="shrink-0 tabular-nums">{score}</span>
+      </div>
+    );
+  };
+
   const rows = (
-    <div className={`${isCompact ? "mt-2 space-y-1.5 text-sm sm:mt-3 sm:space-y-2 sm:text-base" : "mt-3 space-y-2 text-base sm:mt-4 sm:space-y-3 sm:text-lg"} font-semibold`}>
-      <div className={awayRowTone}>
-        <span>{away.name ?? "Away"}</span>
-        <span>{Number.isFinite(away.score ?? NaN) ? away.score : "—"}</span>
-      </div>
-      <div className={homeRowTone}>
-        <span>{home.name ?? "Home"}</span>
-        <span>{Number.isFinite(home.score ?? NaN) ? home.score : "—"}</span>
-      </div>
+    <div
+      className={`${
+        isCompact
+          ? "mt-3 space-y-2 text-sm sm:mt-4 sm:space-y-3 sm:text-base"
+          : "mt-4 space-y-3 text-base sm:mt-5 sm:space-y-4 sm:text-lg"
+      } font-semibold`}
+    >
+      {renderTeamRow(away, awayRowTone, "Away")}
+      {renderTeamRow(home, homeRowTone, "Home")}
     </div>
   );
 

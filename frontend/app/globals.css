@@ -60,7 +60,7 @@
   --sidebar-border: rgba(10, 31, 68, 0.15);
   --sidebar-ring: rgba(10, 31, 68, 0.3);
   --color-app-logo-badge: #fdf6ea;
-  --color-star-border: rgba(var(--color-app-primary-rgb), 0.75);
+  --color-star-border: rgba(var(--color-app-primary-rgb), 0.9);
 }
 
 :root.dark {
@@ -117,7 +117,7 @@
   --sidebar-border: rgba(247, 239, 221, 0.2);
   --sidebar-ring: rgba(245, 215, 164, 0.4);
   --color-app-logo-badge: #f5edd8;
-  --color-star-border: rgba(132, 166, 255, 0.85);
+  --color-star-border: rgba(132, 166, 255, 0.95);
 }
 
 @theme inline {
@@ -204,7 +204,7 @@ body {
 }
 
 .star-border-container {
-  padding: 2px;
+  padding: 3px;
   position: relative;
   border-radius: var(--star-border-radius, 1.5rem);
   overflow: hidden;
@@ -213,8 +213,8 @@ body {
 .star-border-gradient {
   position: absolute;
   width: 300%;
-  height: min(50%, 48px);
-  opacity: 0.85;
+  height: min(60%, 60px);
+  opacity: 0.95;
   border-radius: 50%;
   background: radial-gradient(circle, var(--star-border-color, #ffffff), transparent 10%);
   animation-duration: var(--star-border-speed, 6s);
@@ -239,7 +239,7 @@ body {
 .star-border-inner {
   position: relative;
   z-index: 1;
-  border-radius: calc(var(--star-border-radius, 1.5rem) - 2px);
+  border-radius: calc(var(--star-border-radius, 1.5rem) - 3px);
 }
 
 @keyframes star-border-bottom {
