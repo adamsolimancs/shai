@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     pagination_max_page_size: int = Field(200, ge=1)
     cache_refresh_cron_hour_utc: int = Field(9, ge=0, le=23)
     environment: str = Field("development")
+    allow_nba_api_in_production: bool = Field(
+        False,
+        validation_alias=AliasChoices(
+            "ALLOW_NBA_API_IN_PRODUCTION",
+            "NBA_API_ALLOW_IN_PROD",
+        ),
+        description="When false, production avoids direct NBA API calls unless cached.",
+    )
     cors_allow_credentials: bool = False
     cors_allow_methods: Sequence[str] = ("GET",)
     cors_allow_headers: Sequence[str] = ("*",)
@@ -77,6 +85,13 @@ class Settings(BaseSettings):
     cache_key_prefix: str = Field("nba:serve")
     admin_api_key: str | None = None
     log_format: str = Field("pretty", validation_alias=AliasChoices("LOG_FORMAT"))
+
+    @property
+    def nba_api_calls_allowed(self) -> bool:
+        env = (self.environment or "").strip().lower()
+        if env in {"production", "prod"}:
+            return self.allow_nba_api_in_production
+        return True
 
     @property
     def cors_origins(self) -> list[str]:

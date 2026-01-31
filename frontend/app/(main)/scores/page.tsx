@@ -6,6 +6,7 @@ import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
 type Game = {
   game_id: string;
   date: string;
+  start_time?: string | null;
   home_team_name: string;
   home_team_score: number;
   away_team_name: string;
@@ -16,6 +17,7 @@ type Game = {
 type EnhancedGame = {
   id: string;
   rawDate: string;
+  timeValue: string;
   dateKey: string;
   dateLabel: string;
   timeFallback: string;
@@ -51,10 +53,12 @@ function enhanceGame(game: Game): EnhancedGame {
   const isFinal = isFinalGame(status, game.date, homeScore, awayScore);
   const showTime = !isFinal;
   const statusLabel = status && /scheduled/i.test(status) ? undefined : status;
+  const timeValue = game.start_time ?? game.date;
 
   return {
     id: game.game_id,
     rawDate: game.date,
+    timeValue,
     dateKey: toDateKey(date),
     dateLabel: DATE_FORMATTER.format(date),
     timeFallback: buildTimeFallback(game.date, showTime, DATE_ONLY_FORMATTER),
@@ -174,7 +178,7 @@ export default async function ScoresPage() {
                       key={game.id}
                       href={`/boxscore/${game.id}`}
                       className="w-full max-w-[360px]"
-                      timeLabel={<LocalGameTime value={game.rawDate} fallback={game.timeFallback} showTime={game.showTime} />}
+                      timeLabel={<LocalGameTime value={game.timeValue} fallback={game.timeFallback} showTime={game.showTime} />}
                       status={game.status}
                       isFinal={game.isFinal}
                       home={{ name: game.home.name, score: game.home.score }}

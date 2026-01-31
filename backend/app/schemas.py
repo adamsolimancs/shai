@@ -90,6 +90,7 @@ class PlayerBio(BaseModel):
 class Game(BaseModel):
     game_id: str
     date: date
+    start_time: datetime | None = None
     home_team_id: int
     home_team_name: str
     home_team_score: int

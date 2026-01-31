@@ -34,7 +34,7 @@ def test_json_formatter_includes_exception():
 
 
 def test_configure_logging_sets_level():
-    configure_logging("debug")
+    configure_logging("debug", "json")
     root = logging.getLogger()
     assert root.level == logging.DEBUG
     assert root.handlers

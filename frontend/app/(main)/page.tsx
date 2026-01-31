@@ -12,6 +12,7 @@ import { slugifySegment } from "@/lib/utils";
 type Game = {
   game_id: string;
   date: string;
+  start_time?: string | null;
   home_team_name: string;
   home_team_score: number;
   away_team_name: string;
@@ -38,6 +39,7 @@ type ScoreCardData = {
   status: string;
   isFinal: boolean;
   date: string;
+  timeValue: string;
   timeFallback: string;
   showTime: boolean;
   location: string;
@@ -143,6 +145,7 @@ async function fetchRecentGames(): Promise<ScoreCardData[]> {
     const status = game.status ?? "Scheduled";
     const isFinal = isFinalGame(status, game.date, game.home_team_score, game.away_team_score);
     const showTime = !isFinal;
+    const timeValue = game.start_time ?? game.date;
     return {
       id: game.game_id,
       away: game.away_team_name ?? "Away",
@@ -152,6 +155,7 @@ async function fetchRecentGames(): Promise<ScoreCardData[]> {
       status,
       isFinal,
       date: game.date,
+      timeValue,
       timeFallback: buildTimeFallback(game.date, showTime, HOME_DATE_FALLBACK),
       showTime,
       location: game.location ?? fallbackLocationForTeam(game.home_team_name) ?? "Venue TBA",
@@ -319,7 +323,7 @@ export default async function HomePage() {
                 href={`/boxscore/${game.id}`}
                 className="w-full max-w-[360px]"
                 density="compact"
-                timeLabel={<LocalGameTime value={game.date} fallback={game.timeFallback} showTime={game.showTime} />}
+                timeLabel={<LocalGameTime value={game.timeValue} fallback={game.timeFallback} showTime={game.showTime} />}
                 locationLabel={game.location}
                 status={game.status}
                 isFinal={game.isFinal}

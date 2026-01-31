@@ -129,6 +129,7 @@ test("row mappers normalize payloads", () => {
   assert.deepEqual(worker.mapGameRow({ game_id: "001", date: "2024-10-10" }, "2024-25"), {
     game_id: "001",
     date: "2024-10-10",
+    start_time: null,
     home_team_id: null,
     home_team_name: null,
     home_team_score: null,

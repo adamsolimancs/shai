@@ -18,6 +18,10 @@ class CacheTTLs:
     teams: int = 60 * 60 * 24
     team_details: int = 60 * 60 * 24
     player_gamelog: int = 60 * 60 * 6
+    players: int = 60 * 60 * 6
+    player_bio: int = 60 * 60 * 24
+    player_awards: int = 60 * 60 * 24
+    player_stats: int = 60 * 15
 
 
 TTLS = CacheTTLs()
@@ -57,3 +61,29 @@ def team_details_key(settings: Settings, team_id: int) -> str:
 def player_gamelog_key(settings: Settings, player_id: int, season: str, season_type: str) -> str:
     season_type = (season_type or "Regular Season").strip()
     return cache_key(settings, "player_gamelog", str(player_id), season, season_type)
+
+
+def players_key(settings: Settings, season: str, active: bool | None, search: str | None) -> str:
+    active_part = "all" if active is None else ("active" if active else "inactive")
+    search_part = (search or "").strip().lower()
+    return cache_key(settings, "players", season, active_part, search_part or "all")
+
+
+def player_bio_key(settings: Settings, player_id: int, season: str) -> str:
+    return cache_key(settings, "player_bio", str(player_id), season)
+
+
+def player_awards_key(settings: Settings, player_id: int) -> str:
+    return cache_key(settings, "player_awards", str(player_id))
+
+
+def player_stats_key(
+    settings: Settings,
+    season: str,
+    season_type: str,
+    measure: str,
+    per_mode: str,
+    team_id: int | None,
+) -> str:
+    team_part = "all" if team_id is None else str(team_id)
+    return cache_key(settings, "player_stats", season, season_type, measure, per_mode, team_part)

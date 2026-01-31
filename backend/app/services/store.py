@@ -222,6 +222,149 @@ async def fetch_team_by_abbr(
     return await supabase.select_one("teams", filters={"abbreviation": f"eq.{abbr}"})
 
 
+def _split_name(full_name: str | None) -> tuple[str, str]:
+    if not full_name:
+        return "", ""
+    parts = full_name.strip().split()
+    if not parts:
+        return "", ""
+    if len(parts) == 1:
+        return parts[0], ""
+    return parts[0], " ".join(parts[1:])
+
+
+async def fetch_players(
+    supabase: SupabaseClient,
+    *,
+    active: bool | None = None,
+    search: str | None = None,
+) -> list[dict[str, Any]]:
+    filters: dict[str, str] = {}
+    if active is not None:
+        filters["is_active"] = f"eq.{str(active).lower()}"
+    if search:
+        filters["full_name"] = f"ilike.*{search.strip()}*"
+    rows = await supabase.select_all("players", filters=filters, order="full_name.asc")
+    teams = await supabase.select("teams")
+    teams_by_id = {
+        row.get("team_id"): row for row in teams if row.get("team_id") is not None
+    }
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        player_id = _coerce_int(row.get("player_id"))
+        if player_id is None:
+            continue
+        full_name = row.get("full_name") or ""
+        first_name, last_name = _split_name(full_name)
+        team_id = _coerce_int(row.get("current_team_id"))
+        team = teams_by_id.get(team_id) or {}
+        is_active = str(row.get("is_active") or "").strip().lower() == "true"
+        results.append(
+            {
+                "id": player_id,
+                "first_name": first_name,
+                "last_name": last_name,
+                "full_name": full_name,
+                "team_id": team_id,
+                "team_abbreviation": team.get("abbreviation"),
+                "is_active": is_active,
+            }
+        )
+    return results
+
+
+async def fetch_player_bio(
+    supabase: SupabaseClient,
+    *,
+    player_id: int,
+) -> dict[str, Any] | None:
+    row = await supabase.select_one("players", filters={"player_id": f"eq.{player_id}"})
+    if not row:
+        return None
+    return {
+        "height": row.get("height"),
+        "weight": _coerce_int(row.get("weight")),
+        "draft_year": _coerce_int(row.get("draft_year")),
+        "draft_pick": row.get("draft_pick"),
+        "college": row.get("college"),
+        "country": row.get("country"),
+    }
+
+
+async def fetch_player_awards(
+    supabase: SupabaseClient,
+    *,
+    player_id: int,
+) -> list[dict[str, Any]]:
+    rows = await supabase.select(
+        "player_awards",
+        filters={"player_id": f"eq.{player_id}"},
+        order="season.desc",
+    )
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        results.append(
+            {
+                "season": row.get("season"),
+                "description": row.get("description"),
+                "team": row.get("team"),
+                "conference": row.get("conference"),
+                "award_type": row.get("award_type"),
+                "subtype1": row.get("subtype1"),
+                "subtype2": row.get("subtype2"),
+                "subtype3": row.get("subtype3"),
+                "month": row.get("month"),
+                "week": row.get("week"),
+                "all_nba_team_number": _coerce_int(row.get("all_nba_team_number")),
+            }
+        )
+    return results
+
+
+async def fetch_player_stats(
+    supabase: SupabaseClient,
+    *,
+    season: str,
+    season_type: str,
+    team_id: int | None,
+) -> list[dict[str, Any]]:
+    filters: dict[str, str] = {"season": f"eq.{season}", "season_type": f"eq.{season_type}"}
+    if team_id is not None:
+        filters["team_id"] = f"eq.{team_id}"
+    rows = await supabase.select_all(
+        "player_season_stats", filters=filters, order="points_pg.desc"
+    )
+    players = await supabase.select("players")
+    teams = await supabase.select("teams")
+    players_by_id = {
+        row.get("player_id"): row for row in players if row.get("player_id") is not None
+    }
+    teams_by_id = {
+        row.get("team_id"): row for row in teams if row.get("team_id") is not None
+    }
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        player_id = _coerce_int(row.get("player_id"))
+        if player_id is None:
+            continue
+        player = players_by_id.get(row.get("player_id")) or {}
+        team_id_value = _coerce_int(row.get("team_id"))
+        team = teams_by_id.get(team_id_value) or {}
+        results.append(
+            {
+                "player_id": player_id,
+                "player_name": player.get("full_name") or "",
+                "team_id": team_id_value,
+                "team_abbreviation": team.get("abbreviation"),
+                "points": _coerce_float(row.get("points_pg")),
+                "rebounds": _coerce_float(row.get("rebounds_pg")),
+                "assists": _coerce_float(row.get("assists_pg")),
+                "minutes": _coerce_float(row.get("minutes_pg")),
+            }
+        )
+    return results
+
+
 async def fetch_games(
     supabase: SupabaseClient,
     *,

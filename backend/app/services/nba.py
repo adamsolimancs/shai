@@ -571,6 +571,8 @@ class NBAStatsClient:
         return ResolveResult(player=player_result, team=team_result)
 
     async def refresh_hot_keys(self) -> None:
+        if not self.settings.nba_api_calls_allowed:
+            return
         for season in self._supported_seasons()[-5:]:
             await asyncio.gather(
                 self.get_teams(season),
@@ -599,6 +601,11 @@ class NBAStatsClient:
         cached = await self.cache.get(key)
         if cached is not None:
             return cast(TData, cached), CacheMeta(hit=True, stale=False)
+        if not self.settings.nba_api_calls_allowed:
+            fallback = await self.cache.get_stale(key)
+            if fallback is not None:
+                return cast(TData, fallback), CacheMeta(hit=True, stale=True)
+            raise UpstreamError("NBA API disabled; cache miss")
         try:
             data = await self._run_with_retry(fetcher)
         except Exception as exc:
