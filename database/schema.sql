@@ -46,6 +46,7 @@
   team_totals text\n);\n                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | CREATE TABLE public.games (\n  game_id text NOT NULL,
   date text,
+  start_time text,
   home_team_id bigint,
   home_team_name text,
   home_team_score smallint,
@@ -172,4 +173,3 @@
 | ALTER TABLE public.team_details ADD CONSTRAINT team_details_pkey PRIMARY KEY (team_id);\n                                                                                               |
 | ALTER TABLE public.team_details ADD CONSTRAINT team_details_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams(team_id) ON UPDATE CASCADE ON DELETE RESTRICT;\n                        |
 | ALTER TABLE public.teams ADD CONSTRAINT teams_pkey PRIMARY KEY (team_id);\n                                                                                                             |
-

@@ -1,3 +1,4 @@
+/* eslint-disable @next/next/no-img-element */
 import Link from "next/link";
 
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
@@ -5,6 +6,7 @@ import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
 type Game = {
   game_id: string;
   date: string;
+  start_time?: string | null;
   home_team_name: string;
   home_team_score: number;
   away_team_name: string;
@@ -129,6 +131,22 @@ export default async function NewsPage() {
           ) : (
             stories.map((story) => (
               <article key={story.id} className={`rounded-3xl border p-5 transition ${accentClasses()}`}>
+                <div className="relative mb-4 h-36 overflow-hidden rounded-2xl border border-white/10 bg-slate-900/60">
+                  {story.image_url ? (
+                    <img
+                      src={story.image_url}
+                      alt={story.title}
+                      loading="lazy"
+                      decoding="async"
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-slate-900 via-slate-950 to-slate-900">
+                      <span className="text-[0.65rem] uppercase tracking-[0.3em] text-white/60">ShAI</span>
+                    </div>
+                  )}
+                  <div className="absolute inset-0 bg-gradient-to-t from-slate-950/70 via-transparent to-transparent" aria-hidden="true" />
+                </div>
                 <p className="text-xs uppercase tracking-[0.4em] text-white/50">{story.source}</p>
                 <h3 className="mt-3 text-xl font-semibold text-white">{story.title}</h3>
                 <p className="mt-2 text-sm text-white/70">{story.summary}</p>

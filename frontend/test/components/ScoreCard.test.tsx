@@ -42,11 +42,12 @@ describe("ScoreCard", () => {
     expect(link).toHaveAttribute("href", "/scores/1");
   });
 
-  it("applies winner tone on scoreboard variant", () => {
+  it("fades losing team when final", () => {
     render(
       <ScoreCard
         variant="scoreboard"
         winner="home"
+        status="Final"
         home={{ name: "Knicks", score: 110 }}
         away={{ name: "Celtics", score: 108 }}
       />,
@@ -54,7 +55,7 @@ describe("ScoreCard", () => {
 
     const awayRow = screen.getByText("Celtics").closest("div");
     const homeRow = screen.getByText("Knicks").closest("div");
-    expect(awayRow?.className).toMatch(/red-500/);
-    expect(homeRow?.className).toMatch(/emerald-400/);
+    expect(awayRow?.className).toMatch(/text-white\/60/);
+    expect(homeRow?.className).not.toMatch(/text-white\/60/);
   });
 });

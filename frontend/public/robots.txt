@@ -4,6 +4,9 @@ Allow: /
 # Disallow server-only routes
 Disallow: /api/
 Disallow: /admin/
+Disallow: /signin
+Disallow: /signup
+Disallow: /logout
 
 # Sitemap reference
 Sitemap: https://www.shaistats.com/sitemap.txt

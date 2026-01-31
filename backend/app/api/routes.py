@@ -6,7 +6,7 @@ import logging
 from typing import Annotated, Any, Literal
 from datetime import date, timedelta
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from ..auth import require_api_key
 from ..config import Settings
@@ -48,6 +48,12 @@ from ..services.store import (
     fetch_boxscore,
     fetch_games,
     fetch_league_standings,
+    fetch_player_awards,
+    fetch_player_bio,
+    fetch_player_stats,
+    fetch_players,
+    fetch_player_gamelog_from_boxscores,
+    fetch_team_details,
     fetch_teams,
 )
 from ..services.news import NewsService
@@ -55,9 +61,14 @@ from ..utils import paginate, parse_date, validate_date_range, validate_season
 from ..serving_cache import (
     TTLS,
     boxscore_key,
+    player_awards_key,
+    player_bio_key,
+    player_stats_key,
+    players_key,
     player_gamelog_key,
     scoreboard_key,
     standings_key,
+    team_details_key,
     teams_key,
 )
 from ..supabase import SupabaseClient
@@ -101,10 +112,11 @@ def _log_data_source(
         payload["cache_hit"] = cache_meta.hit
         payload["cache_stale"] = cache_meta.stale
     logger.info(
-        "data served",
+        f"{request.method} {request.url.path} SOURCE={source}",
         extra={
             "request_id": getattr(request.state, "request_id", None),
             "path": request.url.path,
+            "method": request.method,
             "extra": payload,
         },
     )
@@ -177,6 +189,34 @@ def _allow_nocache(request: Request, settings: Settings, nocache: bool) -> bool:
     return bool(settings.admin_api_key and admin_key == settings.admin_api_key)
 
 
+def _row_value(row: Any, key: str) -> Any:
+    if isinstance(row, dict):
+        return row.get(key)
+    return getattr(row, key, None)
+
+
+def _row_to_dict(row: Any) -> dict[str, Any]:
+    if isinstance(row, dict):
+        return dict(row)
+    if hasattr(row, "model_dump"):
+        return row.model_dump()
+    return dict(row)
+
+
+def _needs_shooting(data: list[Any]) -> bool:
+    for row in data:
+        if (
+            _row_value(row, "field_goals_made") is None
+            or _row_value(row, "field_goals_attempted") is None
+            or _row_value(row, "three_point_made") is None
+            or _row_value(row, "three_point_attempted") is None
+            or _row_value(row, "field_goal_pct") is None
+            or _row_value(row, "three_point_pct") is None
+        ):
+            return True
+    return False
+
+
 @router.get("/meta", response_model=Envelope[MetaResponse])
 async def meta(request: Request, client: NBAClientDep) -> Envelope[MetaResponse]:
     payload = await client.get_meta()
@@ -217,11 +257,14 @@ async def teams(
                 fetcher=lambda: fetch_teams(supabase),
                 nocache=nocache_allowed,
             )
-            if data:
+            if data or not settings.nba_api_calls_allowed:
                 _log_data_source(request, _source_from_cache(cache_meta, "db"), cache_meta)
-                return success(request, data, cache=cache_meta)
+                return success(request, data or [], cache=cache_meta)
         except Exception:
             logger.exception("supabase teams fetch failed; falling back to nba api")
+    if not settings.nba_api_calls_allowed:
+        _log_data_source(request, "db", CacheMeta(hit=False, stale=False))
+        return success(request, [], cache=CacheMeta(hit=False, stale=False))
     result = await client.get_teams(season)
     _log_data_source(request, _source_from_cache(result.cache, "api"), result.cache)
     return success(request, result.data, cache=result.cache)
@@ -252,11 +295,14 @@ async def league_standings(
                 fetcher=lambda: fetch_league_standings(supabase, season),
                 nocache=nocache_allowed,
             )
-            if data:
+            if data or not settings.nba_api_calls_allowed:
                 _log_data_source(request, _source_from_cache(cache_meta, "db"), cache_meta)
-                return success(request, data, cache=cache_meta)
+                return success(request, data or [], cache=cache_meta)
         except Exception:
             logger.exception("supabase league standings fetch failed; falling back to nba api")
+    if not settings.nba_api_calls_allowed:
+        _log_data_source(request, "db", CacheMeta(hit=False, stale=False))
+        return success(request, [], cache=CacheMeta(hit=False, stale=False))
     result = await client.get_league_standings(league_id, season, season_type)
     _log_data_source(request, _source_from_cache(result.cache, "api"), result.cache)
     return success(request, result.data, cache=result.cache)
@@ -265,6 +311,8 @@ async def league_standings(
 @router.get("/players", response_model=Envelope[list[Player]])
 async def players(
     request: Request,
+    cache: CacheDep,
+    supabase: SupabaseDep,
     client: NBAClientDep,
     settings: SettingsDep,
     season: str = Query(...),
@@ -274,6 +322,41 @@ async def players(
     page_size: int = Query(50, ge=1, le=200),
 ) -> Envelope[list[Player]]:
     page_size = min(page_size, settings.pagination_max_page_size)
+    if supabase:
+        key = players_key(settings, season, active, search)
+        try:
+            data, cache_meta = await get_or_set_cache(
+                cache=cache,
+                redis_client=request.app.state.redis,
+                key=key,
+                ttl=TTLS.players,
+                fetcher=lambda: fetch_players(
+                    supabase,
+                    active=active,
+                    search=search,
+                ),
+            )
+            if data or not settings.nba_api_calls_allowed:
+                paged, pagination = paginate(data or [], page, page_size)
+                pagination_meta = _apply_pagination_links(
+                    request, pagination.model_dump()
+                )
+                _log_data_source(request, _source_from_cache(cache_meta, "db"), cache_meta)
+                return success(
+                    request, paged, cache=cache_meta, pagination=pagination_meta
+                )
+        except Exception:
+            logger.exception("supabase players fetch failed; falling back to nba api")
+    if not settings.nba_api_calls_allowed:
+        paged, pagination = paginate([], page, page_size)
+        pagination_meta = _apply_pagination_links(request, pagination.model_dump())
+        _log_data_source(request, "db", CacheMeta(hit=False, stale=False))
+        return success(
+            request,
+            paged,
+            cache=CacheMeta(hit=False, stale=False),
+            pagination=pagination_meta,
+        )
     players, cache_meta, pagination = await client.get_players(
         season, active, search, page, page_size
     )
@@ -372,17 +455,22 @@ async def games(
             cache_meta = CacheMeta(hit=False, stale=False)
             source = None
     if not data:
-        result = await client.get_games(
-            season=season,
-            team_id=team_id,
-            team_abbr=team_abbr,
-            date_from=start,
-            date_to=end,
-            per_team=per_team,
-        )
-        data = result.data
-        cache_meta = result.cache
-        source = _source_from_cache(cache_meta, "api")
+        if not settings.nba_api_calls_allowed:
+            data = []
+            cache_meta = CacheMeta(hit=False, stale=False)
+            source = source or "db"
+        else:
+            result = await client.get_games(
+                season=season,
+                team_id=team_id,
+                team_abbr=team_abbr,
+                date_from=start,
+                date_to=end,
+                per_team=per_team,
+            )
+            data = result.data
+            cache_meta = result.cache
+            source = _source_from_cache(cache_meta, "api")
     data = _sort_games_desc(data)
     if not per_team:
         paged, pagination = paginate(data, page, page_size)
@@ -414,11 +502,33 @@ async def player_gamelog(
     validate_date_range(start, end)
     normalized_season_type = (season_type or "Regular Season").strip()
     if normalized_season_type.lower() != "regular season":
+        if not settings.nba_api_calls_allowed:
+            _log_data_source(request, "db")
+            return success(request, [], cache=CacheMeta(hit=False, stale=False))
         result = await client.get_player_gamelog(
             player_id, season, normalized_season_type, start, end
         )
         _log_data_source(request, _source_from_cache(result.cache, "api"), result.cache)
         return success(request, result.data, cache=result.cache)
+    if supabase:
+        try:
+            data = await fetch_player_gamelog_from_boxscores(
+                supabase,
+                player_id=player_id,
+                season=season,
+                date_from=start,
+                date_to=end,
+            )
+            if data:
+                _log_data_source(request, "db")
+                return success(request, data, cache=CacheMeta(hit=False, stale=False))
+        except Exception:
+            logger.exception(
+                "supabase player gamelog fetch failed; falling back to nba api"
+            )
+    if not settings.nba_api_calls_allowed:
+        _log_data_source(request, "db")
+        return success(request, [], cache=CacheMeta(hit=False, stale=False))
     nocache_allowed = _allow_nocache(request, settings, nocache)
     key = player_gamelog_key(settings, player_id, season, normalized_season_type)
 
@@ -436,6 +546,62 @@ async def player_gamelog(
         fetcher=fetcher,
         nocache=nocache_allowed,
     )
+    if supabase and data:
+        try:
+            if _needs_shooting(data):
+                fallback = await fetch_player_gamelog_from_boxscores(
+                    supabase,
+                    player_id=player_id,
+                    season=season,
+                    date_from=start,
+                    date_to=end,
+                )
+                if fallback:
+                    fallback_by_game = {
+                        row.get("game_id"): row for row in fallback if row.get("game_id")
+                    }
+                    enriched: list[dict[str, Any]] = []
+                    for row in data:
+                        base = _row_to_dict(row)
+                        fallback_row = fallback_by_game.get(base.get("game_id"))
+                        if fallback_row:
+                            if base.get("field_goals_made") is None:
+                                base["field_goals_made"] = fallback_row.get("field_goals_made")
+                            if base.get("field_goals_attempted") is None:
+                                base["field_goals_attempted"] = fallback_row.get(
+                                    "field_goals_attempted"
+                                )
+                            if base.get("three_point_made") is None:
+                                base["three_point_made"] = fallback_row.get("three_point_made")
+                            if base.get("three_point_attempted") is None:
+                                base["three_point_attempted"] = fallback_row.get(
+                                    "three_point_attempted"
+                                )
+                            if base.get("field_goal_pct") is None:
+                                base["field_goal_pct"] = fallback_row.get("field_goal_pct")
+                            if base.get("three_point_pct") is None:
+                                base["three_point_pct"] = fallback_row.get("three_point_pct")
+                        enriched.append(base)
+                    _log_data_source(request, "db_enrich", cache_meta)
+                    return success(request, enriched, cache=cache_meta)
+        except Exception:
+            logger.exception("supabase player gamelog enrich failed; returning api result")
+    if not data and supabase:
+        try:
+            fallback = await fetch_player_gamelog_from_boxscores(
+                supabase,
+                player_id=player_id,
+                season=season,
+                date_from=start,
+                date_to=end,
+            )
+            if fallback:
+                _log_data_source(request, "db_fallback")
+                return success(request, fallback, cache=CacheMeta(hit=False, stale=False))
+        except Exception:
+            logger.exception(
+                "supabase player gamelog fallback failed; returning api result"
+            )
     _log_data_source(request, _source_from_cache(cache_meta, "api"), cache_meta)
     return success(request, data, cache=cache_meta)
 
@@ -444,9 +610,13 @@ async def player_gamelog(
 async def player_career(
     request: Request,
     client: NBAClientDep,
+    settings: SettingsDep,
     player_id: int,
     season_type: str = Query("Regular Season"),
 ) -> Envelope[list[PlayerCareerStatsRow]]:
+    if not settings.nba_api_calls_allowed:
+        _log_data_source(request, "db")
+        return success(request, [], cache=CacheMeta(hit=False, stale=False))
     result = await client.get_player_career_stats(player_id, season_type)
     _log_data_source(request, _source_from_cache(result.cache, "api"), result.cache)
     return success(request, result.data, cache=result.cache)
@@ -455,9 +625,30 @@ async def player_career(
 @router.get("/players/{player_id}/awards", response_model=Envelope[list[PlayerAward]])
 async def player_awards(
     request: Request,
+    cache: CacheDep,
+    supabase: SupabaseDep,
     client: NBAClientDep,
+    settings: SettingsDep,
     player_id: int,
 ) -> Envelope[list[PlayerAward]]:
+    if supabase:
+        key = player_awards_key(settings, player_id)
+        try:
+            data, cache_meta = await get_or_set_cache(
+                cache=cache,
+                redis_client=request.app.state.redis,
+                key=key,
+                ttl=TTLS.player_awards,
+                fetcher=lambda: fetch_player_awards(supabase, player_id=player_id),
+            )
+            if data or not settings.nba_api_calls_allowed:
+                _log_data_source(request, _source_from_cache(cache_meta, "db"), cache_meta)
+                return success(request, data or [], cache=cache_meta)
+        except Exception:
+            logger.exception("supabase player awards fetch failed; falling back to nba api")
+    if not settings.nba_api_calls_allowed:
+        _log_data_source(request, "db")
+        return success(request, [], cache=CacheMeta(hit=False, stale=False))
     result = await client.get_player_awards(player_id)
     _log_data_source(request, _source_from_cache(result.cache, "api"), result.cache)
     return success(request, result.data, cache=result.cache)
@@ -466,11 +657,32 @@ async def player_awards(
 @router.get("/players/{player_id}/bio", response_model=Envelope[PlayerBio | None])
 async def player_bio(
     request: Request,
+    cache: CacheDep,
+    supabase: SupabaseDep,
     client: NBAClientDep,
+    settings: SettingsDep,
     player_id: int,
     season: str = Query(_season_for_date(date.today()), description="Season like 2024-25"),
 ) -> Envelope[PlayerBio | None]:
     validate_season(season)
+    if supabase:
+        key = player_bio_key(settings, player_id, season)
+        try:
+            data, cache_meta = await get_or_set_cache(
+                cache=cache,
+                redis_client=request.app.state.redis,
+                key=key,
+                ttl=TTLS.player_bio,
+                fetcher=lambda: fetch_player_bio(supabase, player_id=player_id),
+            )
+            if data is not None or not settings.nba_api_calls_allowed:
+                _log_data_source(request, _source_from_cache(cache_meta, "db"), cache_meta)
+                return success(request, data, cache=cache_meta)
+        except Exception:
+            logger.exception("supabase player bio fetch failed; falling back to nba api")
+    if not settings.nba_api_calls_allowed:
+        _log_data_source(request, "db")
+        return success(request, None, cache=CacheMeta(hit=False, stale=False))
     result = await client.get_player_bio(player_id, season)
     _log_data_source(request, _source_from_cache(result.cache, "api"), result.cache)
     return success(request, result.data, cache=result.cache)
@@ -503,6 +715,15 @@ async def full_boxscore(
                 return success(request, data, cache=cache_meta)
         except Exception:
             logger.exception("supabase boxscore fetch failed; falling back to nba api")
+    if not settings.nba_api_calls_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "BOX_SCORE_NOT_FOUND",
+                "message": "Boxscore unavailable in cache or database.",
+                "retryable": False,
+            },
+        )
     result = await client.get_boxscore_details(game_id)
     _log_data_source(request, _source_from_cache(result.cache, "api"), result.cache)
     return success(request, result.data, cache=result.cache)
@@ -512,6 +733,7 @@ async def full_boxscore(
 async def player_shots(
     request: Request,
     client: NBAClientDep,
+    settings: SettingsDep,
     player_id: int,
     season: str = Query(...),
     team_id: int | None = Query(None),
@@ -521,6 +743,9 @@ async def player_shots(
     start = parse_date(date_from, "date_from")
     end = parse_date(date_to, "date_to")
     validate_date_range(start, end)
+    if not settings.nba_api_calls_allowed:
+        _log_data_source(request, "db")
+        return success(request, [], cache=CacheMeta(hit=False, stale=False))
     result = await client.get_shots(player_id, season, team_id, start, end)
     _log_data_source(request, _source_from_cache(result.cache, "api"), result.cache)
     return success(request, result.data, cache=result.cache)
@@ -529,9 +754,39 @@ async def player_shots(
 @router.get("/teams/{team_id}/details", response_model=Envelope[TeamDetail])
 async def team_details(
     request: Request,
+    cache: CacheDep,
+    supabase: SupabaseDep,
     client: NBAClientDep,
+    settings: SettingsDep,
     team_id: int,
+    nocache: bool = Query(False, description="Bypass cache (admin only)."),
 ) -> Envelope[TeamDetail]:
+    if supabase:
+        nocache_allowed = _allow_nocache(request, settings, nocache)
+        key = team_details_key(settings, team_id)
+        try:
+            data, cache_meta = await get_or_set_cache(
+                cache=cache,
+                redis_client=request.app.state.redis,
+                key=key,
+                ttl=TTLS.team_details,
+                fetcher=lambda: fetch_team_details(supabase, team_id),
+                nocache=nocache_allowed,
+            )
+            if data is not None:
+                _log_data_source(request, _source_from_cache(cache_meta, "db"), cache_meta)
+                return success(request, data, cache=cache_meta)
+        except Exception:
+            logger.exception("supabase team details fetch failed; falling back to nba api")
+    if not settings.nba_api_calls_allowed:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "TEAM_DETAILS_NOT_FOUND",
+                "message": "Team details unavailable in cache or database.",
+                "retryable": False,
+            },
+        )
     result = await client.get_team_details(team_id)
     _log_data_source(request, _source_from_cache(result.cache, "api"), result.cache)
     return success(request, result.data, cache=result.cache)
@@ -560,11 +815,15 @@ async def _build_team_stats_response(
 async def teams_stats(
     request: Request,
     client: NBAClientDep,
+    settings: SettingsDep,
     season: str = Query(...),
     measure: Literal["Base", "Advanced", "FourFactors"] = Query("Base"),
     per_mode: Literal["PerGame", "Totals"] = Query("PerGame"),
     team_id: int | None = Query(None),
 ) -> Envelope[list[TeamStatsRow]]:
+    if not settings.nba_api_calls_allowed:
+        _log_data_source(request, "db")
+        return success(request, [], cache=CacheMeta(hit=False, stale=False))
     return await _build_team_stats_response(
         request,
         client=client,
@@ -579,11 +838,15 @@ async def teams_stats(
 async def team_stats(
     request: Request,
     client: NBAClientDep,
+    settings: SettingsDep,
     team_id: int,
     season: str = Query(...),
     measure: Literal["Base", "Advanced", "FourFactors"] = Query("Base"),
     per_mode: Literal["PerGame", "Totals"] = Query("PerGame"),
 ) -> Envelope[list[TeamStatsRow]]:
+    if not settings.nba_api_calls_allowed:
+        _log_data_source(request, "db")
+        return success(request, [], cache=CacheMeta(hit=False, stale=False))
     return await _build_team_stats_response(
         request,
         client=client,
@@ -597,6 +860,8 @@ async def team_stats(
 @router.get("/players/stats", response_model=Envelope[list[PlayerStatsRow]])
 async def player_stats(
     request: Request,
+    cache: CacheDep,
+    supabase: SupabaseDep,
     client: NBAClientDep,
     settings: SettingsDep,
     season: str = Query(...),
@@ -608,6 +873,49 @@ async def player_stats(
     page_size: int = Query(50, ge=1, le=200),
 ) -> Envelope[list[PlayerStatsRow]]:
     page_size = min(page_size, settings.pagination_max_page_size)
+    normalized_season_type = (season_type or "Regular Season").strip()
+    use_db = (
+        supabase is not None
+        and measure == "Base"
+        and per_mode == "PerGame"
+        and normalized_season_type.lower() == "regular season"
+    )
+    if use_db:
+        key = player_stats_key(settings, season, normalized_season_type, measure, per_mode, team_id)
+        try:
+            data, cache_meta = await get_or_set_cache(
+                cache=cache,
+                redis_client=request.app.state.redis,
+                key=key,
+                ttl=TTLS.player_stats,
+                fetcher=lambda: fetch_player_stats(
+                    supabase,
+                    season=season,
+                    season_type=normalized_season_type,
+                    team_id=team_id,
+                ),
+            )
+            if data or not settings.nba_api_calls_allowed:
+                paged, pagination = paginate(data or [], page, page_size)
+                pagination_meta = _apply_pagination_links(
+                    request, pagination.model_dump()
+                )
+                _log_data_source(request, _source_from_cache(cache_meta, "db"), cache_meta)
+                return success(
+                    request, paged, cache=cache_meta, pagination=pagination_meta
+                )
+        except Exception:
+            logger.exception("supabase player stats fetch failed; falling back to nba api")
+    if not settings.nba_api_calls_allowed:
+        paged, pagination = paginate([], page, page_size)
+        pagination_meta = _apply_pagination_links(request, pagination.model_dump())
+        _log_data_source(request, "db")
+        return success(
+            request,
+            paged,
+            cache=CacheMeta(hit=False, stale=False),
+            pagination=pagination_meta,
+        )
     stats, cache_meta, pagination = await client.get_player_stats(
         season, measure, per_mode, season_type, team_id, page, page_size
     )

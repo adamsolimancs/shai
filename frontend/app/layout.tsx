@@ -69,7 +69,7 @@ export default function RootLayout({
       <body className="antialiased">
         <main className="app-shell">
           <SiteHeader />
-          <div className="mx-auto max-w-6xl px-6 pb-16 pt-12 md:pb-24">
+          <div className="mx-auto max-w-6xl px-5 pb-16 pt-12 md:pb-24">
             {children}
           </div>
           <SiteFooter />
@@ -95,7 +95,7 @@ const SiteHeader = async () => {
     <header className="sticky top-0 z-20 border-b border-[color:var(--color-app-border)] bg-[var(--color-app-surface-elevated)] backdrop-blur-md">
       <div className="relative mx-auto w-full max-w-7xl px-6 py-4">
         <div className="flex flex-col gap-3">
-          <div className="relative flex flex-col items-center gap-4 md:flex-row md:items-center md:gap-6">
+          <div className="relative flex flex-wrap items-center gap-4 md:flex-nowrap md:gap-6">
             <Link href="/" className="flex shrink-0 items-center gap-3">
               <Image
                 src="/aiball.png"
@@ -107,8 +107,7 @@ const SiteHeader = async () => {
               />
               <span className="text-lg font-bold tracking-[0.10em] text-[var(--color-app-foreground)] md:text-xl">ShAI</span>
             </Link>
-            <HeaderNavCluster />
-            <div className="flex w-full items-center justify-center md:absolute md:right-0 md:top-1/2 md:w-auto md:-translate-y-1/2 md:justify-end">
+            <div className="order-2 ml-auto flex w-auto items-center md:order-none md:ml-0 md:absolute md:right-0 md:top-1/2 md:w-auto md:-translate-y-1/2 md:justify-end">
               {user ? (
                 <div className="surface-card--soft app-offwhite-shell flex items-center gap-2 rounded-full px-3 py-1.5 text-xs md:gap-3 md:px-4 md:py-2 md:text-sm">
                   <span className="rounded-full px-3 py-1 font-medium text-[color:var(--color-app-foreground-muted)] md:text-sm">
@@ -143,6 +142,7 @@ const SiteHeader = async () => {
                 </Link>
               )}
             </div>
+            <HeaderNavCluster className="order-3 w-full md:order-none md:w-auto" />
           </div>
           <Suspense fallback={<HeaderSearchFallback />}>
             <HeaderSearchBar />

@@ -50,9 +50,48 @@ test("cacheKey builds prefixed keys", () => {
 test("formatDateInTZ and getSeasonForDate", () => {
   const date = new Date("2024-10-15T12:00:00Z");
   assert.equal(worker.formatDateInTZ("UTC", date), "2024-10-15");
+  assert.equal(worker.getHourInTZ("UTC", date), 12);
   assert.equal(worker.getSeasonForDate("UTC", date), "2024-25");
   const summer = new Date("2024-07-01T12:00:00Z");
   assert.equal(worker.getSeasonForDate("UTC", summer), "2023-24");
+});
+
+test("normalizeHour and isHourInWindow", () => {
+  assert.equal(worker.normalizeHour(25), 1);
+  assert.equal(worker.normalizeHour(-1), 23);
+  assert.equal(worker.isHourInWindow(2, 0, 3), true);
+  assert.equal(worker.isHourInWindow(3, 0, 3), false);
+  assert.equal(worker.isHourInWindow(23, 22, 2), true);
+  assert.equal(worker.isHourInWindow(3, 22, 2), false);
+});
+
+test("parseCronBudgetCursor", () => {
+  assert.deepEqual(worker.parseCronBudgetCursor({ date: "2024-10-10", runs: "2" }), {
+    date: "2024-10-10",
+    runs: 2,
+    next_run_after: null,
+    window: null,
+  });
+  assert.deepEqual(
+    worker.parseCronBudgetCursor({
+      date: "2024-10-10",
+      runs: 1,
+      next_run_after: "2024-10-10T10:00:00.000Z",
+      window: "in",
+    }),
+    {
+      date: "2024-10-10",
+      runs: 1,
+      next_run_after: Date.parse("2024-10-10T10:00:00.000Z"),
+      window: "in",
+    }
+  );
+  assert.deepEqual(worker.parseCronBudgetCursor(null), {
+    date: null,
+    runs: 0,
+    next_run_after: null,
+    window: null,
+  });
 });
 
 test("status helpers", () => {
@@ -90,6 +129,7 @@ test("row mappers normalize payloads", () => {
   assert.deepEqual(worker.mapGameRow({ game_id: "001", date: "2024-10-10" }, "2024-25"), {
     game_id: "001",
     date: "2024-10-10",
+    start_time: null,
     home_team_id: null,
     home_team_name: null,
     home_team_score: null,

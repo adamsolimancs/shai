@@ -86,6 +86,38 @@ const CONFIG = {
   ),
   timeZone: process.env.NBA_TIME_ZONE || "America/New_York",
   cronMinIntervalMs: Number(process.env.CRON_MIN_INTERVAL_MS || 60 * 1000),
+  cronWindowStartHour: toNumber(process.env.CRON_WINDOW_START_HOUR) ?? 15,
+  cronWindowEndHour: toNumber(process.env.CRON_WINDOW_END_HOUR) ?? 0,
+  cronMaxRunsPerDay: toNumber(process.env.CRON_MAX_RUNS_PER_DAY) ?? 0,
+  cronMaxRuntimeMs: toNumber(process.env.CRON_MAX_RUNTIME_MS) ?? 60 * 60 * 1000,
+  cronInWindowMinIntervalMs: Number(
+    process.env.CRON_IN_WINDOW_MIN_INTERVAL_MS || 15 * 60 * 1000
+  ),
+  cronInWindowMaxIntervalMs: Number(
+    process.env.CRON_IN_WINDOW_MAX_INTERVAL_MS || 30 * 60 * 1000
+  ),
+  cronOffWindowIntervalMs: Number(
+    process.env.CRON_OFF_WINDOW_INTERVAL_MS || 3 * 60 * 60 * 1000
+  ),
+  cronLiveBoxscoreLookbackDays: Number(
+    process.env.CRON_LIVE_BOXSCORE_LOOKBACK_DAYS || 2
+  ),
+  cronLiveBoxscoreIntervalMs: Number(
+    process.env.CRON_LIVE_BOXSCORE_INTERVAL_MS || 15 * 60 * 1000
+  ),
+  cronOffWindowLiveBoxscoreIntervalMs: Number(
+    process.env.CRON_OFF_WINDOW_LIVE_BOXSCORE_INTERVAL_MS || 3 * 60 * 60 * 1000
+  ),
+  cronLiveGamesLookbackDays: Number(process.env.CRON_LIVE_GAMES_LOOKBACK_DAYS || 3),
+  cronLiveGamesIntervalMs: Number(
+    process.env.CRON_LIVE_GAMES_INTERVAL_MS || 15 * 60 * 1000
+  ),
+  cronOffWindowLiveGamesIntervalMs: Number(
+    process.env.CRON_OFF_WINDOW_LIVE_GAMES_INTERVAL_MS || 3 * 60 * 60 * 1000
+  ),
+  cronMaintenanceMinRemainingMs: Number(
+    process.env.CRON_MAINTENANCE_MIN_REMAINING_MS || 10 * 60 * 1000
+  ),
   apiMinIntervalMs: Number(process.env.API_MIN_INTERVAL_MS || 250),
   apiRetryMax: Number(process.env.API_RETRY_MAX || 4),
   apiRetryBaseDelayMs: Number(process.env.API_RETRY_BASE_DELAY_MS || 750),
@@ -161,6 +193,7 @@ const cacheStats = {
   failures: 0,
   lastLogAt: 0,
 };
+let cronBudget = null;
 
 process.on("unhandledRejection", (reason) => {
   console.error("Unhandled rejection", reason);
@@ -179,8 +212,69 @@ function logUpsert(table, count, extra) {
   log(`Upserted ${count} rows into table '${table}'`, extra);
 }
 
+function initCronBudget() {
+  const maxRuntimeMs = toNumber(CONFIG.cronMaxRuntimeMs);
+  if (!Number.isFinite(maxRuntimeMs) || maxRuntimeMs <= 0) {
+    cronBudget = null;
+    return;
+  }
+  const startedAt = Date.now();
+  cronBudget = {
+    startedAt,
+    deadline: startedAt + maxRuntimeMs,
+    maxRuntimeMs,
+    exceeded: false,
+  };
+}
+
+function clearCronBudget() {
+  cronBudget = null;
+}
+
+function isCronBudgetActive() {
+  return Boolean(cronBudget && Number.isFinite(cronBudget.deadline));
+}
+
+function cronRemainingMs() {
+  if (!isCronBudgetActive()) return null;
+  return Math.max(0, cronBudget.deadline - Date.now());
+}
+
+function throwIfCronBudgetExceeded(label) {
+  if (!isCronBudgetActive()) return;
+  if (Date.now() <= cronBudget.deadline) return;
+  if (!cronBudget.exceeded) {
+    cronBudget.exceeded = true;
+    log("Cron runtime budget exceeded; halting work", {
+      label,
+      max_runtime_ms: cronBudget.maxRuntimeMs,
+    });
+  }
+  throw new CronBudgetError("Cron runtime budget exceeded");
+}
+
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  if (!isCronBudgetActive()) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+  const remaining = cronRemainingMs();
+  if (remaining !== null && remaining <= 0) {
+    return Promise.reject(new CronBudgetError("Cron runtime budget exceeded"));
+  }
+  const waitMs = remaining !== null ? Math.min(ms, remaining) : ms;
+  return new Promise((resolve, reject) => {
+    setTimeout(() => {
+      if (remaining !== null && waitMs < ms) {
+        reject(new CronBudgetError("Cron runtime budget exceeded"));
+        return;
+      }
+      if (remaining !== null && cronRemainingMs() <= 0) {
+        reject(new CronBudgetError("Cron runtime budget exceeded"));
+        return;
+      }
+      resolve();
+    }, waitMs);
+  });
 }
 
 function cacheKey(...parts) {
@@ -231,6 +325,17 @@ class CircuitOpenError extends Error {
   }
 }
 
+class CronBudgetError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "CronBudgetError";
+  }
+}
+
+function isCronBudgetError(error) {
+  return error instanceof CronBudgetError || error?.name === "CronBudgetError";
+}
+
 function isCircuitOpen() {
   return Date.now() < apiCircuitOpenUntil;
 }
@@ -261,6 +366,17 @@ function formatDateInTZ(timeZone, date = new Date()) {
   return `${lookup.year}-${lookup.month}-${lookup.day}`;
 }
 
+function getHourInTZ(timeZone, date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const hour = Number(lookup.hour);
+  return Number.isFinite(hour) ? hour : null;
+}
+
 function getSeasonForDate(timeZone, date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone,
@@ -273,6 +389,23 @@ function getSeasonForDate(timeZone, date = new Date()) {
   const startYear = month >= 10 ? year : year - 1;
   const suffix = String((startYear + 1) % 100).padStart(2, "0");
   return `${startYear}-${suffix}`;
+}
+
+function normalizeHour(value) {
+  if (!Number.isFinite(value)) return null;
+  const hour = Math.trunc(value);
+  const normalized = ((hour % 24) + 24) % 24;
+  return normalized;
+}
+
+function isHourInWindow(hour, startHour, endHour) {
+  if (!Number.isFinite(hour)) return true;
+  if (!Number.isFinite(startHour) || !Number.isFinite(endHour)) return true;
+  if (startHour === endHour) return true;
+  if (startHour < endHour) {
+    return hour >= startHour && hour < endHour;
+  }
+  return hour >= startHour || hour < endHour;
 }
 
 function normalizeConflictValue(value) {
@@ -348,6 +481,13 @@ function mapGameRow(game, season) {
   return {
     game_id: gameId,
     date: toText(game.date),
+    start_time: toText(
+      game.start_time ??
+        game.start_time_utc ??
+        game.start_time_est ??
+        game.start_time_local ??
+        game.game_time
+    ),
     home_team_id: game.home_team_id ?? null,
     home_team_name: game.home_team_name ?? null,
     home_team_score: game.home_team_score ?? null,
@@ -494,11 +634,13 @@ async function apiRequest(path) {
   if (isCircuitOpen()) {
     throw new CircuitOpenError("API circuit open; skipping request");
   }
+  throwIfCronBudgetExceeded("api_request");
   const url = path.startsWith("http") ? path : `${CONFIG.apiBaseUrl}${path}`;
   const queued = requestQueue.then(async () => {
     if (isCircuitOpen()) {
       throw new CircuitOpenError("API circuit open; skipping request");
     }
+    throwIfCronBudgetExceeded("api_request");
     const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastApiRequestAt));
     if (waitMs > 0) {
       await sleep(waitMs);
@@ -509,6 +651,7 @@ async function apiRequest(path) {
     if (isCircuitOpen()) {
       throw new CircuitOpenError("API circuit open; skipping request");
     }
+    throwIfCronBudgetExceeded("api_request");
     const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastApiRequestAt));
     if (waitMs > 0) {
       await sleep(waitMs);
@@ -521,7 +664,9 @@ async function apiRequest(path) {
 }
 
 async function statsRequest(url) {
+  throwIfCronBudgetExceeded("stats_request");
   const queued = statsRequestQueue.then(async () => {
+    throwIfCronBudgetExceeded("stats_request");
     const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastStatsRequestAt));
     if (waitMs > 0) {
       await sleep(waitMs);
@@ -529,6 +674,7 @@ async function statsRequest(url) {
     lastStatsRequestAt = Date.now();
     return statsRequestWithRetry(url);
   }, async () => {
+    throwIfCronBudgetExceeded("stats_request");
     const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastStatsRequestAt));
     if (waitMs > 0) {
       await sleep(waitMs);
@@ -552,6 +698,7 @@ async function requestWithRetry(url) {
   let attempt = 0;
   let delay = CONFIG.apiRetryBaseDelayMs;
   while (attempt <= CONFIG.apiRetryMax) {
+    throwIfCronBudgetExceeded("api_request");
     let response;
     try {
       response = await fetch(url, {
@@ -608,6 +755,7 @@ async function statsRequestWithRetry(url) {
   let attempt = 0;
   let delay = CONFIG.apiRetryBaseDelayMs;
   while (attempt <= CONFIG.apiRetryMax) {
+    throwIfCronBudgetExceeded("stats_request");
     let response;
     try {
       response = await fetch(url, {
@@ -851,6 +999,7 @@ async function supabaseSelectAll(table, query, pageSize = 1000) {
   const rows = [];
   let offset = 0;
   while (true) {
+    throwIfCronBudgetExceeded("supabase_select_all");
     const chunk = await supabaseSelect(table, {
       ...query,
       limit: pageSize,
@@ -901,6 +1050,141 @@ function parseCursor(state) {
   } catch {
     return null;
   }
+}
+
+function parseCronBudgetCursor(cursor) {
+  if (!cursor || typeof cursor !== "object") {
+    return { date: null, runs: 0, next_run_after: null, window: null };
+  }
+  const date = typeof cursor.date === "string" ? cursor.date : null;
+  const runs = Number(cursor.runs);
+  const window =
+    typeof cursor.window === "string" && cursor.window.trim()
+      ? cursor.window.trim()
+      : null;
+  const nextValue = cursor.next_run_after ?? cursor.nextRunAfter ?? null;
+  const nextRunAfter =
+    typeof nextValue === "number"
+      ? nextValue
+      : typeof nextValue === "string"
+      ? Date.parse(nextValue)
+      : null;
+  return {
+    date,
+    runs: Number.isFinite(runs) ? runs : 0,
+    next_run_after: Number.isFinite(nextRunAfter) ? nextRunAfter : null,
+    window,
+  };
+}
+
+function getCronIntervalMs(inWindow) {
+  if (inWindow) {
+    const rawMin = CONFIG.cronInWindowMinIntervalMs;
+    const minInterval = Number.isFinite(rawMin) ? Math.max(0, rawMin) : 0;
+    const rawMax = CONFIG.cronInWindowMaxIntervalMs;
+    const maxInterval = Number.isFinite(rawMax)
+      ? Math.max(minInterval, rawMax)
+      : minInterval;
+    if (maxInterval === 0) return 0;
+    if (maxInterval === minInterval) return minInterval;
+    return minInterval + Math.floor(Math.random() * (maxInterval - minInterval + 1));
+  }
+  const rawOff = CONFIG.cronOffWindowIntervalMs;
+  return Number.isFinite(rawOff) ? Math.max(0, rawOff) : 0;
+}
+
+function computeNextRunAfter(inWindow, nowMs) {
+  const intervalMs = getCronIntervalMs(inWindow);
+  return intervalMs > 0 ? nowMs + intervalMs : null;
+}
+
+function shouldRunMaintenanceTask(task) {
+  const remaining = cronRemainingMs();
+  const minRemaining = CONFIG.cronMaintenanceMinRemainingMs;
+  if (!Number.isFinite(minRemaining) || minRemaining <= 0) return true;
+  if (remaining !== null && remaining < minRemaining) {
+    log("Skipping maintenance task; low cron budget", {
+      task,
+      remaining_ms: remaining,
+      min_remaining_ms: minRemaining,
+    });
+    return false;
+  }
+  return true;
+}
+
+async function recordCronRunState(status, date, runs, cursor, errorMessage) {
+  await updateIngestionState(
+    "cron_budget",
+    status,
+    { date, runs, ...(cursor || {}) },
+    errorMessage
+  );
+}
+
+async function shouldStartCronRun() {
+  const now = new Date();
+  const date = formatDateInTZ(CONFIG.timeZone, now);
+  const hour = getHourInTZ(CONFIG.timeZone, now);
+  const startHour = normalizeHour(CONFIG.cronWindowStartHour);
+  const endHour = normalizeHour(CONFIG.cronWindowEndHour);
+  const inWindow = isHourInWindow(hour, startHour, endHour);
+  const windowLabel = inWindow ? "in" : "out";
+
+  const maxRuns = CONFIG.cronMaxRunsPerDay;
+  const enforceMaxRuns = Number.isFinite(maxRuns) && maxRuns > 0;
+  const state = await getIngestionState("cron_budget");
+  const cursor = parseCronBudgetCursor(parseCursor(state));
+  const runs = cursor.date === date ? cursor.runs : 0;
+  if (enforceMaxRuns && runs >= maxRuns) {
+    log("Cron daily limit reached; skipping run", {
+      date,
+      runs,
+      max_runs_per_day: maxRuns,
+    });
+    return { allowed: false, date, hour, runs, inWindow };
+  }
+
+  const lastAttemptAt = state?.last_attempt_at || state?.last_success_at || null;
+  const lastAttemptMs = lastAttemptAt ? Date.parse(lastAttemptAt) : null;
+  const normalizedCursor =
+    cursor.date === date
+      ? cursor
+      : { ...cursor, runs: 0, next_run_after: null, window: null };
+  const windowMatches = normalizedCursor.window === windowLabel;
+  const nextRunAfter = windowMatches ? normalizedCursor.next_run_after : null;
+  const nowMs = now.getTime();
+
+  if (Number.isFinite(nextRunAfter) && nowMs < nextRunAfter) {
+    log("Cron interval not reached; skipping run", {
+      date,
+      hour,
+      next_run_after: new Date(nextRunAfter).toISOString(),
+      window: windowLabel,
+    });
+    return { allowed: false, date, hour, runs, inWindow };
+  }
+
+  if (Number.isFinite(lastAttemptMs)) {
+    const minIntervalMs = inWindow
+      ? Number.isFinite(CONFIG.cronInWindowMinIntervalMs)
+        ? Math.max(0, CONFIG.cronInWindowMinIntervalMs)
+        : 0
+      : Number.isFinite(CONFIG.cronOffWindowIntervalMs)
+      ? Math.max(0, CONFIG.cronOffWindowIntervalMs)
+      : 0;
+    if (minIntervalMs > 0 && nowMs - lastAttemptMs < minIntervalMs) {
+      log("Cron minimum interval not reached; skipping run", {
+        date,
+        hour,
+        window: windowLabel,
+        min_interval_ms: minIntervalMs,
+      });
+      return { allowed: false, date, hour, runs, inWindow };
+    }
+  }
+
+  return { allowed: true, date, hour, runs, inWindow };
 }
 
 async function shouldRun(entity, intervalMs) {
@@ -1018,6 +1302,7 @@ async function fetchGamesFromApi(season) {
   const pageSize = 200;
   const games = [];
   while (true) {
+    throwIfCronBudgetExceeded("games_page");
     const payload = await apiRequest(
       `/v1/games?season=${season}&page=${page}&page_size=${pageSize}`
     );
@@ -1159,6 +1444,7 @@ async function fetchPlayerIds(season, { activeOnly = false, maxPlayers = 0 } = {
   const players = [];
   const activeParam = activeOnly ? "&active=true" : "";
   while (true) {
+    throwIfCronBudgetExceeded("players_page");
     const payload = await apiRequest(
       `/v1/players?season=${season}&page=${page}&page_size=${pageSize}${activeParam}`
     );
@@ -1193,10 +1479,12 @@ async function refreshGames() {
   const seasons = await getSeasonsToSync();
   await withIngestionState("games", async () => {
     for (const season of seasons) {
+      throwIfCronBudgetExceeded("games_season");
       let page = 1;
       const pageSize = 200;
       let total = 0;
       while (true) {
+        throwIfCronBudgetExceeded("games_page");
         const payload = await apiRequest(
           `/v1/games?season=${season}&page=${page}&page_size=${pageSize}`
         );
@@ -1219,6 +1507,7 @@ async function refreshPlayersForSeason(season) {
   const pageSize = 200;
   let total = 0;
   while (true) {
+    throwIfCronBudgetExceeded("players_page");
     const payload = await apiRequest(
       `/v1/players?season=${season}&page=${page}&page_size=${pageSize}`
     );
@@ -1289,6 +1578,7 @@ async function refreshPlayers() {
 
   await withIngestionState("players", async () => {
     for (const season of seasons) {
+      throwIfCronBudgetExceeded("players_season");
       await refreshPlayersForSeason(season);
     }
   }, cursor);
@@ -1298,6 +1588,7 @@ async function refreshStandings() {
   const seasons = await getSeasonsToSync();
   await withIngestionState("league_standings", async () => {
     for (const season of seasons) {
+      throwIfCronBudgetExceeded("standings_season");
       const payload = await apiRequest(`/v1/league_standings?season=${season}`);
       const rows = (payload.data || [])
         .map((row) => mapLeagueStandingRow(row, season))
@@ -1317,6 +1608,7 @@ async function refreshTeamStats() {
   const seasons = await getSeasonsToSync();
   await withIngestionState("team_advanced_stats", async () => {
     for (const season of seasons) {
+      throwIfCronBudgetExceeded("team_stats_season");
       const games = await loadGamesForSeason(season);
       const aggregates = new Map();
 
@@ -1342,7 +1634,12 @@ async function refreshTeamStats() {
         return aggregates.get(teamId);
       };
 
+      let gameIndex = 0;
       for (const game of games) {
+        if (gameIndex % 50 === 0) {
+          throwIfCronBudgetExceeded("team_stats_games");
+        }
+        gameIndex += 1;
         const homeId = toNumber(game.home_team_id ?? game.HOME_TEAM_ID);
         const awayId = toNumber(game.away_team_id ?? game.AWAY_TEAM_ID);
         const homeScore = toNumber(game.home_team_score ?? game.HOME_TEAM_SCORE);
@@ -1439,6 +1736,7 @@ async function refreshTeamStats() {
 async function refreshTeamDetails() {
   const season = await getSeason();
   await withIngestionState("team_details", async () => {
+    throwIfCronBudgetExceeded("team_details");
     const teams = await fetchTeamsForSeason(season);
     await runWithConcurrency(teams, CONFIG.boxscoreConcurrency, async (team) => {
       const payload = await apiRequest(`/v1/teams/${team.id}/details`);
@@ -1454,6 +1752,7 @@ async function refreshTeamDetails() {
 
 async function refreshPlayerAwards() {
   const season = await getSeason();
+  throwIfCronBudgetExceeded("player_awards");
   const playerIds = await fetchPlayerIds(season, {
     activeOnly: CONFIG.playerAwardsActiveOnly,
   });
@@ -1489,6 +1788,7 @@ async function refreshPlayerSeasonStats() {
   const seasons = await getSeasonsToSync();
   await withIngestionState("player_season_stats", async () => {
     for (const season of seasons) {
+      throwIfCronBudgetExceeded("player_season_stats_season");
       await refreshPlayerSeasonStatsForSeason(season);
     }
   }, { seasons });
@@ -1629,6 +1929,20 @@ async function upsertBoxscore(boxscore) {
 async function updateBoxscoreForGame(gameId) {
   const boxscore = await fetchBoxscore(gameId);
   const playersCount = await upsertBoxscore(boxscore);
+  const startTime = toText(boxscore.start_time);
+  if (startTime) {
+    await supabaseUpsert(
+      "games",
+      [
+        {
+          game_id: boxscore.game_id,
+          start_time: startTime,
+        },
+      ],
+      "game_id",
+      { recordState: false }
+    );
+  }
   const status = boxscore.status || null;
   const boxscoreTtl = isLiveStatus(status)
     ? CONFIG.cacheTtlBoxscoreLiveSec
@@ -1662,6 +1976,7 @@ async function refreshScoreboard({ mode = CONFIG.workerMode } = {}) {
 
     const gameIds = games.map((game) => game.game_id);
     if (mode === "cron") {
+      throwIfCronBudgetExceeded("scoreboard_boxscores");
       activeGameIds.clear();
       await runWithConcurrency(gameIds, CONFIG.boxscoreConcurrency, updateBoxscoreForGame);
       log(`Scoreboard updated: ${games.length} games (cron)`);
@@ -1676,23 +1991,28 @@ async function refreshScoreboard({ mode = CONFIG.workerMode } = {}) {
       return now - cached.checkedAt > CONFIG.statusRefreshMs;
     });
 
+    throwIfCronBudgetExceeded("scoreboard_stale_boxscores");
     await runWithConcurrency(staleIds, CONFIG.boxscoreConcurrency, updateBoxscoreForGame);
     log(`Scoreboard updated: ${games.length} games, ${activeGameIds.size} active`);
   }, { season, date: today });
 }
 
-async function refreshRecentBoxscores() {
+async function refreshRecentBoxscores({ lookbackDays, entity = "boxscores" } = {}) {
   const season = await getSeason();
   const endDate = new Date();
   const startDate = new Date(endDate);
-  startDate.setDate(startDate.getDate() - CONFIG.boxscoreLookbackDays);
+  const resolvedLookback = Number.isFinite(lookbackDays)
+    ? Math.max(0, lookbackDays)
+    : CONFIG.boxscoreLookbackDays;
+  startDate.setDate(startDate.getDate() - resolvedLookback);
   const dateFrom = formatDateInTZ(CONFIG.timeZone, startDate);
   const dateTo = formatDateInTZ(CONFIG.timeZone, endDate);
-  await withIngestionState("boxscores", async () => {
+  await withIngestionState(entity, async () => {
     let page = 1;
     const pageSize = 200;
     const gameIds = [];
     while (true) {
+      throwIfCronBudgetExceeded("boxscores_page");
       const payload = await apiRequest(
         `/v1/games?season=${season}&date_from=${dateFrom}&date_to=${dateTo}&page=${page}&page_size=${pageSize}`
       );
@@ -1707,13 +2027,46 @@ async function refreshRecentBoxscores() {
       page = nextPage;
     }
     let totalPlayers = 0;
+    throwIfCronBudgetExceeded("boxscores_updates");
     await runWithConcurrency(gameIds, CONFIG.boxscoreConcurrency, async (gameId) => {
       const result = await updateBoxscoreForGame(gameId);
       totalPlayers += result.playersCount || 0;
     });
     logUpsert("boxscores", gameIds.length, { date_from: dateFrom, date_to: dateTo });
     logUpsert("boxscore_players", totalPlayers, { date_from: dateFrom, date_to: dateTo });
-  }, { season, date_from: dateFrom, date_to: dateTo });
+  }, { season, date_from: dateFrom, date_to: dateTo, lookback_days: resolvedLookback });
+}
+
+async function refreshRecentGames({ lookbackDays, entity = "games_recent" } = {}) {
+  const season = await getSeason();
+  const endDate = new Date();
+  const startDate = new Date(endDate);
+  const resolvedLookback = Number.isFinite(lookbackDays)
+    ? Math.max(0, lookbackDays)
+    : CONFIG.cronLiveGamesLookbackDays;
+  startDate.setDate(startDate.getDate() - resolvedLookback);
+  const dateFrom = formatDateInTZ(CONFIG.timeZone, startDate);
+  const dateTo = formatDateInTZ(CONFIG.timeZone, endDate);
+  await withIngestionState(entity, async () => {
+    let page = 1;
+    const pageSize = 200;
+    let total = 0;
+    while (true) {
+      throwIfCronBudgetExceeded("games_recent_page");
+      const payload = await apiRequest(
+        `/v1/games?season=${season}&date_from=${dateFrom}&date_to=${dateTo}&page=${page}&page_size=${pageSize}`
+      );
+      const rows = (payload.data || []).map((row) => mapGameRow(row, season)).filter(Boolean);
+      if (rows.length) {
+        await supabaseUpsert("games", rows, "game_id");
+        total += rows.length;
+      }
+      const nextPage = payload.meta?.pagination?.next;
+      if (!nextPage) break;
+      page = nextPage;
+    }
+    logUpsert("games", total, { season, date_from: dateFrom, date_to: dateTo });
+  }, { season, date_from: dateFrom, date_to: dateTo, lookback_days: resolvedLookback });
 }
 
 async function refreshActiveGames() {
@@ -1729,13 +2082,24 @@ async function runWithConcurrency(items, limit, fn, { strict = false } = {}) {
   const queue = [...items];
   const errors = [];
   let circuitOpen = false;
+  let budgetExceeded = false;
   const workers = new Array(Math.min(limit, queue.length)).fill(null).map(async () => {
     while (queue.length && !circuitOpen) {
       const item = queue.shift();
       if (item === undefined) return;
       try {
+        throwIfCronBudgetExceeded("concurrency");
         await fn(item);
       } catch (error) {
+        if (isCronBudgetError(error)) {
+          if (!budgetExceeded) {
+            log("Cron budget exceeded; halting task batch", { item });
+          }
+          budgetExceeded = true;
+          circuitOpen = true;
+          errors.push({ item, error: String(error) });
+          return;
+        }
         if (isCircuitOpenError(error)) {
           if (!circuitOpen) {
             log("API circuit open; halting task batch", { item });
@@ -1750,6 +2114,9 @@ async function runWithConcurrency(items, limit, fn, { strict = false } = {}) {
     }
   });
   await Promise.all(workers);
+  if (budgetExceeded) {
+    throw new CronBudgetError("Cron runtime budget exceeded");
+  }
   if (strict && errors.length) {
     const e = new Error(`Concurrency batch had ${errors.length} failures`);
     e.details = errors.slice(0, 20);
@@ -1803,25 +2170,102 @@ async function runCronTask(entity, intervalMs, fn) {
     log("API circuit open; skipping cron task", { task: entity });
     return;
   }
+  throwIfCronBudgetExceeded(`cron_task:${entity}`);
   try {
     await fn();
   } catch (error) {
+    if (isCronBudgetError(error)) {
+      throw error;
+    }
     log(`${entity} task failed`, String(error));
   }
 }
 
 async function runCron() {
-  await runCronTask("scoreboard", CONFIG.scoreboardIntervalMs, () =>
-    refreshScoreboard({ mode: "cron" })
-  );
-  await runCronTask("games", CONFIG.gamesIntervalMs, refreshGames);
-  await runCronTask("players", CONFIG.playersIntervalMs, refreshPlayers);
-  await runCronTask("league_standings", CONFIG.standingsIntervalMs, refreshStandings);
-  await runCronTask("player_awards", CONFIG.playerAwardsIntervalMs, refreshPlayerAwards);
-  await runCronTask("player_season_stats", CONFIG.playerStatsIntervalMs, refreshPlayerSeasonStats);
-  await runCronTask("team_advanced_stats", CONFIG.teamStatsIntervalMs, refreshTeamStats);
-  await runCronTask("team_details", CONFIG.teamDetailsIntervalMs, refreshTeamDetails);
-  await runCronTask("boxscores", CONFIG.boxscoreBackfillIntervalMs, refreshRecentBoxscores);
+  const gate = await shouldStartCronRun();
+  if (!gate.allowed) {
+    return;
+  }
+
+  const runNumber = (gate.runs ?? 0) + 1;
+  const windowLabel = gate.inWindow ? "in" : "out";
+  const nowMs = Date.now();
+  const nextRunAfter = computeNextRunAfter(gate.inWindow, nowMs);
+  const cronCursor = {
+    window: windowLabel,
+    next_run_after: nextRunAfter,
+  };
+  await recordCronRunState("running", gate.date, runNumber, cronCursor, null);
+  initCronBudget();
+
+  let finalStatus = "ok";
+  let errorMessage = null;
+  try {
+    await runCronTask("scoreboard", CONFIG.scoreboardIntervalMs, () =>
+      refreshScoreboard({ mode: "cron" })
+    );
+    const liveBoxscoreIntervalMs = gate.inWindow
+      ? CONFIG.cronLiveBoxscoreIntervalMs
+      : CONFIG.cronOffWindowLiveBoxscoreIntervalMs;
+    await runCronTask("boxscores_live", liveBoxscoreIntervalMs, () =>
+      refreshRecentBoxscores({
+        lookbackDays: CONFIG.cronLiveBoxscoreLookbackDays,
+        entity: "boxscores_live",
+      })
+    );
+    const liveGamesIntervalMs = gate.inWindow
+      ? CONFIG.cronLiveGamesIntervalMs
+      : CONFIG.cronOffWindowLiveGamesIntervalMs;
+    await runCronTask("games_recent", liveGamesIntervalMs, () =>
+      refreshRecentGames({
+        lookbackDays: CONFIG.cronLiveGamesLookbackDays,
+        entity: "games_recent",
+      })
+    );
+    if (shouldRunMaintenanceTask("boxscores_backfill")) {
+      await runCronTask("boxscores", CONFIG.boxscoreBackfillIntervalMs, () =>
+        refreshRecentBoxscores({
+          lookbackDays: CONFIG.boxscoreLookbackDays,
+          entity: "boxscores",
+        })
+      );
+    }
+    if (shouldRunMaintenanceTask("games")) {
+      await runCronTask("games", CONFIG.gamesIntervalMs, refreshGames);
+    }
+    await runCronTask("league_standings", CONFIG.standingsIntervalMs, refreshStandings);
+    await runCronTask("teams", CONFIG.teamsIntervalMs, refreshTeams);
+    if (shouldRunMaintenanceTask("players")) {
+      await runCronTask("players", CONFIG.playersIntervalMs, refreshPlayers);
+    }
+    if (shouldRunMaintenanceTask("player_season_stats")) {
+      await runCronTask("player_season_stats", CONFIG.playerStatsIntervalMs, refreshPlayerSeasonStats);
+    }
+    if (shouldRunMaintenanceTask("player_awards")) {
+      await runCronTask("player_awards", CONFIG.playerAwardsIntervalMs, refreshPlayerAwards);
+    }
+    if (shouldRunMaintenanceTask("team_details")) {
+      await runCronTask("team_details", CONFIG.teamDetailsIntervalMs, refreshTeamDetails);
+    }
+    if (shouldRunMaintenanceTask("team_advanced_stats")) {
+      await runCronTask("team_advanced_stats", CONFIG.teamStatsIntervalMs, refreshTeamStats);
+    }
+  } catch (error) {
+    finalStatus = "failed";
+    errorMessage = error instanceof Error ? error.message : String(error);
+    if (isCronBudgetError(error)) {
+      log("Cron budget exceeded; stopping remaining tasks");
+    } else {
+      log("Cron run failed", errorMessage);
+    }
+  } finally {
+    if (cronBudget?.exceeded && finalStatus === "ok") {
+      finalStatus = "failed";
+      errorMessage = "Cron runtime budget exceeded";
+    }
+    await recordCronRunState(finalStatus, gate.date, runNumber, cronCursor, errorMessage);
+    clearCronBudget();
+  }
 }
 
 async function runLive() {
@@ -1866,7 +2310,10 @@ module.exports = {
   toNumber,
   cacheKey,
   formatDateInTZ,
+  getHourInTZ,
   getSeasonForDate,
+  normalizeHour,
+  isHourInWindow,
   normalizeConflictValue,
   isFinalStatus,
   isLiveStatus,
@@ -1880,5 +2327,6 @@ module.exports = {
   computeRetryWaitMs,
   dedupeRowsForConflict,
   parseCursor,
+  parseCronBudgetCursor,
   chunkArray,
 };

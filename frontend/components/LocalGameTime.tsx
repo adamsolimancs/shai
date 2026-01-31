@@ -45,7 +45,7 @@ function formatLabel(value: string, showTime: boolean, tbdLabel: string): string
     return dateLabel;
   }
   if (!hasTime) {
-    return `${dateLabel} · ${tbdLabel}`;
+    return dateLabel;
   }
   return `${dateLabel} · ${TIME_ONLY_FORMATTER.format(date)}`;
 }
