@@ -4,6 +4,8 @@ import { LeagueStandings, type LeagueStandingsConference } from "@/components/Le
 import HeroSearch from "@/components/HeroSearch";
 import LocalGameTime from "@/components/LocalGameTime";
 import ScoreCard from "@/components/ScoreCard";
+import StarBorder from "@/components/StarBorder";
+import { buildTimeFallback, isFinalGame } from "@/lib/gameUtils";
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
 import { slugifySegment } from "@/lib/utils";
 
@@ -34,6 +36,7 @@ type ScoreCardData = {
   home: string;
   homeScore: number;
   status: string;
+  isFinal: boolean;
   date: string;
   timeFallback: string;
   showTime: boolean;
@@ -133,50 +136,13 @@ type NewsArticle = {
 const NEWS_DATE = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
 
 const HOME_DATE_FALLBACK = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
-const DATE_ONLY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
-const MIDNIGHT_TIME_REGEX = /T00:00:00/;
-
-function isFinalStatus(status?: string | null): boolean {
-  if (!status) return false;
-  return /(final|final\/ot|final\/2ot|game end|completed)/i.test(status);
-}
-
-function hasTimeInfo(value: string): boolean {
-  if (!value) return false;
-  if (DATE_ONLY_REGEX.test(value)) return false;
-  if (MIDNIGHT_TIME_REGEX.test(value)) return false;
-  return /T\d{2}:\d{2}/.test(value);
-}
-
-function formatDateOnly(value: string): string {
-  if (!value) return "TBD";
-  const dateOnlyMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (dateOnlyMatch) {
-    const [, year, month, day] = dateOnlyMatch;
-    return HOME_DATE_FALLBACK.format(new Date(Number(year), Number(month) - 1, Number(day)));
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  if (MIDNIGHT_TIME_REGEX.test(value)) {
-    return HOME_DATE_FALLBACK.format(new Date(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()));
-  }
-  return HOME_DATE_FALLBACK.format(parsed);
-}
-
-function buildTimeFallback(value: string, showTime: boolean): string {
-  const dateLabel = formatDateOnly(value);
-  if (!showTime) return dateLabel;
-  if (!hasTimeInfo(value)) {
-    return `${dateLabel} · TBD`;
-  }
-  return dateLabel;
-}
 
 async function fetchRecentGames(): Promise<ScoreCardData[]> {
   const games = await nbaFetch<Game[]>(`/v1/games?season=${DEFAULT_SEASON}&page_size=6`, { next: { revalidate: 120 } });
   return games.slice(0, 6).map((game) => {
-    const status = game.status ?? "Final";
-    const showTime = !isFinalStatus(status);
+    const status = game.status ?? "Scheduled";
+    const isFinal = isFinalGame(status, game.date, game.home_team_score, game.away_team_score);
+    const showTime = !isFinal;
     return {
       id: game.game_id,
       away: game.away_team_name ?? "Away",
@@ -184,8 +150,9 @@ async function fetchRecentGames(): Promise<ScoreCardData[]> {
       home: game.home_team_name ?? "Home",
       homeScore: game.home_team_score ?? 0,
       status,
+      isFinal,
       date: game.date,
-      timeFallback: buildTimeFallback(game.date, showTime),
+      timeFallback: buildTimeFallback(game.date, showTime, HOME_DATE_FALLBACK),
       showTime,
       location: game.location ?? fallbackLocationForTeam(game.home_team_name) ?? "Venue TBA",
     };
@@ -342,7 +309,7 @@ export default async function HomePage() {
       <section id="scores" className="mt-12 sm:mt-16 lg:mt-20">
         <SectionTitle title="Recent Games" eyebrow="Live scores" link={{ href: "/scores", label: "View all scores →" }} />
         {/* TODO: if no recent games (offseason), display last season's playoff results. */}
-        <div className="grid gap-3 sm:gap-4 md:grid-cols-3">
+        <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3 md:gap-5 lg:mx-auto lg:max-w-5xl lg:justify-items-center">
           {scores.map((game) => {
             const winner =
               game.homeScore === game.awayScore ? "even" : game.homeScore > game.awayScore ? "home" : "away";
@@ -350,9 +317,12 @@ export default async function HomePage() {
               <ScoreCard
                 key={game.id}
                 href={`/boxscore/${game.id}`}
+                className="w-full max-w-[360px]"
+                density="compact"
                 timeLabel={<LocalGameTime value={game.date} fallback={game.timeFallback} showTime={game.showTime} />}
                 locationLabel={game.location}
                 status={game.status}
+                isFinal={game.isFinal}
                 home={{ name: game.home, score: game.homeScore }}
                 away={{ name: game.away, score: game.awayScore }}
                 winner={winner}
@@ -366,10 +336,14 @@ export default async function HomePage() {
         <SectionTitle title="Player Spotlight" eyebrow="Trending performers" link={{ href: "/players", label: "View all players →" }} />
         <div className="grid gap-4 sm:gap-6 md:grid-cols-3">
           {players.map((player) => (
-            <Link
+            <StarBorder
               key={player.id}
+              as={Link}
               href={`/players/${player.id}`}
-              className="group rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/30 transition hover:border-[color:var(--color-app-primary)] hover:bg-slate-900/80 hover:ring-2 hover:ring-[color:var(--color-app-primary-soft)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30 sm:p-6"
+              className="group block w-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/30"
+              contentClassName="rounded-3xl border border-white/10 bg-slate-900/70 p-4 shadow-lg shadow-black/30 transition hover:border-[color:var(--color-app-primary)] hover:bg-slate-900/80 hover:ring-2 hover:ring-[color:var(--color-app-primary-soft)] sm:p-6"
+              color="var(--color-star-border)"
+              speed="6.5s"
             >
               <div className="flex items-center justify-between text-xs text-white/60 sm:text-sm">
                 <span className="font-semibold text-white">{player.name}</span>
@@ -395,7 +369,7 @@ export default async function HomePage() {
                   </dd>
                 </div>
               </dl>
-            </Link>
+            </StarBorder>
           ))}
         </div>
       </section>

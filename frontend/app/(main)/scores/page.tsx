@@ -1,5 +1,6 @@
 import LocalGameTime from "@/components/LocalGameTime";
 import ScoreCard from "@/components/ScoreCard";
+import { buildTimeFallback, isFinalGame, parseGameDate, toDateKey } from "@/lib/gameUtils";
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
 
 type Game = {
@@ -19,7 +20,8 @@ type EnhancedGame = {
   dateLabel: string;
   timeFallback: string;
   showTime: boolean;
-  status: string;
+  status?: string;
+  isFinal: boolean;
   home: { name: string; score: number };
   away: { name: string; score: number };
   winner: "home" | "away" | "even";
@@ -36,67 +38,6 @@ type HighlightMetric = {
 const DATE_FORMATTER = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "short", day: "numeric" });
 const DATE_ONLY_FORMATTER = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
 
-const DATE_ONLY_REGEX = /^\d{4}-\d{2}-\d{2}$/;
-const MIDNIGHT_TIME_REGEX = /T00:00:00/;
-
-function isFinalStatus(status?: string | null): boolean {
-  if (!status) return false;
-  return /(final|final\/ot|final\/2ot|game end|completed)/i.test(status);
-}
-
-function hasTimeInfo(value: string): boolean {
-  if (!value) return false;
-  if (DATE_ONLY_REGEX.test(value)) return false;
-  if (MIDNIGHT_TIME_REGEX.test(value)) return false;
-  return /T\d{2}:\d{2}/.test(value);
-}
-
-function formatDateOnly(value: string): string {
-  if (!value) return "TBD";
-  const dateOnlyMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (dateOnlyMatch) {
-    const [, year, month, day] = dateOnlyMatch;
-    return DATE_ONLY_FORMATTER.format(new Date(Number(year), Number(month) - 1, Number(day)));
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  if (MIDNIGHT_TIME_REGEX.test(value)) {
-    return DATE_ONLY_FORMATTER.format(new Date(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()));
-  }
-  return DATE_ONLY_FORMATTER.format(parsed);
-}
-
-function buildTimeFallback(value: string, showTime: boolean): string {
-  const dateLabel = formatDateOnly(value);
-  if (!showTime) return dateLabel;
-  if (!hasTimeInfo(value)) {
-    return `${dateLabel} · TBD`;
-  }
-  return dateLabel;
-}
-
-function parseGameDate(value: string): Date {
-  if (DATE_ONLY_REGEX.test(value)) {
-    const [year, month, day] = value.split("-").map(Number);
-    return new Date(year, month - 1, day);
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return new Date();
-  }
-  if (MIDNIGHT_TIME_REGEX.test(value)) {
-    return new Date(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate());
-  }
-  return parsed;
-}
-
-function toDateKey(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
 function enhanceGame(game: Game): EnhancedGame {
   const date = parseGameDate(game.date);
   const homeScore = Number.isFinite(game.home_team_score) ? game.home_team_score : 0;
@@ -106,17 +47,20 @@ function enhanceGame(game: Game): EnhancedGame {
   let winner: "home" | "away" | "even" = "even";
   if (homeScore > awayScore) winner = "home";
   if (awayScore > homeScore) winner = "away";
-  const status = game.status || "Final";
-  const showTime = !isFinalStatus(status);
+  const status = game.status ?? undefined;
+  const isFinal = isFinalGame(status, game.date, homeScore, awayScore);
+  const showTime = !isFinal;
+  const statusLabel = status && /scheduled/i.test(status) ? undefined : status;
 
   return {
     id: game.game_id,
     rawDate: game.date,
     dateKey: toDateKey(date),
     dateLabel: DATE_FORMATTER.format(date),
-    timeFallback: buildTimeFallback(game.date, showTime),
+    timeFallback: buildTimeFallback(game.date, showTime, DATE_ONLY_FORMATTER),
     showTime,
-    status,
+    status: statusLabel,
+    isFinal,
     home: { name: game.home_team_name, score: homeScore },
     away: { name: game.away_team_name, score: awayScore },
     winner,
@@ -224,13 +168,15 @@ export default async function ScoresPage() {
                   <p className="text-sm font-semibold tracking-[0.3em] text-white/60">{group.label}</p>
                   <span className="text-xs uppercase text-white/60">{group.games.length} games</span>
                 </div>
-                <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
+                <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3 xl:mx-auto xl:max-w-6xl xl:justify-items-center">
                   {group.games.map((game) => (
                     <ScoreCard
                       key={game.id}
                       href={`/boxscore/${game.id}`}
+                      className="w-full max-w-[360px]"
                       timeLabel={<LocalGameTime value={game.rawDate} fallback={game.timeFallback} showTime={game.showTime} />}
                       status={game.status}
+                      isFinal={game.isFinal}
                       home={{ name: game.home.name, score: game.home.score }}
                       away={{ name: game.away.name, score: game.away.score }}
                       winner={game.winner}

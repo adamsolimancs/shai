@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     enable_integration_tests: bool = False
     cache_key_prefix: str = Field("nba:serve")
     admin_api_key: str | None = None
+    log_format: str = Field("pretty", validation_alias=AliasChoices("LOG_FORMAT"))
 
     @property
     def cors_origins(self) -> list[str]:

@@ -1,17 +1,44 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ShAI Frontend
 
-## Getting Started
+Next.js App Router UI for ShAI. It consumes the backend API and supports optional NextAuth (Google OAuth).
 
-First, run the development server:
+## Stack
+- Next.js 16 (App Router), React 19, TypeScript
+- Tailwind CSS
+- Vitest + Testing Library
+- ESLint
 
+## Architecture
+- App Router pages/components fetch data via `frontend/lib/nbaApi.ts`.
+- Auth is handled by NextAuth; Google OAuth is optional.
+
+## Setup & run
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cd frontend
+npm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Create `frontend/.env` and set at least:
+```
+NBA_API_BASE_URL=http://localhost:8080
+NBA_API_KEY=dev-secret-key
+NBA_DEFAULT_SEASON=2025-26
+AUTH_SECRET=replace-me
+```
+Optional (for Google OAuth):
+```
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+```
+
+Run the dev server:
+```bash
+npm run dev
+# http://localhost:3000
+```
+
+## Tests & lint
+```bash
+npm run test
+npm run lint
+```

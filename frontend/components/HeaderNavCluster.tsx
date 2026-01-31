@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { FormEvent, useEffect, useMemo, useState, useTransition } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { cn } from "@/lib/utils";
 
 const NAV_LINKS = [
   { href: "/teams", label: "Teams" },
@@ -19,9 +20,14 @@ function normalizeSlug(input: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-export default function HeaderNavCluster() {
+export default function HeaderNavCluster({ className }: { className?: string }) {
   return (
-    <nav className="flex w-full flex-wrap items-center justify-center gap-6 text-sm text-[color:var(--color-app-foreground-muted)] md:absolute md:left-1/2 md:top-1/2 md:w-auto md:-translate-x-1/2 md:-translate-y-1/2 md:flex-nowrap">
+    <nav
+      className={cn(
+        "flex w-full flex-wrap items-center justify-center gap-6 text-sm text-[color:var(--color-app-foreground-muted)] md:absolute md:left-1/2 md:top-1/2 md:w-auto md:-translate-x-1/2 md:-translate-y-1/2 md:flex-nowrap",
+        className,
+      )}
+    >
       {NAV_LINKS.map((link) => (
         <Link key={link.href} href={link.href} className="transition hover:text-[var(--color-app-foreground)]">
           {link.label}

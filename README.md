@@ -1,118 +1,52 @@
 # ShAI
 
-Modern basketball companion that blends the official NBA Stats data feed with generated insights, player scouting blurbs, and sleek dashboards.
+ShAI is a full-stack NBA data companion that serves player, team, and league views backed by a cached stats API.
 
-## Features
+## Architecture (read path)
+Client -> Backend API -> Redis (hot) -> DB (warm fallback) -> NBA API (rare; mostly development)
 
-- Player pages that mix live season averages, recent game logs, and narrative scouting reports.
-- Team and league explorers with fast search and caching so common lookups stay snappy.
-- Backend service that normalizes data from [`nba_api`](https://github.com/swar/nba_api) and exposes a typed REST interface.
-- Optional ML workspace (see `ml/`) for experimentation with win probability, similarity scores, etc.
+`database/schema.sql` is the source of truth for persisted data shapes.
 
-## Tech Stack
+## Tech stack
+- Frontend: Next.js 16 (App Router), React 19, TypeScript, Tailwind CSS
+- Backend: FastAPI (Python 3.11), Pydantic Settings, nba_api, httpx, Redis (optional)
+- Workers: Node.js
+- ML: pandas + scikit-learn training pipeline in `ml/` (experimental)
 
-| Layer     | Tech                                                                 |
-|-----------|----------------------------------------------------------------------|
-| Frontend  | [Next.js 14](https://nextjs.org/) + App Router, Tailwind, TypeScript |
-| Backend   | [FastAPI](https://fastapi.tiangolo.com/), Redis cache (optional)     |
-| Data      | `nba_api` python client + in-memory/redis caching                    |
-| Tooling   | ESLint, Prettier, Jest (Next), Pytest, Docker Compose                |
+## Setup
+Prereqs: Node 20+, Python 3.11+. Redis is optional but recommended.
 
-## Getting Started
-
-### 1. Prerequisites
-
-- Node.js ≥ 20.x and npm (or Bun/Yarn if you prefer, though the repo ships with `package-lock.json`)
-- Python ≥ 3.11
-- Redis (optional but recommended for caching/rate-limit storage)
-- Docker (optional) for running the full stack via `docker-compose`
-
-### 2. Clone & install deps
-
+### Backend API
 ```bash
-git clone git@github.com:adamsolimancs/shai.git shai
-cd shai
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"  # or: pip install -r requirements.txt
+# configure backend/.env (see backend/README.md)
+uvicorn app.main:app --reload --port 8080
+```
 
-# frontend deps
+### Frontend
+```bash
 cd frontend
 npm install
-
-# backend deps
-cd ../backend
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 3. Environment variables
-
-Create the root `.env` or export variables directly. At minimum you need:
-
-```dotenv
-# root .env
-NBA_API_KEY=replace-me          # used by both FE and BE
-NBA_DEFAULT_SEASON=2025-26
-
-# optional overrides
-REDIS_URL=redis://localhost:6379/0
-NEXTAUTH_SECRET=dev-secret
-```
-
-You can also keep service-specific env files in `frontend/.env` and `backend/.env` (examples already exist in the repo). Both services fall back to `NBA_API_KEY` from the root if their local file is missing it.
-
-### 4. Run the stack
-
-#### Frontend (Next.js)
-
-```bash
-cd frontend
+# configure frontend/.env (see frontend/README.md)
 npm run dev
 # http://localhost:3000
 ```
 
-#### Backend (FastAPI)
-
+## Tests (after significant changes)
 ```bash
-cd backend
-uvicorn app.main:app --reload --port 8080
-# http://localhost:8080/v1/...
+cd frontend && npm run test
+cd frontend && npm run lint
+cd workers && npm run test
+cd backend && pytest
 ```
 
-#### Docker Compose (optional)
-
-```bash
-docker compose up --build
+## Repository layout
 ```
-
-This will start the FastAPI service, Redis, and the Next.js dev server in one go.
-
-## Testing
-
-```bash
-# backend
-cd backend
-pytest
-
-# frontend
-cd frontend
-npm run lint
+backend/   FastAPI service
+frontend/  Next.js app
+workers/   background jobs / tests
+database/  schema.sql (source of truth)
+ml/        experimental training pipeline
 ```
-
-## Project Structure
-
-```
-backend/       # FastAPI service wrapping nba_api
-frontend/      # Next.js app (App Router)
-ml/            # Notebooks + experiments
-docker-compose.yml
-README.md
-```
-
-## Troubleshooting
-
-- **Unexpected server error from NBA API** – ensure `NBA_API_KEY` is valid and that the backend is running (`uvicorn app.main:app ...`). For unsupported seasons the backend returns empty arrays to avoid hard failures.
-- **Rate limit errors** – the backend enforces per-key rate limits. Configure `RATE_LIMIT_REQUESTS_PER_MINUTE` in `backend/.env`.
-- **Cache misses** – Redis is optional. If it is not running the backend falls back to the in-memory cache automatically.
-
-## License
-
-MIT © ShAI Contributors

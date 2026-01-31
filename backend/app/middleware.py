@@ -33,7 +33,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         response.headers[self.settings.request_id_header] = request_id
 
         logger.info(
-            "access",
+            f"{request.method} {request.url.path}",
             extra={
                 "request_id": request_id,
                 "client_host": request.client.host if request.client else None,
