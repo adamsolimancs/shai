@@ -212,6 +212,10 @@ function logUpsert(table, count, extra) {
   log(`Upserted ${count} rows into table '${table}'`, extra);
 }
 
+function logDbWrite(action, table, details) {
+  log(`DB ${action}`, { table, ...details });
+}
+
 function initCronBudget() {
   const maxRuntimeMs = toNumber(CONFIG.cronMaxRuntimeMs);
   if (!Number.isFinite(maxRuntimeMs) || maxRuntimeMs <= 0) {
@@ -839,6 +843,7 @@ async function supabaseInsertRaw(table, rows) {
     const body = await response.text();
     throw new Error(`Supabase ${table} insert failed: ${response.status} ${body}`);
   }
+  logDbWrite("insert", table, { count: rows.length });
 }
 
 async function supabaseInsert(table, rows, options = {}) {
@@ -853,6 +858,11 @@ async function supabaseInsert(table, rows, options = {}) {
       await updateIngestionState(table, "ok", cursor, null);
     }
   } catch (error) {
+    log("Supabase insert failed", {
+      table,
+      count: Array.isArray(rows) ? rows.length : 0,
+      error: String(error),
+    });
     if (recordState) {
       await updateIngestionState(table, "failed", cursor, String(error));
     }
@@ -880,6 +890,7 @@ async function supabaseDeleteRaw(table, filters) {
     const body = await response.text();
     throw new Error(`Supabase ${table} delete failed: ${response.status} ${body}`);
   }
+  logDbWrite("delete", table, { filters: filters || {} });
 }
 
 async function supabaseDelete(table, filters, options = {}) {
@@ -894,6 +905,11 @@ async function supabaseDelete(table, filters, options = {}) {
       await updateIngestionState(table, "ok", cursor, null);
     }
   } catch (error) {
+    log("Supabase delete failed", {
+      table,
+      filters,
+      error: String(error),
+    });
     if (recordState) {
       await updateIngestionState(table, "failed", cursor, String(error));
     }
@@ -936,6 +952,10 @@ async function supabaseUpsertRaw(table, rows, onConflict) {
     const body = await response.text();
     throw new Error(`Supabase ${table} upsert failed: ${response.status} ${body}`);
   }
+  logDbWrite("upsert", table, {
+    count: payload.length,
+    on_conflict: onConflict || null,
+  });
 }
 
 async function supabaseUpsert(table, rows, onConflict, options = {}) {
@@ -967,6 +987,12 @@ async function supabaseUpsert(table, rows, onConflict, options = {}) {
       }
       return;
     }
+    log("Supabase upsert failed", {
+      table,
+      on_conflict: onConflict || null,
+      count: Array.isArray(rows) ? rows.length : 0,
+      error: message,
+    });
     if (recordState) {
       await updateIngestionState(table, "failed", cursor, message);
     }
@@ -1187,7 +1213,8 @@ async function shouldStartCronRun() {
   return { allowed: true, date, hour, runs, inWindow };
 }
 
-async function shouldRun(entity, intervalMs) {
+async function shouldRun(entity, intervalMs, options = {}) {
+  const logSkip = options.logSkip === true;
   const state = await getIngestionState(entity);
   if (!state || !state.last_success_at) {
     return true;
@@ -1196,11 +1223,21 @@ async function shouldRun(entity, intervalMs) {
   if (Number.isNaN(lastSuccess)) {
     return true;
   }
+  const now = Date.now();
   const minInterval =
     CONFIG.workerMode === "cron"
       ? Math.max(intervalMs, CONFIG.cronMinIntervalMs)
       : intervalMs;
-  return Date.now() - lastSuccess >= minInterval;
+  const allowed = now - lastSuccess >= minInterval;
+  if (!allowed && logSkip) {
+    log("Cron task interval not reached; skipping", {
+      task: entity,
+      last_success_at: state.last_success_at,
+      min_interval_ms: minInterval,
+      elapsed_ms: now - lastSuccess,
+    });
+  }
+  return allowed;
 }
 
 function chunkArray(rows, size) {
@@ -2163,7 +2200,7 @@ function startWorker() {
 }
 
 async function runCronTask(entity, intervalMs, fn) {
-  if (!(await shouldRun(entity, intervalMs))) {
+  if (!(await shouldRun(entity, intervalMs, { logSkip: true }))) {
     return;
   }
   if (isCircuitOpen()) {
