@@ -69,8 +69,29 @@ test("parseCronBudgetCursor", () => {
   assert.deepEqual(worker.parseCronBudgetCursor({ date: "2024-10-10", runs: "2" }), {
     date: "2024-10-10",
     runs: 2,
+    next_run_after: null,
+    window: null,
   });
-  assert.deepEqual(worker.parseCronBudgetCursor(null), { date: null, runs: 0 });
+  assert.deepEqual(
+    worker.parseCronBudgetCursor({
+      date: "2024-10-10",
+      runs: 1,
+      next_run_after: "2024-10-10T10:00:00.000Z",
+      window: "in",
+    }),
+    {
+      date: "2024-10-10",
+      runs: 1,
+      next_run_after: Date.parse("2024-10-10T10:00:00.000Z"),
+      window: "in",
+    }
+  );
+  assert.deepEqual(worker.parseCronBudgetCursor(null), {
+    date: null,
+    runs: 0,
+    next_run_after: null,
+    window: null,
+  });
 });
 
 test("status helpers", () => {
