@@ -86,10 +86,19 @@ const CONFIG = {
   ),
   timeZone: process.env.NBA_TIME_ZONE || "America/New_York",
   cronMinIntervalMs: Number(process.env.CRON_MIN_INTERVAL_MS || 60 * 1000),
-  cronWindowStartHour: toNumber(process.env.CRON_WINDOW_START_HOUR) ?? 0,
-  cronWindowEndHour: toNumber(process.env.CRON_WINDOW_END_HOUR) ?? 15,
-  cronMaxRunsPerDay: toNumber(process.env.CRON_MAX_RUNS_PER_DAY) ?? 2,
+  cronWindowStartHour: toNumber(process.env.CRON_WINDOW_START_HOUR) ?? 15,
+  cronWindowEndHour: toNumber(process.env.CRON_WINDOW_END_HOUR) ?? 0,
+  cronMaxRunsPerDay: toNumber(process.env.CRON_MAX_RUNS_PER_DAY) ?? 0,
   cronMaxRuntimeMs: toNumber(process.env.CRON_MAX_RUNTIME_MS) ?? 60 * 60 * 1000,
+  cronInWindowMinIntervalMs: Number(
+    process.env.CRON_IN_WINDOW_MIN_INTERVAL_MS || 15 * 60 * 1000
+  ),
+  cronInWindowMaxIntervalMs: Number(
+    process.env.CRON_IN_WINDOW_MAX_INTERVAL_MS || 30 * 60 * 1000
+  ),
+  cronOffWindowIntervalMs: Number(
+    process.env.CRON_OFF_WINDOW_INTERVAL_MS || 3 * 60 * 60 * 1000
+  ),
   apiMinIntervalMs: Number(process.env.API_MIN_INTERVAL_MS || 250),
   apiRetryMax: Number(process.env.API_RETRY_MAX || 4),
   apiRetryBaseDelayMs: Number(process.env.API_RETRY_BASE_DELAY_MS || 750),
@@ -1019,25 +1028,57 @@ function parseCursor(state) {
 
 function parseCronBudgetCursor(cursor) {
   if (!cursor || typeof cursor !== "object") {
-    return { date: null, runs: 0 };
+    return { date: null, runs: 0, next_run_after: null, window: null };
   }
   const date = typeof cursor.date === "string" ? cursor.date : null;
   const runs = Number(cursor.runs);
+  const window =
+    typeof cursor.window === "string" && cursor.window.trim()
+      ? cursor.window.trim()
+      : null;
+  const nextValue = cursor.next_run_after ?? cursor.nextRunAfter ?? null;
+  const nextRunAfter =
+    typeof nextValue === "number"
+      ? nextValue
+      : typeof nextValue === "string"
+      ? Date.parse(nextValue)
+      : null;
   return {
     date,
     runs: Number.isFinite(runs) ? runs : 0,
+    next_run_after: Number.isFinite(nextRunAfter) ? nextRunAfter : null,
+    window,
   };
 }
 
-async function getCronRunsForDate(date) {
-  const state = await getIngestionState("cron_budget");
-  const cursor = parseCronBudgetCursor(parseCursor(state));
-  if (cursor.date !== date) return 0;
-  return cursor.runs;
+function getCronIntervalMs(inWindow) {
+  if (inWindow) {
+    const rawMin = CONFIG.cronInWindowMinIntervalMs;
+    const minInterval = Number.isFinite(rawMin) ? Math.max(0, rawMin) : 0;
+    const rawMax = CONFIG.cronInWindowMaxIntervalMs;
+    const maxInterval = Number.isFinite(rawMax)
+      ? Math.max(minInterval, rawMax)
+      : minInterval;
+    if (maxInterval === 0) return 0;
+    if (maxInterval === minInterval) return minInterval;
+    return minInterval + Math.floor(Math.random() * (maxInterval - minInterval + 1));
+  }
+  const rawOff = CONFIG.cronOffWindowIntervalMs;
+  return Number.isFinite(rawOff) ? Math.max(0, rawOff) : 0;
 }
 
-async function recordCronRunState(status, date, runs, errorMessage) {
-  await updateIngestionState("cron_budget", status, { date, runs }, errorMessage);
+function computeNextRunAfter(inWindow, nowMs) {
+  const intervalMs = getCronIntervalMs(inWindow);
+  return intervalMs > 0 ? nowMs + intervalMs : null;
+}
+
+async function recordCronRunState(status, date, runs, cursor, errorMessage) {
+  await updateIngestionState(
+    "cron_budget",
+    status,
+    { date, runs, ...(cursor || {}) },
+    errorMessage
+  );
 }
 
 async function shouldStartCronRun() {
@@ -1046,35 +1087,63 @@ async function shouldStartCronRun() {
   const hour = getHourInTZ(CONFIG.timeZone, now);
   const startHour = normalizeHour(CONFIG.cronWindowStartHour);
   const endHour = normalizeHour(CONFIG.cronWindowEndHour);
-
-  if (!isHourInWindow(hour, startHour, endHour)) {
-    log("Cron outside allowed window; skipping run", {
-      date,
-      hour,
-      window_start: startHour,
-      window_end: endHour,
-      timeZone: CONFIG.timeZone,
-    });
-    return { allowed: false, date, hour };
-  }
+  const inWindow = isHourInWindow(hour, startHour, endHour);
+  const windowLabel = inWindow ? "in" : "out";
 
   const maxRuns = CONFIG.cronMaxRunsPerDay;
-  if (!Number.isFinite(maxRuns) || maxRuns <= 0) {
-    log("Cron disabled by run limit", { max_runs_per_day: maxRuns });
-    return { allowed: false, date, hour };
-  }
-
-  const runs = await getCronRunsForDate(date);
-  if (runs >= maxRuns) {
+  const enforceMaxRuns = Number.isFinite(maxRuns) && maxRuns > 0;
+  const state = await getIngestionState("cron_budget");
+  const cursor = parseCronBudgetCursor(parseCursor(state));
+  const runs = cursor.date === date ? cursor.runs : 0;
+  if (enforceMaxRuns && runs >= maxRuns) {
     log("Cron daily limit reached; skipping run", {
       date,
       runs,
       max_runs_per_day: maxRuns,
     });
-    return { allowed: false, date, hour, runs };
+    return { allowed: false, date, hour, runs, inWindow };
   }
 
-  return { allowed: true, date, hour, runs };
+  const lastAttemptAt = state?.last_attempt_at || state?.last_success_at || null;
+  const lastAttemptMs = lastAttemptAt ? Date.parse(lastAttemptAt) : null;
+  const normalizedCursor =
+    cursor.date === date
+      ? cursor
+      : { ...cursor, runs: 0, next_run_after: null, window: null };
+  const windowMatches = normalizedCursor.window === windowLabel;
+  const nextRunAfter = windowMatches ? normalizedCursor.next_run_after : null;
+  const nowMs = now.getTime();
+
+  if (Number.isFinite(nextRunAfter) && nowMs < nextRunAfter) {
+    log("Cron interval not reached; skipping run", {
+      date,
+      hour,
+      next_run_after: new Date(nextRunAfter).toISOString(),
+      window: windowLabel,
+    });
+    return { allowed: false, date, hour, runs, inWindow };
+  }
+
+  if (Number.isFinite(lastAttemptMs)) {
+    const minIntervalMs = inWindow
+      ? Number.isFinite(CONFIG.cronInWindowMinIntervalMs)
+        ? Math.max(0, CONFIG.cronInWindowMinIntervalMs)
+        : 0
+      : Number.isFinite(CONFIG.cronOffWindowIntervalMs)
+      ? Math.max(0, CONFIG.cronOffWindowIntervalMs)
+      : 0;
+    if (minIntervalMs > 0 && nowMs - lastAttemptMs < minIntervalMs) {
+      log("Cron minimum interval not reached; skipping run", {
+        date,
+        hour,
+        window: windowLabel,
+        min_interval_ms: minIntervalMs,
+      });
+      return { allowed: false, date, hour, runs, inWindow };
+    }
+  }
+
+  return { allowed: true, date, hour, runs, inWindow };
 }
 
 async function shouldRun(entity, intervalMs) {
@@ -2029,7 +2098,14 @@ async function runCron() {
   }
 
   const runNumber = (gate.runs ?? 0) + 1;
-  await recordCronRunState("running", gate.date, runNumber, null);
+  const windowLabel = gate.inWindow ? "in" : "out";
+  const nowMs = Date.now();
+  const nextRunAfter = computeNextRunAfter(gate.inWindow, nowMs);
+  const cronCursor = {
+    window: windowLabel,
+    next_run_after: nextRunAfter,
+  };
+  await recordCronRunState("running", gate.date, runNumber, cronCursor, null);
   initCronBudget();
 
   let finalStatus = "ok";
@@ -2059,7 +2135,7 @@ async function runCron() {
       finalStatus = "failed";
       errorMessage = "Cron runtime budget exceeded";
     }
-    await recordCronRunState(finalStatus, gate.date, runNumber, errorMessage);
+    await recordCronRunState(finalStatus, gate.date, runNumber, cronCursor, errorMessage);
     clearCronBudget();
   }
 }
