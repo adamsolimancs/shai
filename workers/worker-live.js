@@ -86,6 +86,10 @@ const CONFIG = {
   ),
   timeZone: process.env.NBA_TIME_ZONE || "America/New_York",
   cronMinIntervalMs: Number(process.env.CRON_MIN_INTERVAL_MS || 60 * 1000),
+  cronWindowStartHour: toNumber(process.env.CRON_WINDOW_START_HOUR) ?? 0,
+  cronWindowEndHour: toNumber(process.env.CRON_WINDOW_END_HOUR) ?? 15,
+  cronMaxRunsPerDay: toNumber(process.env.CRON_MAX_RUNS_PER_DAY) ?? 2,
+  cronMaxRuntimeMs: toNumber(process.env.CRON_MAX_RUNTIME_MS) ?? 60 * 60 * 1000,
   apiMinIntervalMs: Number(process.env.API_MIN_INTERVAL_MS || 250),
   apiRetryMax: Number(process.env.API_RETRY_MAX || 4),
   apiRetryBaseDelayMs: Number(process.env.API_RETRY_BASE_DELAY_MS || 750),
@@ -161,6 +165,7 @@ const cacheStats = {
   failures: 0,
   lastLogAt: 0,
 };
+let cronBudget = null;
 
 process.on("unhandledRejection", (reason) => {
   console.error("Unhandled rejection", reason);
@@ -179,8 +184,69 @@ function logUpsert(table, count, extra) {
   log(`Upserted ${count} rows into table '${table}'`, extra);
 }
 
+function initCronBudget() {
+  const maxRuntimeMs = toNumber(CONFIG.cronMaxRuntimeMs);
+  if (!Number.isFinite(maxRuntimeMs) || maxRuntimeMs <= 0) {
+    cronBudget = null;
+    return;
+  }
+  const startedAt = Date.now();
+  cronBudget = {
+    startedAt,
+    deadline: startedAt + maxRuntimeMs,
+    maxRuntimeMs,
+    exceeded: false,
+  };
+}
+
+function clearCronBudget() {
+  cronBudget = null;
+}
+
+function isCronBudgetActive() {
+  return Boolean(cronBudget && Number.isFinite(cronBudget.deadline));
+}
+
+function cronRemainingMs() {
+  if (!isCronBudgetActive()) return null;
+  return Math.max(0, cronBudget.deadline - Date.now());
+}
+
+function throwIfCronBudgetExceeded(label) {
+  if (!isCronBudgetActive()) return;
+  if (Date.now() <= cronBudget.deadline) return;
+  if (!cronBudget.exceeded) {
+    cronBudget.exceeded = true;
+    log("Cron runtime budget exceeded; halting work", {
+      label,
+      max_runtime_ms: cronBudget.maxRuntimeMs,
+    });
+  }
+  throw new CronBudgetError("Cron runtime budget exceeded");
+}
+
 function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  if (!isCronBudgetActive()) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+  const remaining = cronRemainingMs();
+  if (remaining !== null && remaining <= 0) {
+    return Promise.reject(new CronBudgetError("Cron runtime budget exceeded"));
+  }
+  const waitMs = remaining !== null ? Math.min(ms, remaining) : ms;
+  return new Promise((resolve, reject) => {
+    setTimeout(() => {
+      if (remaining !== null && waitMs < ms) {
+        reject(new CronBudgetError("Cron runtime budget exceeded"));
+        return;
+      }
+      if (remaining !== null && cronRemainingMs() <= 0) {
+        reject(new CronBudgetError("Cron runtime budget exceeded"));
+        return;
+      }
+      resolve();
+    }, waitMs);
+  });
 }
 
 function cacheKey(...parts) {
@@ -231,6 +297,17 @@ class CircuitOpenError extends Error {
   }
 }
 
+class CronBudgetError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "CronBudgetError";
+  }
+}
+
+function isCronBudgetError(error) {
+  return error instanceof CronBudgetError || error?.name === "CronBudgetError";
+}
+
 function isCircuitOpen() {
   return Date.now() < apiCircuitOpenUntil;
 }
@@ -261,6 +338,17 @@ function formatDateInTZ(timeZone, date = new Date()) {
   return `${lookup.year}-${lookup.month}-${lookup.day}`;
 }
 
+function getHourInTZ(timeZone, date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const hour = Number(lookup.hour);
+  return Number.isFinite(hour) ? hour : null;
+}
+
 function getSeasonForDate(timeZone, date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone,
@@ -273,6 +361,23 @@ function getSeasonForDate(timeZone, date = new Date()) {
   const startYear = month >= 10 ? year : year - 1;
   const suffix = String((startYear + 1) % 100).padStart(2, "0");
   return `${startYear}-${suffix}`;
+}
+
+function normalizeHour(value) {
+  if (!Number.isFinite(value)) return null;
+  const hour = Math.trunc(value);
+  const normalized = ((hour % 24) + 24) % 24;
+  return normalized;
+}
+
+function isHourInWindow(hour, startHour, endHour) {
+  if (!Number.isFinite(hour)) return true;
+  if (!Number.isFinite(startHour) || !Number.isFinite(endHour)) return true;
+  if (startHour === endHour) return true;
+  if (startHour < endHour) {
+    return hour >= startHour && hour < endHour;
+  }
+  return hour >= startHour || hour < endHour;
 }
 
 function normalizeConflictValue(value) {
@@ -494,11 +599,13 @@ async function apiRequest(path) {
   if (isCircuitOpen()) {
     throw new CircuitOpenError("API circuit open; skipping request");
   }
+  throwIfCronBudgetExceeded("api_request");
   const url = path.startsWith("http") ? path : `${CONFIG.apiBaseUrl}${path}`;
   const queued = requestQueue.then(async () => {
     if (isCircuitOpen()) {
       throw new CircuitOpenError("API circuit open; skipping request");
     }
+    throwIfCronBudgetExceeded("api_request");
     const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastApiRequestAt));
     if (waitMs > 0) {
       await sleep(waitMs);
@@ -509,6 +616,7 @@ async function apiRequest(path) {
     if (isCircuitOpen()) {
       throw new CircuitOpenError("API circuit open; skipping request");
     }
+    throwIfCronBudgetExceeded("api_request");
     const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastApiRequestAt));
     if (waitMs > 0) {
       await sleep(waitMs);
@@ -521,7 +629,9 @@ async function apiRequest(path) {
 }
 
 async function statsRequest(url) {
+  throwIfCronBudgetExceeded("stats_request");
   const queued = statsRequestQueue.then(async () => {
+    throwIfCronBudgetExceeded("stats_request");
     const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastStatsRequestAt));
     if (waitMs > 0) {
       await sleep(waitMs);
@@ -529,6 +639,7 @@ async function statsRequest(url) {
     lastStatsRequestAt = Date.now();
     return statsRequestWithRetry(url);
   }, async () => {
+    throwIfCronBudgetExceeded("stats_request");
     const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastStatsRequestAt));
     if (waitMs > 0) {
       await sleep(waitMs);
@@ -552,6 +663,7 @@ async function requestWithRetry(url) {
   let attempt = 0;
   let delay = CONFIG.apiRetryBaseDelayMs;
   while (attempt <= CONFIG.apiRetryMax) {
+    throwIfCronBudgetExceeded("api_request");
     let response;
     try {
       response = await fetch(url, {
@@ -608,6 +720,7 @@ async function statsRequestWithRetry(url) {
   let attempt = 0;
   let delay = CONFIG.apiRetryBaseDelayMs;
   while (attempt <= CONFIG.apiRetryMax) {
+    throwIfCronBudgetExceeded("stats_request");
     let response;
     try {
       response = await fetch(url, {
@@ -851,6 +964,7 @@ async function supabaseSelectAll(table, query, pageSize = 1000) {
   const rows = [];
   let offset = 0;
   while (true) {
+    throwIfCronBudgetExceeded("supabase_select_all");
     const chunk = await supabaseSelect(table, {
       ...query,
       limit: pageSize,
@@ -901,6 +1015,66 @@ function parseCursor(state) {
   } catch {
     return null;
   }
+}
+
+function parseCronBudgetCursor(cursor) {
+  if (!cursor || typeof cursor !== "object") {
+    return { date: null, runs: 0 };
+  }
+  const date = typeof cursor.date === "string" ? cursor.date : null;
+  const runs = Number(cursor.runs);
+  return {
+    date,
+    runs: Number.isFinite(runs) ? runs : 0,
+  };
+}
+
+async function getCronRunsForDate(date) {
+  const state = await getIngestionState("cron_budget");
+  const cursor = parseCronBudgetCursor(parseCursor(state));
+  if (cursor.date !== date) return 0;
+  return cursor.runs;
+}
+
+async function recordCronRunState(status, date, runs, errorMessage) {
+  await updateIngestionState("cron_budget", status, { date, runs }, errorMessage);
+}
+
+async function shouldStartCronRun() {
+  const now = new Date();
+  const date = formatDateInTZ(CONFIG.timeZone, now);
+  const hour = getHourInTZ(CONFIG.timeZone, now);
+  const startHour = normalizeHour(CONFIG.cronWindowStartHour);
+  const endHour = normalizeHour(CONFIG.cronWindowEndHour);
+
+  if (!isHourInWindow(hour, startHour, endHour)) {
+    log("Cron outside allowed window; skipping run", {
+      date,
+      hour,
+      window_start: startHour,
+      window_end: endHour,
+      timeZone: CONFIG.timeZone,
+    });
+    return { allowed: false, date, hour };
+  }
+
+  const maxRuns = CONFIG.cronMaxRunsPerDay;
+  if (!Number.isFinite(maxRuns) || maxRuns <= 0) {
+    log("Cron disabled by run limit", { max_runs_per_day: maxRuns });
+    return { allowed: false, date, hour };
+  }
+
+  const runs = await getCronRunsForDate(date);
+  if (runs >= maxRuns) {
+    log("Cron daily limit reached; skipping run", {
+      date,
+      runs,
+      max_runs_per_day: maxRuns,
+    });
+    return { allowed: false, date, hour, runs };
+  }
+
+  return { allowed: true, date, hour, runs };
 }
 
 async function shouldRun(entity, intervalMs) {
@@ -1018,6 +1192,7 @@ async function fetchGamesFromApi(season) {
   const pageSize = 200;
   const games = [];
   while (true) {
+    throwIfCronBudgetExceeded("games_page");
     const payload = await apiRequest(
       `/v1/games?season=${season}&page=${page}&page_size=${pageSize}`
     );
@@ -1159,6 +1334,7 @@ async function fetchPlayerIds(season, { activeOnly = false, maxPlayers = 0 } = {
   const players = [];
   const activeParam = activeOnly ? "&active=true" : "";
   while (true) {
+    throwIfCronBudgetExceeded("players_page");
     const payload = await apiRequest(
       `/v1/players?season=${season}&page=${page}&page_size=${pageSize}${activeParam}`
     );
@@ -1193,10 +1369,12 @@ async function refreshGames() {
   const seasons = await getSeasonsToSync();
   await withIngestionState("games", async () => {
     for (const season of seasons) {
+      throwIfCronBudgetExceeded("games_season");
       let page = 1;
       const pageSize = 200;
       let total = 0;
       while (true) {
+        throwIfCronBudgetExceeded("games_page");
         const payload = await apiRequest(
           `/v1/games?season=${season}&page=${page}&page_size=${pageSize}`
         );
@@ -1219,6 +1397,7 @@ async function refreshPlayersForSeason(season) {
   const pageSize = 200;
   let total = 0;
   while (true) {
+    throwIfCronBudgetExceeded("players_page");
     const payload = await apiRequest(
       `/v1/players?season=${season}&page=${page}&page_size=${pageSize}`
     );
@@ -1289,6 +1468,7 @@ async function refreshPlayers() {
 
   await withIngestionState("players", async () => {
     for (const season of seasons) {
+      throwIfCronBudgetExceeded("players_season");
       await refreshPlayersForSeason(season);
     }
   }, cursor);
@@ -1298,6 +1478,7 @@ async function refreshStandings() {
   const seasons = await getSeasonsToSync();
   await withIngestionState("league_standings", async () => {
     for (const season of seasons) {
+      throwIfCronBudgetExceeded("standings_season");
       const payload = await apiRequest(`/v1/league_standings?season=${season}`);
       const rows = (payload.data || [])
         .map((row) => mapLeagueStandingRow(row, season))
@@ -1317,6 +1498,7 @@ async function refreshTeamStats() {
   const seasons = await getSeasonsToSync();
   await withIngestionState("team_advanced_stats", async () => {
     for (const season of seasons) {
+      throwIfCronBudgetExceeded("team_stats_season");
       const games = await loadGamesForSeason(season);
       const aggregates = new Map();
 
@@ -1342,7 +1524,12 @@ async function refreshTeamStats() {
         return aggregates.get(teamId);
       };
 
+      let gameIndex = 0;
       for (const game of games) {
+        if (gameIndex % 50 === 0) {
+          throwIfCronBudgetExceeded("team_stats_games");
+        }
+        gameIndex += 1;
         const homeId = toNumber(game.home_team_id ?? game.HOME_TEAM_ID);
         const awayId = toNumber(game.away_team_id ?? game.AWAY_TEAM_ID);
         const homeScore = toNumber(game.home_team_score ?? game.HOME_TEAM_SCORE);
@@ -1439,6 +1626,7 @@ async function refreshTeamStats() {
 async function refreshTeamDetails() {
   const season = await getSeason();
   await withIngestionState("team_details", async () => {
+    throwIfCronBudgetExceeded("team_details");
     const teams = await fetchTeamsForSeason(season);
     await runWithConcurrency(teams, CONFIG.boxscoreConcurrency, async (team) => {
       const payload = await apiRequest(`/v1/teams/${team.id}/details`);
@@ -1454,6 +1642,7 @@ async function refreshTeamDetails() {
 
 async function refreshPlayerAwards() {
   const season = await getSeason();
+  throwIfCronBudgetExceeded("player_awards");
   const playerIds = await fetchPlayerIds(season, {
     activeOnly: CONFIG.playerAwardsActiveOnly,
   });
@@ -1489,6 +1678,7 @@ async function refreshPlayerSeasonStats() {
   const seasons = await getSeasonsToSync();
   await withIngestionState("player_season_stats", async () => {
     for (const season of seasons) {
+      throwIfCronBudgetExceeded("player_season_stats_season");
       await refreshPlayerSeasonStatsForSeason(season);
     }
   }, { seasons });
@@ -1662,6 +1852,7 @@ async function refreshScoreboard({ mode = CONFIG.workerMode } = {}) {
 
     const gameIds = games.map((game) => game.game_id);
     if (mode === "cron") {
+      throwIfCronBudgetExceeded("scoreboard_boxscores");
       activeGameIds.clear();
       await runWithConcurrency(gameIds, CONFIG.boxscoreConcurrency, updateBoxscoreForGame);
       log(`Scoreboard updated: ${games.length} games (cron)`);
@@ -1676,6 +1867,7 @@ async function refreshScoreboard({ mode = CONFIG.workerMode } = {}) {
       return now - cached.checkedAt > CONFIG.statusRefreshMs;
     });
 
+    throwIfCronBudgetExceeded("scoreboard_stale_boxscores");
     await runWithConcurrency(staleIds, CONFIG.boxscoreConcurrency, updateBoxscoreForGame);
     log(`Scoreboard updated: ${games.length} games, ${activeGameIds.size} active`);
   }, { season, date: today });
@@ -1693,6 +1885,7 @@ async function refreshRecentBoxscores() {
     const pageSize = 200;
     const gameIds = [];
     while (true) {
+      throwIfCronBudgetExceeded("boxscores_page");
       const payload = await apiRequest(
         `/v1/games?season=${season}&date_from=${dateFrom}&date_to=${dateTo}&page=${page}&page_size=${pageSize}`
       );
@@ -1707,6 +1900,7 @@ async function refreshRecentBoxscores() {
       page = nextPage;
     }
     let totalPlayers = 0;
+    throwIfCronBudgetExceeded("boxscores_updates");
     await runWithConcurrency(gameIds, CONFIG.boxscoreConcurrency, async (gameId) => {
       const result = await updateBoxscoreForGame(gameId);
       totalPlayers += result.playersCount || 0;
@@ -1729,13 +1923,24 @@ async function runWithConcurrency(items, limit, fn, { strict = false } = {}) {
   const queue = [...items];
   const errors = [];
   let circuitOpen = false;
+  let budgetExceeded = false;
   const workers = new Array(Math.min(limit, queue.length)).fill(null).map(async () => {
     while (queue.length && !circuitOpen) {
       const item = queue.shift();
       if (item === undefined) return;
       try {
+        throwIfCronBudgetExceeded("concurrency");
         await fn(item);
       } catch (error) {
+        if (isCronBudgetError(error)) {
+          if (!budgetExceeded) {
+            log("Cron budget exceeded; halting task batch", { item });
+          }
+          budgetExceeded = true;
+          circuitOpen = true;
+          errors.push({ item, error: String(error) });
+          return;
+        }
         if (isCircuitOpenError(error)) {
           if (!circuitOpen) {
             log("API circuit open; halting task batch", { item });
@@ -1750,6 +1955,9 @@ async function runWithConcurrency(items, limit, fn, { strict = false } = {}) {
     }
   });
   await Promise.all(workers);
+  if (budgetExceeded) {
+    throw new CronBudgetError("Cron runtime budget exceeded");
+  }
   if (strict && errors.length) {
     const e = new Error(`Concurrency batch had ${errors.length} failures`);
     e.details = errors.slice(0, 20);
@@ -1803,25 +2011,57 @@ async function runCronTask(entity, intervalMs, fn) {
     log("API circuit open; skipping cron task", { task: entity });
     return;
   }
+  throwIfCronBudgetExceeded(`cron_task:${entity}`);
   try {
     await fn();
   } catch (error) {
+    if (isCronBudgetError(error)) {
+      throw error;
+    }
     log(`${entity} task failed`, String(error));
   }
 }
 
 async function runCron() {
-  await runCronTask("scoreboard", CONFIG.scoreboardIntervalMs, () =>
-    refreshScoreboard({ mode: "cron" })
-  );
-  await runCronTask("games", CONFIG.gamesIntervalMs, refreshGames);
-  await runCronTask("players", CONFIG.playersIntervalMs, refreshPlayers);
-  await runCronTask("league_standings", CONFIG.standingsIntervalMs, refreshStandings);
-  await runCronTask("player_awards", CONFIG.playerAwardsIntervalMs, refreshPlayerAwards);
-  await runCronTask("player_season_stats", CONFIG.playerStatsIntervalMs, refreshPlayerSeasonStats);
-  await runCronTask("team_advanced_stats", CONFIG.teamStatsIntervalMs, refreshTeamStats);
-  await runCronTask("team_details", CONFIG.teamDetailsIntervalMs, refreshTeamDetails);
-  await runCronTask("boxscores", CONFIG.boxscoreBackfillIntervalMs, refreshRecentBoxscores);
+  const gate = await shouldStartCronRun();
+  if (!gate.allowed) {
+    return;
+  }
+
+  const runNumber = (gate.runs ?? 0) + 1;
+  await recordCronRunState("running", gate.date, runNumber, null);
+  initCronBudget();
+
+  let finalStatus = "ok";
+  let errorMessage = null;
+  try {
+    await runCronTask("scoreboard", CONFIG.scoreboardIntervalMs, () =>
+      refreshScoreboard({ mode: "cron" })
+    );
+    await runCronTask("games", CONFIG.gamesIntervalMs, refreshGames);
+    await runCronTask("players", CONFIG.playersIntervalMs, refreshPlayers);
+    await runCronTask("league_standings", CONFIG.standingsIntervalMs, refreshStandings);
+    await runCronTask("player_awards", CONFIG.playerAwardsIntervalMs, refreshPlayerAwards);
+    await runCronTask("player_season_stats", CONFIG.playerStatsIntervalMs, refreshPlayerSeasonStats);
+    await runCronTask("team_advanced_stats", CONFIG.teamStatsIntervalMs, refreshTeamStats);
+    await runCronTask("team_details", CONFIG.teamDetailsIntervalMs, refreshTeamDetails);
+    await runCronTask("boxscores", CONFIG.boxscoreBackfillIntervalMs, refreshRecentBoxscores);
+  } catch (error) {
+    finalStatus = "failed";
+    errorMessage = error instanceof Error ? error.message : String(error);
+    if (isCronBudgetError(error)) {
+      log("Cron budget exceeded; stopping remaining tasks");
+    } else {
+      log("Cron run failed", errorMessage);
+    }
+  } finally {
+    if (cronBudget?.exceeded && finalStatus === "ok") {
+      finalStatus = "failed";
+      errorMessage = "Cron runtime budget exceeded";
+    }
+    await recordCronRunState(finalStatus, gate.date, runNumber, errorMessage);
+    clearCronBudget();
+  }
 }
 
 async function runLive() {
@@ -1866,7 +2106,10 @@ module.exports = {
   toNumber,
   cacheKey,
   formatDateInTZ,
+  getHourInTZ,
   getSeasonForDate,
+  normalizeHour,
+  isHourInWindow,
   normalizeConflictValue,
   isFinalStatus,
   isLiveStatus,
@@ -1880,5 +2123,6 @@ module.exports = {
   computeRetryWaitMs,
   dedupeRowsForConflict,
   parseCursor,
+  parseCronBudgetCursor,
   chunkArray,
 };

@@ -50,9 +50,27 @@ test("cacheKey builds prefixed keys", () => {
 test("formatDateInTZ and getSeasonForDate", () => {
   const date = new Date("2024-10-15T12:00:00Z");
   assert.equal(worker.formatDateInTZ("UTC", date), "2024-10-15");
+  assert.equal(worker.getHourInTZ("UTC", date), 12);
   assert.equal(worker.getSeasonForDate("UTC", date), "2024-25");
   const summer = new Date("2024-07-01T12:00:00Z");
   assert.equal(worker.getSeasonForDate("UTC", summer), "2023-24");
+});
+
+test("normalizeHour and isHourInWindow", () => {
+  assert.equal(worker.normalizeHour(25), 1);
+  assert.equal(worker.normalizeHour(-1), 23);
+  assert.equal(worker.isHourInWindow(2, 0, 3), true);
+  assert.equal(worker.isHourInWindow(3, 0, 3), false);
+  assert.equal(worker.isHourInWindow(23, 22, 2), true);
+  assert.equal(worker.isHourInWindow(3, 22, 2), false);
+});
+
+test("parseCronBudgetCursor", () => {
+  assert.deepEqual(worker.parseCronBudgetCursor({ date: "2024-10-10", runs: "2" }), {
+    date: "2024-10-10",
+    runs: 2,
+  });
+  assert.deepEqual(worker.parseCronBudgetCursor(null), { date: null, runs: 0 });
 });
 
 test("status helpers", () => {
