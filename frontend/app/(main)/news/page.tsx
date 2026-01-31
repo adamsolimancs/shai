@@ -6,6 +6,7 @@ import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
 type Game = {
   game_id: string;
   date: string;
+  start_time?: string | null;
   home_team_name: string;
   home_team_score: number;
   away_team_name: string;

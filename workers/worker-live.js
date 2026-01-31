@@ -99,6 +99,25 @@ const CONFIG = {
   cronOffWindowIntervalMs: Number(
     process.env.CRON_OFF_WINDOW_INTERVAL_MS || 3 * 60 * 60 * 1000
   ),
+  cronLiveBoxscoreLookbackDays: Number(
+    process.env.CRON_LIVE_BOXSCORE_LOOKBACK_DAYS || 2
+  ),
+  cronLiveBoxscoreIntervalMs: Number(
+    process.env.CRON_LIVE_BOXSCORE_INTERVAL_MS || 15 * 60 * 1000
+  ),
+  cronOffWindowLiveBoxscoreIntervalMs: Number(
+    process.env.CRON_OFF_WINDOW_LIVE_BOXSCORE_INTERVAL_MS || 3 * 60 * 60 * 1000
+  ),
+  cronLiveGamesLookbackDays: Number(process.env.CRON_LIVE_GAMES_LOOKBACK_DAYS || 3),
+  cronLiveGamesIntervalMs: Number(
+    process.env.CRON_LIVE_GAMES_INTERVAL_MS || 15 * 60 * 1000
+  ),
+  cronOffWindowLiveGamesIntervalMs: Number(
+    process.env.CRON_OFF_WINDOW_LIVE_GAMES_INTERVAL_MS || 3 * 60 * 60 * 1000
+  ),
+  cronMaintenanceMinRemainingMs: Number(
+    process.env.CRON_MAINTENANCE_MIN_REMAINING_MS || 10 * 60 * 1000
+  ),
   apiMinIntervalMs: Number(process.env.API_MIN_INTERVAL_MS || 250),
   apiRetryMax: Number(process.env.API_RETRY_MAX || 4),
   apiRetryBaseDelayMs: Number(process.env.API_RETRY_BASE_DELAY_MS || 750),
@@ -462,6 +481,13 @@ function mapGameRow(game, season) {
   return {
     game_id: gameId,
     date: toText(game.date),
+    start_time: toText(
+      game.start_time ??
+        game.start_time_utc ??
+        game.start_time_est ??
+        game.start_time_local ??
+        game.game_time
+    ),
     home_team_id: game.home_team_id ?? null,
     home_team_name: game.home_team_name ?? null,
     home_team_score: game.home_team_score ?? null,
@@ -1070,6 +1096,21 @@ function getCronIntervalMs(inWindow) {
 function computeNextRunAfter(inWindow, nowMs) {
   const intervalMs = getCronIntervalMs(inWindow);
   return intervalMs > 0 ? nowMs + intervalMs : null;
+}
+
+function shouldRunMaintenanceTask(task) {
+  const remaining = cronRemainingMs();
+  const minRemaining = CONFIG.cronMaintenanceMinRemainingMs;
+  if (!Number.isFinite(minRemaining) || minRemaining <= 0) return true;
+  if (remaining !== null && remaining < minRemaining) {
+    log("Skipping maintenance task; low cron budget", {
+      task,
+      remaining_ms: remaining,
+      min_remaining_ms: minRemaining,
+    });
+    return false;
+  }
+  return true;
 }
 
 async function recordCronRunState(status, date, runs, cursor, errorMessage) {
@@ -1888,6 +1929,20 @@ async function upsertBoxscore(boxscore) {
 async function updateBoxscoreForGame(gameId) {
   const boxscore = await fetchBoxscore(gameId);
   const playersCount = await upsertBoxscore(boxscore);
+  const startTime = toText(boxscore.start_time);
+  if (startTime) {
+    await supabaseUpsert(
+      "games",
+      [
+        {
+          game_id: boxscore.game_id,
+          start_time: startTime,
+        },
+      ],
+      "game_id",
+      { recordState: false }
+    );
+  }
   const status = boxscore.status || null;
   const boxscoreTtl = isLiveStatus(status)
     ? CONFIG.cacheTtlBoxscoreLiveSec
@@ -1942,14 +1997,17 @@ async function refreshScoreboard({ mode = CONFIG.workerMode } = {}) {
   }, { season, date: today });
 }
 
-async function refreshRecentBoxscores() {
+async function refreshRecentBoxscores({ lookbackDays, entity = "boxscores" } = {}) {
   const season = await getSeason();
   const endDate = new Date();
   const startDate = new Date(endDate);
-  startDate.setDate(startDate.getDate() - CONFIG.boxscoreLookbackDays);
+  const resolvedLookback = Number.isFinite(lookbackDays)
+    ? Math.max(0, lookbackDays)
+    : CONFIG.boxscoreLookbackDays;
+  startDate.setDate(startDate.getDate() - resolvedLookback);
   const dateFrom = formatDateInTZ(CONFIG.timeZone, startDate);
   const dateTo = formatDateInTZ(CONFIG.timeZone, endDate);
-  await withIngestionState("boxscores", async () => {
+  await withIngestionState(entity, async () => {
     let page = 1;
     const pageSize = 200;
     const gameIds = [];
@@ -1976,7 +2034,39 @@ async function refreshRecentBoxscores() {
     });
     logUpsert("boxscores", gameIds.length, { date_from: dateFrom, date_to: dateTo });
     logUpsert("boxscore_players", totalPlayers, { date_from: dateFrom, date_to: dateTo });
-  }, { season, date_from: dateFrom, date_to: dateTo });
+  }, { season, date_from: dateFrom, date_to: dateTo, lookback_days: resolvedLookback });
+}
+
+async function refreshRecentGames({ lookbackDays, entity = "games_recent" } = {}) {
+  const season = await getSeason();
+  const endDate = new Date();
+  const startDate = new Date(endDate);
+  const resolvedLookback = Number.isFinite(lookbackDays)
+    ? Math.max(0, lookbackDays)
+    : CONFIG.cronLiveGamesLookbackDays;
+  startDate.setDate(startDate.getDate() - resolvedLookback);
+  const dateFrom = formatDateInTZ(CONFIG.timeZone, startDate);
+  const dateTo = formatDateInTZ(CONFIG.timeZone, endDate);
+  await withIngestionState(entity, async () => {
+    let page = 1;
+    const pageSize = 200;
+    let total = 0;
+    while (true) {
+      throwIfCronBudgetExceeded("games_recent_page");
+      const payload = await apiRequest(
+        `/v1/games?season=${season}&date_from=${dateFrom}&date_to=${dateTo}&page=${page}&page_size=${pageSize}`
+      );
+      const rows = (payload.data || []).map((row) => mapGameRow(row, season)).filter(Boolean);
+      if (rows.length) {
+        await supabaseUpsert("games", rows, "game_id");
+        total += rows.length;
+      }
+      const nextPage = payload.meta?.pagination?.next;
+      if (!nextPage) break;
+      page = nextPage;
+    }
+    logUpsert("games", total, { season, date_from: dateFrom, date_to: dateTo });
+  }, { season, date_from: dateFrom, date_to: dateTo, lookback_days: resolvedLookback });
 }
 
 async function refreshActiveGames() {
@@ -2114,14 +2204,52 @@ async function runCron() {
     await runCronTask("scoreboard", CONFIG.scoreboardIntervalMs, () =>
       refreshScoreboard({ mode: "cron" })
     );
-    await runCronTask("games", CONFIG.gamesIntervalMs, refreshGames);
-    await runCronTask("players", CONFIG.playersIntervalMs, refreshPlayers);
+    const liveBoxscoreIntervalMs = gate.inWindow
+      ? CONFIG.cronLiveBoxscoreIntervalMs
+      : CONFIG.cronOffWindowLiveBoxscoreIntervalMs;
+    await runCronTask("boxscores_live", liveBoxscoreIntervalMs, () =>
+      refreshRecentBoxscores({
+        lookbackDays: CONFIG.cronLiveBoxscoreLookbackDays,
+        entity: "boxscores_live",
+      })
+    );
+    const liveGamesIntervalMs = gate.inWindow
+      ? CONFIG.cronLiveGamesIntervalMs
+      : CONFIG.cronOffWindowLiveGamesIntervalMs;
+    await runCronTask("games_recent", liveGamesIntervalMs, () =>
+      refreshRecentGames({
+        lookbackDays: CONFIG.cronLiveGamesLookbackDays,
+        entity: "games_recent",
+      })
+    );
+    if (shouldRunMaintenanceTask("boxscores_backfill")) {
+      await runCronTask("boxscores", CONFIG.boxscoreBackfillIntervalMs, () =>
+        refreshRecentBoxscores({
+          lookbackDays: CONFIG.boxscoreLookbackDays,
+          entity: "boxscores",
+        })
+      );
+    }
+    if (shouldRunMaintenanceTask("games")) {
+      await runCronTask("games", CONFIG.gamesIntervalMs, refreshGames);
+    }
     await runCronTask("league_standings", CONFIG.standingsIntervalMs, refreshStandings);
-    await runCronTask("player_awards", CONFIG.playerAwardsIntervalMs, refreshPlayerAwards);
-    await runCronTask("player_season_stats", CONFIG.playerStatsIntervalMs, refreshPlayerSeasonStats);
-    await runCronTask("team_advanced_stats", CONFIG.teamStatsIntervalMs, refreshTeamStats);
-    await runCronTask("team_details", CONFIG.teamDetailsIntervalMs, refreshTeamDetails);
-    await runCronTask("boxscores", CONFIG.boxscoreBackfillIntervalMs, refreshRecentBoxscores);
+    await runCronTask("teams", CONFIG.teamsIntervalMs, refreshTeams);
+    if (shouldRunMaintenanceTask("players")) {
+      await runCronTask("players", CONFIG.playersIntervalMs, refreshPlayers);
+    }
+    if (shouldRunMaintenanceTask("player_season_stats")) {
+      await runCronTask("player_season_stats", CONFIG.playerStatsIntervalMs, refreshPlayerSeasonStats);
+    }
+    if (shouldRunMaintenanceTask("player_awards")) {
+      await runCronTask("player_awards", CONFIG.playerAwardsIntervalMs, refreshPlayerAwards);
+    }
+    if (shouldRunMaintenanceTask("team_details")) {
+      await runCronTask("team_details", CONFIG.teamDetailsIntervalMs, refreshTeamDetails);
+    }
+    if (shouldRunMaintenanceTask("team_advanced_stats")) {
+      await runCronTask("team_advanced_stats", CONFIG.teamStatsIntervalMs, refreshTeamStats);
+    }
   } catch (error) {
     finalStatus = "failed";
     errorMessage = error instanceof Error ? error.message : String(error);

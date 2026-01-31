@@ -14,9 +14,9 @@ jobs:
         run: |
           hour=$(TZ="America/New_York" date +%H)
           minute=$(TZ="America/New_York" date +%M)
-          if [ "$hour" -ge 18 ] && [ "$hour" -le 23 ]; then
+          if [ "$hour" -ge 15 ] && [ "$hour" -le 23 ]; then
             echo "run_worker=true" >> "$GITHUB_OUTPUT"
-          elif [ "$minute" -eq 00 ]; then
+          elif [ "$minute" -eq 00 ] && [ $((10#$hour % 3)) -eq 0 ]; then
             echo "run_worker=true" >> "$GITHUB_OUTPUT"
           else
             echo "run_worker=false" >> "$GITHUB_OUTPUT"
@@ -35,6 +35,20 @@ jobs:
         env:
           WORKER_MODE: cron
           CRON_MIN_INTERVAL_MS: 60000
+          CRON_WINDOW_START_HOUR: 15
+          CRON_WINDOW_END_HOUR: 0
+          CRON_IN_WINDOW_MIN_INTERVAL_MS: 900000
+          CRON_IN_WINDOW_MAX_INTERVAL_MS: 1800000
+          CRON_OFF_WINDOW_INTERVAL_MS: 10800000
+          CRON_LIVE_BOXSCORE_LOOKBACK_DAYS: 2
+          CRON_LIVE_BOXSCORE_INTERVAL_MS: 900000
+          CRON_OFF_WINDOW_LIVE_BOXSCORE_INTERVAL_MS: 10800000
+          CRON_LIVE_GAMES_LOOKBACK_DAYS: 3
+          CRON_LIVE_GAMES_INTERVAL_MS: 900000
+          CRON_OFF_WINDOW_LIVE_GAMES_INTERVAL_MS: 10800000
+          CRON_MAINTENANCE_MIN_REMAINING_MS: 600000
+          CRON_MAX_RUNS_PER_DAY: 0
+          CRON_MAX_RUNTIME_MS: 3600000
           HISTORIC_SEASONS_BACK: 2
           PLAYERS_HISTORIC_MODE: once
           PLAYERS_HISTORIC_SEASONS_BACK: 2

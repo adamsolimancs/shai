@@ -50,7 +50,7 @@ export function buildTimeFallback(value: string, showTime: boolean, formatter: I
   const dateLabel = formatDateOnly(value, formatter);
   if (!showTime) return dateLabel;
   if (!hasTimeInfo(value)) {
-    return `${dateLabel} · TBD`;
+    return dateLabel;
   }
   return dateLabel;
 }

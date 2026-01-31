@@ -3,6 +3,3 @@ https://www.shaistats.com/players
 https://www.shaistats.com/teams
 https://www.shaistats.com/scores
 https://www.shaistats.com/news
-https://www.shaistats.com/signin
-https://www.shaistats.com/signup
-https://www.shaistats.com/logout
