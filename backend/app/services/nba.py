@@ -222,9 +222,17 @@ class NBAStatsClient:
             normalized = [TeamGameRow(**self._normalize_team_row(row)) for row in filtered_rows]
             return ServiceResult(normalized, cache_meta)
 
-        deduped = self._dedupe_games(raw_rows)
+        deduped = self._dedupe_games(raw_rows, season)
         filtered = self._filter_game_rows(deduped, team_id, team_abbr, date_from, date_to)
-        games = [Game(**row) for row in filtered]
+        games: list[Game] = []
+        for row in filtered:
+            try:
+                games.append(Game(**row))
+            except ValidationError as exc:
+                logger.warning(
+                    "Skipping malformed game row",
+                    extra={"error": str(exc), "game_id": row.get("game_id"), "row": row},
+                )
         return ServiceResult(games, cache_meta)
 
     async def get_league_standings(
@@ -642,17 +650,40 @@ class NBAStatsClient:
             seasons.append(f"{year}-{str((year + 1) % 100).zfill(2)}")
         return seasons
 
-    def _dedupe_games(self, rows: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _dedupe_games(
+        self, rows: Sequence[dict[str, Any]], season: str | None = None
+    ) -> list[dict[str, Any]]:
         games: dict[str, dict[str, Any]] = {}
         for row in rows:
-            game_id = row["GAME_ID"]
+            game_id = row.get("GAME_ID")
+            if not game_id:
+                continue
+            try:
+                game_date = datetime.strptime(row["GAME_DATE"], "%Y-%m-%d").date()
+            except Exception:
+                logger.warning(
+                    "Skipping game row with invalid date",
+                    extra={"game_id": game_id, "game_date": row.get("GAME_DATE")},
+                )
+                continue
+            season_id = row.get("SEASON_ID")
+            if isinstance(season_id, float) and math.isnan(season_id):
+                season_id = None
+            season_value = season_id or season
+            season_text = str(season_value) if season_value is not None else None
+            location = row.get("LOCATION")
+            if isinstance(location, float) and math.isnan(location):
+                location = None
+            status = row.get("GAME_STATUS_TEXT") or row.get("WL")
+            if isinstance(status, float) and math.isnan(status):
+                status = None
             entry = games.setdefault(
                 game_id,
                 {
                     "game_id": game_id,
-                    "date": datetime.strptime(row["GAME_DATE"], "%Y-%m-%d").date(),
-                    "season": row.get("SEASON_ID"),
-                    "location": row.get("LOCATION"),
+                    "date": game_date,
+                    "season": season_text,
+                    "location": location,
                     "home_team_id": None,
                     "home_team_name": None,
                     "home_team_abbreviation": None,
@@ -661,7 +692,7 @@ class NBAStatsClient:
                     "away_team_name": None,
                     "away_team_abbreviation": None,
                     "away_team_score": None,
-                    "status": row.get("GAME_STATUS_TEXT") or row.get("WL"),
+                    "status": status,
                 },
             )
             matchup = row.get("MATCHUP", "")
@@ -675,26 +706,36 @@ class NBAStatsClient:
                     is_home = True
                 elif team_abbr == away_abbr:
                     is_home = False
-            team_name = row.get("TEAM_NAME") or row.get("TEAM_ABBREVIATION")
+            raw_team_name = row.get("TEAM_NAME")
+            if isinstance(raw_team_name, float) and math.isnan(raw_team_name):
+                raw_team_name = None
+            raw_team_abbr = row.get("TEAM_ABBREVIATION")
+            if isinstance(raw_team_abbr, float) and math.isnan(raw_team_abbr):
+                raw_team_abbr = None
+            team_name = raw_team_name or raw_team_abbr or team_abbr or ""
             record = {
-                "team_id": row.get("TEAM_ID"),
+                "team_id": self._coerce_int(row.get("TEAM_ID")),
                 "team_name": team_name,
-                "score": row.get("PTS") or 0,
+                "score": self._safe_int(row.get("PTS")),
             }
             if is_home:
                 entry["home_team_id"] = record["team_id"]
                 entry["home_team_name"] = record["team_name"]
-                entry["home_team_abbreviation"] = row.get("TEAM_ABBREVIATION")
+                entry["home_team_abbreviation"] = raw_team_abbr or team_abbr or None
                 entry["home_team_score"] = record["score"]
             else:
                 entry["away_team_id"] = record["team_id"]
                 entry["away_team_name"] = record["team_name"]
-                entry["away_team_abbreviation"] = row.get("TEAM_ABBREVIATION")
+                entry["away_team_abbreviation"] = raw_team_abbr or team_abbr or None
                 entry["away_team_score"] = record["score"]
         normalized = [
             entry
             for entry in games.values()
-            if entry["home_team_id"] is not None and entry["away_team_id"] is not None
+            if entry["home_team_id"] is not None
+            and entry["away_team_id"] is not None
+            and entry["home_team_name"]
+            and entry["away_team_name"]
+            and entry["season"]
         ]
         return normalized
 
