@@ -212,6 +212,10 @@ function logUpsert(table, count, extra) {
   log(`Upserted ${count} rows into table '${table}'`, extra);
 }
 
+function logDbWrite(action, table, details) {
+  log(`DB ${action}`, { table, ...details });
+}
+
 function initCronBudget() {
   const maxRuntimeMs = toNumber(CONFIG.cronMaxRuntimeMs);
   if (!Number.isFinite(maxRuntimeMs) || maxRuntimeMs <= 0) {
@@ -366,6 +370,53 @@ function formatDateInTZ(timeZone, date = new Date()) {
   return `${lookup.year}-${lookup.month}-${lookup.day}`;
 }
 
+function formatStatsDateInTZ(timeZone, date = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const lookup = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${lookup.month}/${lookup.day}/${lookup.year}`;
+}
+
+function toStatsDate(value, timeZone) {
+  if (!value) return "";
+  if (value instanceof Date) {
+    return formatStatsDateInTZ(timeZone, value);
+  }
+  const text = String(value).trim();
+  if (!text) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    const [year, month, day] = text.split("-");
+    return `${month}/${day}/${year}`;
+  }
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return formatStatsDateInTZ(timeZone, parsed);
+}
+
+function normalizeGameDate(value, timeZone) {
+  if (!value) return null;
+  if (value instanceof Date) {
+    return formatDateInTZ(timeZone, value);
+  }
+  const text = String(value).trim();
+  if (!text) return null;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    return text;
+  }
+  const slashMatch = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (slashMatch) {
+    const [, month, day, year] = slashMatch;
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  }
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return formatDateInTZ(timeZone, parsed);
+}
+
 function getHourInTZ(timeZone, date = new Date()) {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone,
@@ -428,6 +479,23 @@ function isLiveStatus(status) {
   if (text.includes("postponed") || text.includes("cancel")) return false;
   if (text.includes("pm") || text.includes("am") || text.includes("et")) return false;
   return true;
+}
+
+function parseMatchup(matchup) {
+  const matchupUpper = String(matchup || "").toUpperCase();
+  if (matchupUpper.includes(" VS. ")) {
+    const [home, away] = matchupUpper.split(" VS. ", 2);
+    return [home.trim(), away.trim()];
+  }
+  if (matchupUpper.includes(" @ ")) {
+    const [away, home] = matchupUpper.split(" @ ", 2);
+    return [home.trim(), away.trim()];
+  }
+  if (matchupUpper.includes(" AT ")) {
+    const [away, home] = matchupUpper.split(" AT ", 2);
+    return [home.trim(), away.trim()];
+  }
+  return null;
 }
 
 function parseSeasonList(value) {
@@ -839,6 +907,7 @@ async function supabaseInsertRaw(table, rows) {
     const body = await response.text();
     throw new Error(`Supabase ${table} insert failed: ${response.status} ${body}`);
   }
+  logDbWrite("insert", table, { count: rows.length });
 }
 
 async function supabaseInsert(table, rows, options = {}) {
@@ -853,6 +922,11 @@ async function supabaseInsert(table, rows, options = {}) {
       await updateIngestionState(table, "ok", cursor, null);
     }
   } catch (error) {
+    log("Supabase insert failed", {
+      table,
+      count: Array.isArray(rows) ? rows.length : 0,
+      error: String(error),
+    });
     if (recordState) {
       await updateIngestionState(table, "failed", cursor, String(error));
     }
@@ -880,6 +954,7 @@ async function supabaseDeleteRaw(table, filters) {
     const body = await response.text();
     throw new Error(`Supabase ${table} delete failed: ${response.status} ${body}`);
   }
+  logDbWrite("delete", table, { filters: filters || {} });
 }
 
 async function supabaseDelete(table, filters, options = {}) {
@@ -894,6 +969,11 @@ async function supabaseDelete(table, filters, options = {}) {
       await updateIngestionState(table, "ok", cursor, null);
     }
   } catch (error) {
+    log("Supabase delete failed", {
+      table,
+      filters,
+      error: String(error),
+    });
     if (recordState) {
       await updateIngestionState(table, "failed", cursor, String(error));
     }
@@ -936,6 +1016,10 @@ async function supabaseUpsertRaw(table, rows, onConflict) {
     const body = await response.text();
     throw new Error(`Supabase ${table} upsert failed: ${response.status} ${body}`);
   }
+  logDbWrite("upsert", table, {
+    count: payload.length,
+    on_conflict: onConflict || null,
+  });
 }
 
 async function supabaseUpsert(table, rows, onConflict, options = {}) {
@@ -967,6 +1051,12 @@ async function supabaseUpsert(table, rows, onConflict, options = {}) {
       }
       return;
     }
+    log("Supabase upsert failed", {
+      table,
+      on_conflict: onConflict || null,
+      count: Array.isArray(rows) ? rows.length : 0,
+      error: message,
+    });
     if (recordState) {
       await updateIngestionState(table, "failed", cursor, message);
     }
@@ -1187,7 +1277,8 @@ async function shouldStartCronRun() {
   return { allowed: true, date, hour, runs, inWindow };
 }
 
-async function shouldRun(entity, intervalMs) {
+async function shouldRun(entity, intervalMs, options = {}) {
+  const logSkip = options.logSkip === true;
   const state = await getIngestionState(entity);
   if (!state || !state.last_success_at) {
     return true;
@@ -1196,11 +1287,21 @@ async function shouldRun(entity, intervalMs) {
   if (Number.isNaN(lastSuccess)) {
     return true;
   }
+  const now = Date.now();
   const minInterval =
     CONFIG.workerMode === "cron"
       ? Math.max(intervalMs, CONFIG.cronMinIntervalMs)
       : intervalMs;
-  return Date.now() - lastSuccess >= minInterval;
+  const allowed = now - lastSuccess >= minInterval;
+  if (!allowed && logSkip) {
+    log("Cron task interval not reached; skipping", {
+      task: entity,
+      last_success_at: state.last_success_at,
+      min_interval_ms: minInterval,
+      elapsed_ms: now - lastSuccess,
+    });
+  }
+  return allowed;
 }
 
 function chunkArray(rows, size) {
@@ -1297,22 +1398,91 @@ async function fetchTeamsForSeason(season) {
   return payload.data || [];
 }
 
-async function fetchGamesFromApi(season) {
-  let page = 1;
-  const pageSize = 200;
-  const games = [];
-  while (true) {
-    throwIfCronBudgetExceeded("games_page");
-    const payload = await apiRequest(
-      `/v1/games?season=${season}&page=${page}&page_size=${pageSize}`
-    );
-    const rows = payload.data || [];
-    games.push(...rows);
-    const nextPage = payload.meta?.pagination?.next;
-    if (!nextPage) break;
-    page = nextPage;
+function normalizeGameFinderRows(rows, season) {
+  const games = new Map();
+  for (const row of rows || []) {
+    const gameId = row.GAME_ID ?? row.game_id;
+    if (!gameId) continue;
+    const gameDate = row.GAME_DATE ?? row.GAME_DATE_EST ?? row.game_date;
+    const dateText = normalizeGameDate(gameDate, CONFIG.timeZone);
+    if (!dateText) continue;
+    const matchup = row.MATCHUP ?? row.matchup ?? "";
+    const teamAbbrRaw = row.TEAM_ABBREVIATION ?? row.team_abbreviation ?? row.TEAM_NAME ?? "";
+    const teamAbbr = String(teamAbbrRaw).trim().toUpperCase().split(" ").slice(-1)[0] || "";
+    const parsed = parseMatchup(matchup);
+    let isHome = null;
+    if (parsed && teamAbbr) {
+      const [homeAbbr, awayAbbr] = parsed;
+      if (teamAbbr === homeAbbr) isHome = true;
+      if (teamAbbr === awayAbbr) isHome = false;
+    }
+    if (isHome === null) {
+      const matchupUpper = String(matchup).toUpperCase();
+      if (matchupUpper.includes(" VS. ") || matchupUpper.includes(" VS ")) {
+        isHome = true;
+      } else if (matchupUpper.includes(" @ ") || matchupUpper.includes(" AT ")) {
+        isHome = false;
+      }
+    }
+    if (isHome === null) continue;
+    const teamId = toNumber(row.TEAM_ID ?? row.team_id);
+    if (teamId === null) continue;
+    const teamName =
+      row.TEAM_NAME ?? row.team_name ?? row.TEAM_ABBREVIATION ?? row.team_abbreviation ?? "";
+    const points = toNumber(row.PTS ?? row.points) ?? 0;
+    const entry =
+      games.get(gameId) ||
+      (() => {
+        const next = {
+          game_id: gameId,
+          date: dateText,
+          start_time: null,
+          home_team_id: null,
+          home_team_name: null,
+          home_team_score: null,
+          away_team_id: null,
+          away_team_name: null,
+          away_team_score: null,
+          season: season ?? null,
+        };
+        games.set(gameId, next);
+        return next;
+      })();
+    if (isHome) {
+      entry.home_team_id = teamId;
+      entry.home_team_name = teamName;
+      entry.home_team_score = points;
+    } else {
+      entry.away_team_id = teamId;
+      entry.away_team_name = teamName;
+      entry.away_team_score = points;
+    }
   }
-  return games;
+  return Array.from(games.values()).filter(
+    (entry) => entry.home_team_id !== null && entry.away_team_id !== null
+  );
+}
+
+async function fetchGamesFromStats(season, { dateFrom, dateTo } = {}) {
+  const url = new URL("https://stats.nba.com/stats/leaguegamefinder");
+  const params = {
+    LeagueID: "00",
+    PlayerOrTeam: "T",
+    Season: season,
+    SeasonType: "Regular Season",
+    DateFrom: toStatsDate(dateFrom, CONFIG.timeZone),
+    DateTo: toStatsDate(dateTo, CONFIG.timeZone),
+  };
+  Object.entries(params).forEach(([key, value]) => {
+    url.searchParams.set(key, String(value ?? ""));
+  });
+  const payload = await statsRequest(url.toString());
+  const rows = extractResultSetRows(payload, "LeagueGameFinder");
+  return normalizeGameFinderRows(rows, season);
+}
+
+async function fetchGamesFromApi(season) {
+  return fetchGamesFromStats(season);
 }
 
 async function loadGamesForSeason(season) {
@@ -1480,22 +1650,12 @@ async function refreshGames() {
   await withIngestionState("games", async () => {
     for (const season of seasons) {
       throwIfCronBudgetExceeded("games_season");
-      let page = 1;
-      const pageSize = 200;
+      const games = await fetchGamesFromStats(season);
+      const rows = games.map((row) => mapGameRow(row, season)).filter(Boolean);
       let total = 0;
-      while (true) {
-        throwIfCronBudgetExceeded("games_page");
-        const payload = await apiRequest(
-          `/v1/games?season=${season}&page=${page}&page_size=${pageSize}`
-        );
-        const rows = (payload.data || []).map((row) => mapGameRow(row, season)).filter(Boolean);
-        if (rows.length) {
-          await supabaseUpsert("games", rows, "game_id");
-          total += rows.length;
-        }
-        const nextPage = payload.meta?.pagination?.next;
-        if (!nextPage) break;
-        page = nextPage;
+      if (rows.length) {
+        await supabaseUpsert("games", rows, "game_id");
+        total += rows.length;
       }
       logUpsert("games", total, { season });
     }
@@ -1961,10 +2121,7 @@ async function refreshScoreboard({ mode = CONFIG.workerMode } = {}) {
   const season = await getSeason();
   const today = formatDateInTZ(CONFIG.timeZone);
   await withIngestionState("scoreboard", async () => {
-    const payload = await apiRequest(
-      `/v1/games?season=${season}&date_from=${today}&date_to=${today}&page=1&page_size=200`
-    );
-    const games = payload.data || [];
+    const games = await fetchGamesFromStats(season, { dateFrom: today, dateTo: today });
     const rows = games.map((row) => mapGameRow(row, season)).filter(Boolean);
     await supabaseUpsert("games", rows, "game_id");
     logUpsert("games", rows.length, { season, date: today });
@@ -2048,22 +2205,12 @@ async function refreshRecentGames({ lookbackDays, entity = "games_recent" } = {}
   const dateFrom = formatDateInTZ(CONFIG.timeZone, startDate);
   const dateTo = formatDateInTZ(CONFIG.timeZone, endDate);
   await withIngestionState(entity, async () => {
-    let page = 1;
-    const pageSize = 200;
+    const games = await fetchGamesFromStats(season, { dateFrom, dateTo });
+    const rows = games.map((row) => mapGameRow(row, season)).filter(Boolean);
     let total = 0;
-    while (true) {
-      throwIfCronBudgetExceeded("games_recent_page");
-      const payload = await apiRequest(
-        `/v1/games?season=${season}&date_from=${dateFrom}&date_to=${dateTo}&page=${page}&page_size=${pageSize}`
-      );
-      const rows = (payload.data || []).map((row) => mapGameRow(row, season)).filter(Boolean);
-      if (rows.length) {
-        await supabaseUpsert("games", rows, "game_id");
-        total += rows.length;
-      }
-      const nextPage = payload.meta?.pagination?.next;
-      if (!nextPage) break;
-      page = nextPage;
+    if (rows.length) {
+      await supabaseUpsert("games", rows, "game_id");
+      total += rows.length;
     }
     logUpsert("games", total, { season, date_from: dateFrom, date_to: dateTo });
   }, { season, date_from: dateFrom, date_to: dateTo, lookback_days: resolvedLookback });
@@ -2163,7 +2310,7 @@ function startWorker() {
 }
 
 async function runCronTask(entity, intervalMs, fn) {
-  if (!(await shouldRun(entity, intervalMs))) {
+  if (!(await shouldRun(entity, intervalMs, { logSkip: true }))) {
     return;
   }
   if (isCircuitOpen()) {
