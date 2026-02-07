@@ -7,6 +7,15 @@ if (typeof fetch !== "function") {
 }
 
 const { cache } = require("./cache");
+const dns = require("dns");
+
+// Prefer IPv4 to reduce intermittent `fetch failed` issues on dual-stack networks
+// (observed in GitHub Actions runners for stats.nba.com).
+try {
+  dns.setDefaultResultOrder("ipv4first");
+} catch {
+  // Best-effort: older Node versions may not support this.
+}
 
 function normalizeBaseUrl(value) {
   if (!value) return value;
@@ -1991,8 +2000,47 @@ async function fetchGamesFromStats(season, { dateFrom, dateTo } = {}) {
   return normalizeGameFinderRows(rows, season);
 }
 
-async function fetchGamesFromApi(season) {
-  return fetchGamesFromStats(season);
+async function fetchGamesFromApi(season, { dateFrom, dateTo } = {}) {
+  let page = 1;
+  const pageSize = 200;
+  const games = [];
+  const baseParams = new URLSearchParams();
+  baseParams.set("season", season);
+  if (dateFrom) baseParams.set("date_from", dateFrom);
+  if (dateTo) baseParams.set("date_to", dateTo);
+
+  while (true) {
+    throwIfCronBudgetExceeded("games_api_page");
+    const params = new URLSearchParams(baseParams);
+    params.set("page", String(page));
+    params.set("page_size", String(pageSize));
+    const payload = await apiRequest(`/v1/games?${params.toString()}`);
+    const rows = payload.data || [];
+    for (const row of rows) {
+      if (row && (row.game_id || row.GAME_ID)) {
+        games.push(row);
+      }
+    }
+    const nextPage = payload.meta?.pagination?.next;
+    if (!nextPage) break;
+    page = nextPage;
+  }
+
+  return games;
+}
+
+async function fetchGames(season, { dateFrom, dateTo } = {}) {
+  try {
+    return await fetchGamesFromApi(season, { dateFrom, dateTo });
+  } catch (error) {
+    log("API games fetch failed; falling back to stats.nba.com", {
+      season,
+      date_from: dateFrom ?? null,
+      date_to: dateTo ?? null,
+      error: String(error),
+    });
+    return fetchGamesFromStats(season, { dateFrom, dateTo });
+  }
 }
 
 async function loadGamesForSeason(season) {
@@ -2007,7 +2055,7 @@ async function loadGamesForSeason(season) {
   if (rows.length) {
     return rows;
   }
-  return fetchGamesFromApi(season);
+  return fetchGames(season);
 }
 
 async function fetchBoxscoreAdvancedTeamStats(gameId) {
@@ -2264,7 +2312,7 @@ async function refreshGames() {
   await withIngestionState("games", async () => {
     for (const season of seasons) {
       throwIfCronBudgetExceeded("games_season");
-      const games = await fetchGamesFromStats(season);
+      const games = await fetchGames(season);
       const rows = games.map((row) => mapGameRow(row, season)).filter(Boolean);
       let total = 0;
       if (rows.length) {
@@ -3281,7 +3329,7 @@ async function refreshScoreboard({ mode = CONFIG.workerMode } = {}) {
   const season = await getSeason();
   const today = formatDateInTZ(CONFIG.timeZone);
   await withIngestionState("scoreboard", async () => {
-    const games = await fetchGamesFromStats(season, { dateFrom: today, dateTo: today });
+    const games = await fetchGames(season, { dateFrom: today, dateTo: today });
     const rows = games.map((row) => mapGameRow(row, season)).filter(Boolean);
     await supabaseUpsert("games", rows, "game_id");
     logUpsert("games", rows.length, { season, date: today });
@@ -3350,7 +3398,7 @@ async function refreshRecentGames({ lookbackDays, entity = "games_recent" } = {}
   const dateFrom = formatDateInTZ(CONFIG.timeZone, startDate);
   const dateTo = formatDateInTZ(CONFIG.timeZone, endDate);
   await withIngestionState(entity, async () => {
-    const games = await fetchGamesFromStats(season, { dateFrom, dateTo });
+    const games = await fetchGames(season, { dateFrom, dateTo });
     const rows = games.map((row) => mapGameRow(row, season)).filter(Boolean);
     let total = 0;
     if (rows.length) {
