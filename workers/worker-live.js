@@ -121,6 +121,8 @@ const CONFIG = {
   apiMinIntervalMs: Number(process.env.API_MIN_INTERVAL_MS || 250),
   apiRetryMax: Number(process.env.API_RETRY_MAX || 4),
   apiRetryBaseDelayMs: Number(process.env.API_RETRY_BASE_DELAY_MS || 750),
+  statsRetryMax: Number(process.env.STATS_RETRY_MAX || process.env.API_RETRY_MAX || 4),
+  statsTimeoutMs: Number(process.env.STATS_TIMEOUT_MS || 30000),
   apiCircuitBreakerMaxFailures: Number(process.env.API_CIRCUIT_BREAKER_MAX_FAILURES || 5),
   apiCircuitBreakerCooldownMs: Number(
     process.env.API_CIRCUIT_BREAKER_COOLDOWN_MS || 5 * 60 * 1000
@@ -822,21 +824,29 @@ async function requestWithRetry(url) {
 async function statsRequestWithRetry(url) {
   let attempt = 0;
   let delay = CONFIG.apiRetryBaseDelayMs;
-  while (attempt <= CONFIG.apiRetryMax) {
+  const maxAttempts = Number.isFinite(CONFIG.statsRetryMax)
+    ? CONFIG.statsRetryMax
+    : CONFIG.apiRetryMax;
+  while (attempt <= maxAttempts) {
     throwIfCronBudgetExceeded("stats_request");
     let response;
     try {
       response = await fetch(url, {
         headers: NBA_STATS_HEADERS,
+        signal:
+          typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
+            ? AbortSignal.timeout(CONFIG.statsTimeoutMs)
+            : undefined,
       });
     } catch (error) {
-      if (attempt >= CONFIG.apiRetryMax) {
-        throw new Error(`NBA stats request failed: ${String(error)}`);
+      if (attempt >= maxAttempts) {
+        throw new Error(`NBA stats request failed (${url}): ${String(error)}`);
       }
       const waitMs = computeRetryWaitMs(delay);
       log("NBA stats request failed; backing off", {
         error: String(error),
         wait_ms: waitMs,
+        url,
       });
       await sleep(waitMs);
       delay *= 2;
@@ -849,16 +859,17 @@ async function statsRequestWithRetry(url) {
     const body = await response.text();
     const retryable = response.status === 429 || response.status >= 500;
     if (!retryable) {
-      throw new Error(`NBA stats ${response.status}: ${body}`);
+      throw new Error(`NBA stats ${response.status} (${url}): ${body}`);
     }
-    if (attempt >= CONFIG.apiRetryMax) {
-      throw new Error(`NBA stats ${response.status}: ${body}`);
+    if (attempt >= maxAttempts) {
+      throw new Error(`NBA stats ${response.status} (${url}): ${body}`);
     }
     const retryAfter = Number(response.headers.get("retry-after"));
     const waitMs = computeRetryWaitMs(delay, retryAfter);
     log("NBA stats request throttled; backing off", {
       status: response.status,
       wait_ms: waitMs,
+      url,
     });
     await sleep(waitMs);
     delay *= 2;
@@ -1593,6 +1604,39 @@ async function fetchLeagueDashPlayerBioStats(season, seasonType) {
   return extractResultSetRows(payload, "LeagueDashPlayerBioStats");
 }
 
+async function fetchLeagueDashTeamStats(season, measureType) {
+  const url = new URL("https://stats.nba.com/stats/leaguedashteamstats");
+  const params = {
+    Season: season,
+    SeasonType: "Regular Season",
+    PerMode: "PerGame",
+    MeasureType: measureType,
+    LeagueID: "00",
+    PlusMinus: "N",
+    PaceAdjust: "N",
+    Rank: "N",
+    Outcome: "",
+    Location: "",
+    Month: "0",
+    SeasonSegment: "",
+    DateFrom: "",
+    DateTo: "",
+    OpponentTeamID: "0",
+    VsConference: "",
+    VsDivision: "",
+    GameSegment: "",
+    Period: "0",
+    LastNGames: "0",
+    ShotClockRange: "",
+    DistanceRange: "",
+  };
+  Object.entries(params).forEach(([key, value]) => {
+    url.searchParams.set(key, String(value));
+  });
+  const payload = await statsRequest(url.toString());
+  return extractResultSetRows(payload, "LeagueDashTeamStats");
+}
+
 function mapPlayerBioRow(row) {
   if (!row) return null;
   const playerId = toPlayerId(row.PLAYER_ID ?? row.player_id ?? row.PERSON_ID ?? row.id);
@@ -1681,17 +1725,6 @@ async function refreshPlayersForSeason(season) {
     page = nextPage;
   }
   logUpsert("players", total, { season });
-
-  try {
-    const bioRows = await fetchLeagueDashPlayerBioStats(season, "Regular Season");
-    const updates = (bioRows || []).map(mapPlayerBioRow).filter(Boolean);
-    if (updates.length) {
-      await supabaseUpsert("players", updates, "player_id");
-      logUpsert("players_bio", updates.length, { season });
-    }
-  } catch (error) {
-    log("Failed to refresh player bio stats", { season, error: String(error) });
-  }
 }
 
 async function refreshPlayers() {
@@ -1744,6 +1777,35 @@ async function refreshPlayers() {
   }, cursor);
 }
 
+async function refreshPlayerBioStatsForSeason(season) {
+  const seasonType = "Regular Season";
+  const bioRows = await fetchLeagueDashPlayerBioStats(season, seasonType);
+  const updates = (bioRows || []).map(mapPlayerBioRow).filter(Boolean);
+  if (updates.length) {
+    await supabaseUpsert("players", updates, "player_id");
+  }
+  logUpsert("players_bio", updates.length, { season });
+}
+
+async function refreshPlayerBioStats() {
+  const seasons = await getSeasonsToSync();
+  await withIngestionState("players_bio", async () => {
+    const errors = [];
+    for (const season of seasons) {
+      throwIfCronBudgetExceeded("players_bio_season");
+      try {
+        await refreshPlayerBioStatsForSeason(season);
+      } catch (error) {
+        errors.push({ season, error: String(error) });
+        log("players_bio season failed", { season, error: String(error) });
+      }
+    }
+    if (errors.length) {
+      throw new Error(`players_bio failed for ${errors.length} season(s)`);
+    }
+  }, { seasons });
+}
+
 async function refreshStandings() {
   const seasons = await getSeasonsToSync();
   await withIngestionState("league_standings", async () => {
@@ -1769,116 +1831,45 @@ async function refreshTeamStats() {
   await withIngestionState("team_advanced_stats", async () => {
     for (const season of seasons) {
       throwIfCronBudgetExceeded("team_stats_season");
-      const games = await loadGamesForSeason(season);
-      const aggregates = new Map();
-
-      const ensureEntry = (teamId) => {
-        if (!aggregates.has(teamId)) {
-          aggregates.set(teamId, {
-            team_id: teamId,
-            games_played: 0,
-            points_for: 0,
-            points_against: 0,
-            ortg_sum: 0,
-            ortg_count: 0,
-            drtg_sum: 0,
-            drtg_count: 0,
-            netrtg_sum: 0,
-            netrtg_count: 0,
-            assists_sum: 0,
-            assists_count: 0,
-            turnovers_sum: 0,
-            turnovers_count: 0,
-          });
-        }
-        return aggregates.get(teamId);
-      };
-
-      let gameIndex = 0;
-      for (const game of games) {
-        if (gameIndex % 50 === 0) {
-          throwIfCronBudgetExceeded("team_stats_games");
-        }
-        gameIndex += 1;
-        const homeId = toNumber(game.home_team_id ?? game.HOME_TEAM_ID);
-        const awayId = toNumber(game.away_team_id ?? game.AWAY_TEAM_ID);
-        const homeScore = toNumber(game.home_team_score ?? game.HOME_TEAM_SCORE);
-        const awayScore = toNumber(game.away_team_score ?? game.AWAY_TEAM_SCORE);
-        if (homeId !== null && homeScore !== null) {
-          const entry = ensureEntry(homeId);
-          entry.games_played += 1;
-          entry.points_for += homeScore;
-          if (awayScore !== null) {
-            entry.points_against += awayScore;
-          }
-        }
-        if (awayId !== null && awayScore !== null) {
-          const entry = ensureEntry(awayId);
-          entry.games_played += 1;
-          entry.points_for += awayScore;
-          if (homeScore !== null) {
-            entry.points_against += homeScore;
-          }
-        }
+      const baseRows = await fetchLeagueDashTeamStats(season, "Base");
+      const advancedRows = await fetchLeagueDashTeamStats(season, "Advanced");
+      const baseByTeam = new Map();
+      const advancedByTeam = new Map();
+      for (const row of baseRows) {
+        const teamId = toNumber(row.TEAM_ID ?? row.team_id);
+        if (teamId === null) continue;
+        baseByTeam.set(teamId, row);
+      }
+      for (const row of advancedRows) {
+        const teamId = toNumber(row.TEAM_ID ?? row.team_id);
+        if (teamId === null) continue;
+        advancedByTeam.set(teamId, row);
       }
 
-      const gameIds = games
-        .filter((game) => {
-          const homeScore = toNumber(game.home_team_score ?? game.HOME_TEAM_SCORE);
-          const awayScore = toNumber(game.away_team_score ?? game.AWAY_TEAM_SCORE);
-          return Boolean(game.game_id) && homeScore !== null && awayScore !== null;
-        })
-        .map((game) => game.game_id);
-
-      await runWithConcurrency(gameIds, CONFIG.boxscoreConcurrency, async (gameId) => {
-        const teamRows = await fetchBoxscoreAdvancedTeamStats(gameId);
-        for (const row of teamRows) {
-          const teamId = toNumber(row.TEAM_ID);
-          if (teamId === null) continue;
-          const entry = ensureEntry(teamId);
-          const ortg = toNumber(row.OFF_RATING ?? row.OFF_RTG ?? row.E_OFF_RATING);
-          if (ortg !== null) {
-            entry.ortg_sum += ortg;
-            entry.ortg_count += 1;
-          }
-          const drtg = toNumber(row.DEF_RATING ?? row.DEF_RTG ?? row.E_DEF_RATING);
-          if (drtg !== null) {
-            entry.drtg_sum += drtg;
-            entry.drtg_count += 1;
-          }
-          const netrtg = toNumber(row.NET_RATING ?? row.NET_RTG ?? row.NETRTG);
-          if (netrtg !== null) {
-            entry.netrtg_sum += netrtg;
-            entry.netrtg_count += 1;
-          }
-          const assists = toNumber(row.AST);
-          if (assists !== null) {
-            entry.assists_sum += assists;
-            entry.assists_count += 1;
-          }
-          const turnovers = toNumber(row.TOV ?? row.TO);
-          if (turnovers !== null) {
-            entry.turnovers_sum += turnovers;
-            entry.turnovers_count += 1;
-          }
-        }
-      });
-
+      const teamIds = new Set([...baseByTeam.keys(), ...advancedByTeam.keys()]);
       const rows = [];
-      for (const entry of aggregates.values()) {
-        const gamesPlayed = entry.games_played || 0;
+      for (const teamId of teamIds) {
+        const base = baseByTeam.get(teamId) || {};
+        const advanced = advancedByTeam.get(teamId) || {};
+        const ppg = toNumber(base.PTS ?? base.PTS_PG ?? base.PPG);
+        const ppgAllowed = toNumber(base.OPP_PTS ?? base.OPP_PTS_PG ?? base.OPP_PPG);
+        const apg = toNumber(base.AST ?? base.AST_PG);
+        const topg = toNumber(base.TOV ?? base.TO ?? base.TOV_PG);
+        const ortg = toNumber(advanced.OFF_RATING ?? advanced.OFF_RTG ?? advanced.E_OFF_RATING);
+        const drtg = toNumber(advanced.DEF_RATING ?? advanced.DEF_RTG ?? advanced.E_DEF_RATING);
+        const netrtg = toNumber(advanced.NET_RATING ?? advanced.NET_RTG ?? advanced.NETRTG);
         rows.push({
           season,
-          team_id: entry.team_id,
-          ppg: gamesPlayed ? entry.points_for / gamesPlayed : null,
-          ppg_allowed: gamesPlayed ? entry.points_against / gamesPlayed : null,
-          ortg: entry.ortg_count ? entry.ortg_sum / entry.ortg_count : null,
+          team_id: teamId,
+          ppg: ppg ?? null,
+          ppg_allowed: ppgAllowed ?? null,
+          ortg: ortg ?? null,
           ortg_rank: null,
-          drtg: entry.drtg_count ? entry.drtg_sum / entry.drtg_count : null,
+          drtg: drtg ?? null,
           drtg_rank: null,
-          apg: entry.assists_count ? entry.assists_sum / entry.assists_count : null,
-          topg: entry.turnovers_count ? entry.turnovers_sum / entry.turnovers_count : null,
-          netrtg: entry.netrtg_count ? entry.netrtg_sum / entry.netrtg_count : null,
+          apg: apg ?? null,
+          topg: topg ?? null,
+          netrtg: netrtg ?? null,
         });
       }
 
@@ -1947,9 +1938,18 @@ async function refreshPlayerSeasonStatsForSeason(season) {
 async function refreshPlayerSeasonStats() {
   const seasons = await getSeasonsToSync();
   await withIngestionState("player_season_stats", async () => {
+    const errors = [];
     for (const season of seasons) {
       throwIfCronBudgetExceeded("player_season_stats_season");
-      await refreshPlayerSeasonStatsForSeason(season);
+      try {
+        await refreshPlayerSeasonStatsForSeason(season);
+      } catch (error) {
+        errors.push({ season, error: String(error) });
+        log("player_season_stats season failed", { season, error: String(error) });
+      }
+    }
+    if (errors.length) {
+      throw new Error(`player_season_stats failed for ${errors.length} season(s)`);
     }
   }, { seasons });
 }
@@ -2385,6 +2385,9 @@ async function runCron() {
     if (shouldRunMaintenanceTask("players")) {
       await runCronTask("players", CONFIG.playersIntervalMs, refreshPlayers);
     }
+    if (shouldRunMaintenanceTask("players_bio")) {
+      await runCronTask("players_bio", CONFIG.playersIntervalMs, refreshPlayerBioStats);
+    }
     if (shouldRunMaintenanceTask("player_season_stats")) {
       await runCronTask("player_season_stats", CONFIG.playerStatsIntervalMs, refreshPlayerSeasonStats);
     }
@@ -2420,6 +2423,7 @@ async function runLive() {
   scheduleTask("live-games", CONFIG.livePollIntervalMs, refreshActiveGames, true);
   scheduleTask("teams", CONFIG.teamsIntervalMs, refreshTeams, true);
   scheduleTask("players", CONFIG.playersIntervalMs, refreshPlayers, true);
+  scheduleTask("players-bio", CONFIG.playersIntervalMs, refreshPlayerBioStats, true);
   scheduleTask("standings", CONFIG.standingsIntervalMs, refreshStandings, true);
   scheduleTask("player-awards", CONFIG.playerAwardsIntervalMs, refreshPlayerAwards, true);
   scheduleTask("player-season-stats", CONFIG.playerStatsIntervalMs, refreshPlayerSeasonStats, true);
