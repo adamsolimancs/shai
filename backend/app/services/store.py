@@ -419,6 +419,15 @@ async def fetch_boxscore(
         "usage_pct",
         "true_shooting_pct",
         "effective_fg_pct",
+        "assist_pct",
+        "assist_to_turnover",
+        "rebound_pct",
+        "offensive_rebound_pct",
+        "defensive_rebound_pct",
+        "pace",
+        "pace_per40",
+        "possessions",
+        "pie",
     )
     for player in players:
         traditional.append(
@@ -466,15 +475,15 @@ async def fetch_boxscore(
                     "usage_pct": player.get("usage_pct"),
                     "true_shooting_pct": player.get("true_shooting_pct"),
                     "effective_fg_pct": player.get("effective_fg_pct"),
-                    "assist_pct": None,
-                    "assist_to_turnover": None,
-                    "rebound_pct": None,
-                    "offensive_rebound_pct": None,
-                    "defensive_rebound_pct": None,
-                    "pace": None,
-                    "pace_per40": None,
-                    "possessions": None,
-                    "pie": None,
+                    "assist_pct": player.get("assist_pct"),
+                    "assist_to_turnover": player.get("assist_to_turnover"),
+                    "rebound_pct": player.get("rebound_pct"),
+                    "offensive_rebound_pct": player.get("offensive_rebound_pct"),
+                    "defensive_rebound_pct": player.get("defensive_rebound_pct"),
+                    "pace": player.get("pace"),
+                    "pace_per40": player.get("pace_per40"),
+                    "possessions": player.get("possessions"),
+                    "pie": player.get("pie"),
                 }
             )
     row["officials"] = _parse_json(row.get("officials"), [])

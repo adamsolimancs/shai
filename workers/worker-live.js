@@ -1523,6 +1523,61 @@ async function fetchBoxscoreAdvancedTeamStats(gameId) {
   return extractResultSetRows(payload, "TeamStats");
 }
 
+function normalizeAdvancedBoxscorePlayerRow(row) {
+  if (!row || typeof row !== "object") return null;
+  const pick = (...keys) => {
+    for (const key of keys) {
+      if (row[key] !== undefined && row[key] !== null) {
+        return row[key];
+      }
+    }
+    return null;
+  };
+  const playerId = toPlayerId(pick("PLAYER_ID", "personId", "player_id"));
+  if (!playerId) return null;
+  return {
+    player_id: playerId,
+    player_name: toText(pick("PLAYER_NAME", "playerName", "nameI", "firstName")),
+    team_id: toNumber(pick("TEAM_ID", "teamId")),
+    team_abbreviation: toText(pick("TEAM_ABBREVIATION", "teamTricode")),
+    minutes: toText(pick("MIN", "minutes")),
+    offensive_rating: toNumber(pick("OFF_RATING", "offensiveRating")),
+    defensive_rating: toNumber(pick("DEF_RATING", "defensiveRating")),
+    net_rating: toNumber(pick("NET_RATING", "netRating")),
+    usage_pct: toNumber(pick("USG_PCT", "usagePercentage")),
+    true_shooting_pct: toNumber(pick("TS_PCT", "trueShootingPercentage")),
+    effective_fg_pct: toNumber(pick("EFG_PCT", "effectiveFieldGoalPercentage")),
+    assist_pct: toNumber(pick("AST_PCT", "assistPercentage")),
+    assist_to_turnover: toNumber(pick("AST_TOV", "assistToTurnover")),
+    rebound_pct: toNumber(pick("REB_PCT", "reboundPercentage")),
+    offensive_rebound_pct: toNumber(pick("OREB_PCT", "offensiveReboundPercentage")),
+    defensive_rebound_pct: toNumber(pick("DREB_PCT", "defensiveReboundPercentage")),
+    pace: toNumber(pick("PACE", "pace")),
+    pace_per40: toNumber(pick("PACE_PER40", "pacePer40")),
+    possessions: toNumber(pick("POSS", "possessions")),
+    pie: toNumber(pick("PIE")),
+  };
+}
+
+async function fetchBoxscoreAdvancedPlayers(gameId) {
+  const url = new URL("https://stats.nba.com/stats/boxscoreadvancedv2");
+  url.searchParams.set("GameID", gameId);
+  url.searchParams.set("StartPeriod", "0");
+  url.searchParams.set("EndPeriod", "0");
+  url.searchParams.set("StartRange", "0");
+  url.searchParams.set("EndRange", "0");
+  url.searchParams.set("RangeType", "0");
+  const payload = await statsRequest(url.toString());
+  const rows = extractResultSetRows(payload, "PlayerStats");
+  const byPlayer = new Map();
+  for (const row of rows) {
+    const normalized = normalizeAdvancedBoxscorePlayerRow(row);
+    if (!normalized || !normalized.player_id) continue;
+    byPlayer.set(normalized.player_id, normalized);
+  }
+  return Array.from(byPlayer.values());
+}
+
 async function fetchLeagueDashPlayerStats(season, seasonType) {
   const url = new URL("https://stats.nba.com/stats/leaguedashplayerstats");
   const params = {
@@ -1991,6 +2046,15 @@ function toBoxscorePlayers(boxscore) {
         row.usage_pct === undefined || row.usage_pct === null ? null : String(row.usage_pct),
       true_shooting_pct: row.true_shooting_pct ?? null,
       effective_fg_pct: row.effective_fg_pct ?? null,
+      assist_pct: row.assist_pct ?? null,
+      assist_to_turnover: row.assist_to_turnover ?? null,
+      rebound_pct: row.rebound_pct ?? null,
+      offensive_rebound_pct: row.offensive_rebound_pct ?? null,
+      defensive_rebound_pct: row.defensive_rebound_pct ?? null,
+      pace: row.pace ?? null,
+      pace_per40: row.pace_per40 ?? null,
+      possessions: row.possessions ?? null,
+      pie: row.pie ?? null,
     });
   }
 
@@ -2051,6 +2115,15 @@ function toBoxscorePlayers(boxscore) {
         row.usage_pct === undefined || row.usage_pct === null ? null : String(row.usage_pct),
       true_shooting_pct: row.true_shooting_pct ?? null,
       effective_fg_pct: row.effective_fg_pct ?? null,
+      assist_pct: row.assist_pct ?? null,
+      assist_to_turnover: row.assist_to_turnover ?? null,
+      rebound_pct: row.rebound_pct ?? null,
+      offensive_rebound_pct: row.offensive_rebound_pct ?? null,
+      defensive_rebound_pct: row.defensive_rebound_pct ?? null,
+      pace: row.pace ?? null,
+      pace_per40: row.pace_per40 ?? null,
+      possessions: row.possessions ?? null,
+      pie: row.pie ?? null,
     });
   }
 
@@ -2088,6 +2161,17 @@ async function upsertBoxscore(boxscore) {
 
 async function updateBoxscoreForGame(gameId) {
   const boxscore = await fetchBoxscore(gameId);
+  try {
+    const advancedPlayers = await fetchBoxscoreAdvancedPlayers(gameId);
+    if (advancedPlayers.length) {
+      boxscore.advanced_players = advancedPlayers;
+    }
+  } catch (error) {
+    log("Failed to refresh boxscore advanced players from stats.nba.com", {
+      game_id: gameId,
+      error: String(error),
+    });
+  }
   const playersCount = await upsertBoxscore(boxscore);
   const startTime = toText(boxscore.start_time);
   if (startTime) {

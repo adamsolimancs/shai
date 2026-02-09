@@ -12,6 +12,17 @@ const NAV_LINKS = [
   { href: "/news", label: "News" },
 ];
 
+function getLastPlayerSearch(): string {
+  if (typeof window === "undefined") {
+    return "";
+  }
+  try {
+    return window.sessionStorage.getItem("lastPlayerSearch") ?? "";
+  } catch {
+    return "";
+  }
+}
+
 function normalizeSlug(input: string): string {
   return input
     .trim()
@@ -45,7 +56,6 @@ export function HeaderSearchBar() {
   const segments = useMemo(() => pathname.split("/").filter(Boolean), [pathname]);
   const isPlayerProfile = segments[0] === "players" && segments.length >= 2;
   const queryParam = searchParams?.get("q") ?? "";
-  const [storedQuery, setStoredQuery] = useState("");
   const showSearch =
     pathname !== "/" && pathname !== "/players" && pathname !== "/signin" && pathname !== "/signup";
   const derivedQuery = useMemo(() => {
@@ -56,9 +66,6 @@ export function HeaderSearchBar() {
       return queryParam;
     }
     if (isPlayerProfile) {
-      if (storedQuery) {
-        return storedQuery;
-      }
       const segment = segments[1] ?? "";
       if (/^\d+$/.test(segment)) {
         return "";
@@ -66,21 +73,23 @@ export function HeaderSearchBar() {
       return decodeURIComponent(segment).replace(/-/g, " ");
     }
     return "";
-  }, [showSearch, queryParam, isPlayerProfile, segments, storedQuery]);
+  }, [showSearch, queryParam, isPlayerProfile, segments]);
   const [query, setQuery] = useState(derivedQuery);
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      try {
-        setStoredQuery(window.sessionStorage.getItem("lastPlayerSearch") ?? "");
-      } catch {
-        setStoredQuery("");
+    const id = setTimeout(() => {
+      let nextQuery = derivedQuery;
+      if (showSearch && isPlayerProfile && !queryParam) {
+        const storedQuery = getLastPlayerSearch();
+        if (storedQuery) {
+          nextQuery = storedQuery;
+        }
       }
-    }
-    const id = setTimeout(() => setQuery(derivedQuery), 0);
+      setQuery(nextQuery);
+    }, 0);
     return () => clearTimeout(id);
-  }, [derivedQuery, pathname]);
+  }, [derivedQuery, isPlayerProfile, queryParam, showSearch]);
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();

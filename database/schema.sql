@@ -32,7 +32,16 @@
   net_rating real,
   usage_pct text,
   true_shooting_pct real,
-  effective_fg_pct real\n);\n |
+  effective_fg_pct real,
+  assist_pct real,
+  assist_to_turnover real,
+  rebound_pct real,
+  offensive_rebound_pct real,
+  defensive_rebound_pct real,
+  pace real,
+  pace_per40 real,
+  possessions real,
+  pie real\n);\n |
 | CREATE TABLE public.boxscores (\n  game_id text NOT NULL,
   status text NOT NULL,
   game_date text,
