@@ -117,3 +117,44 @@ async def test_get_player_bio(monkeypatch):
     assert result.data.draft_pick == "Round 1, Pick 3"
     assert result.data.college == "Duke"
     assert result.data.country == "USA"
+
+
+@pytest.mark.asyncio
+async def test_get_player_info(monkeypatch):
+    settings = Settings()
+    cache = InMemoryCacheBackend(settings)
+    resolver = NameResolver(cache)
+    client = NBAStatsClient(settings, cache, resolver)
+
+    sample = [
+        {
+            "PERSON_ID": 2544,
+            "FIRST_NAME": "LeBron",
+            "LAST_NAME": "James",
+            "DISPLAY_FIRST_LAST": "LeBron James",
+            "BIRTHDATE": "1984-12-30T00:00:00",
+            "SCHOOL": "St. Vincent-St. Mary HS (OH)",
+            "COUNTRY": "USA",
+            "SEASON_EXP": 22,
+            "JERSEY": "23",
+            "POSITION": "Forward",
+            "ROSTERSTATUS": "Active",
+            "TEAM_ID": 1610612747,
+            "TEAM_NAME": "Lakers",
+            "TEAM_ABBREVIATION": "LAL",
+            "FROM_YEAR": 2003,
+            "TO_YEAR": 2025,
+        }
+    ]
+
+    async def fake_cached_call(key, ttl, fetcher):
+        return sample, CacheMeta(hit=True, stale=False)
+
+    monkeypatch.setattr(client, "_cached_call", fake_cached_call)
+    result = await client.get_player_info(2544)
+    assert result.data is not None
+    assert result.data.player_id == 2544
+    assert result.data.display_name == "LeBron James"
+    assert result.data.position == "Forward"
+    assert result.data.jersey == "23"
+    assert result.data.team_abbreviation == "LAL"

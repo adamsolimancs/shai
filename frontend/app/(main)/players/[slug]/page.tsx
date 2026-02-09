@@ -122,6 +122,25 @@ type PlayerBio = {
   country?: string | null;
 };
 
+type PlayerInfo = {
+  player_id: number;
+  display_name: string;
+  first_name?: string | null;
+  last_name?: string | null;
+  position?: string | null;
+  jersey?: string | null;
+  birthdate?: string | null;
+  school?: string | null;
+  country?: string | null;
+  season_experience?: number | null;
+  roster_status?: string | null;
+  from_year?: number | null;
+  to_year?: number | null;
+  team_id?: number | null;
+  team_name?: string | null;
+  team_abbreviation?: string | null;
+};
+
 type PlayerProfile = {
   slug: string;
   playerId: number;
@@ -146,6 +165,7 @@ type PlayerProfile = {
   rings: number;
   ringSeasons: string[];
   bio?: PlayerBio | null;
+  info?: PlayerInfo | null;
 };
 
 type SeasonStats = {
@@ -635,7 +655,7 @@ const fetchPlayerProfile = cache(async (slug: string | undefined): Promise<Playe
     if (!playerId) {
       return null;
     }
-    const [career, playoffsCareer, gamelog, awards] = await Promise.all([
+    const [career, playoffsCareer, gamelog, awards, info] = await Promise.all([
       nbaFetch<PlayerCareerStatsRow[]>(
         `/v1/players/${playerId}/career?season_type=Regular%20Season`,
         noStore,
@@ -658,6 +678,16 @@ const fetchPlayerProfile = cache(async (slug: string | undefined): Promise<Playe
           return [] as PlayerAward[];
         }
       })(),
+      (async () => {
+        try {
+          return await nbaFetch<PlayerInfo | null>(`/v1/players/${playerId}/info`, noStore);
+        } catch (playerInfoError) {
+          if (process.env.NODE_ENV !== "production") {
+            console.error("Failed to load player info", playerInfoError);
+          }
+          return null;
+        }
+      })(),
     ]);
 
     if (!career.length) {
@@ -675,6 +705,7 @@ const fetchPlayerProfile = cache(async (slug: string | undefined): Promise<Playe
       currentTeamRow?.team_abbreviation ??
       latestTeamAbbreviation(gamelog) ??
       seasonRow?.team_abbreviation ??
+      info?.team_abbreviation ??
       null;
     let standingsRow: LeagueStandingRow | undefined;
     if (isActive && teamId != null && teamId > 0) {
@@ -758,8 +789,20 @@ const fetchPlayerProfile = cache(async (slug: string | undefined): Promise<Playe
       slug,
       playerId,
       name: resolution.player?.name ?? query,
-      team: formatStandingTeamName(standingsRow) ?? teamStats[0]?.team_name ?? currentTeamRow?.team_abbreviation ?? resolution.player?.abbreviation ?? "Free Agent",
-      teamAbbreviation: standingsRow?.team_abbreviation ?? currentTeamRow?.team_abbreviation ?? teamStats[0]?.team_abbreviation ?? null,
+      team:
+        formatStandingTeamName(standingsRow) ??
+        teamStats[0]?.team_name ??
+        info?.team_name ??
+        currentTeamRow?.team_abbreviation ??
+        info?.team_abbreviation ??
+        resolution.player?.abbreviation ??
+        "Free Agent",
+      teamAbbreviation:
+        standingsRow?.team_abbreviation ??
+        currentTeamRow?.team_abbreviation ??
+        teamStats[0]?.team_abbreviation ??
+        info?.team_abbreviation ??
+        null,
       headshot: `${HEADSHOT_BASE}/${playerId}.png`,
       rating,
       scoutingReport,
@@ -784,6 +827,7 @@ const fetchPlayerProfile = cache(async (slug: string | undefined): Promise<Playe
       rings: championships,
       ringSeasons: sortSeasons(championshipSeasons),
       bio,
+      info,
     };
   } catch (error) {
     if (process.env.NODE_ENV !== "production") {
@@ -891,20 +935,40 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
     return `${weight} lbs (${kg} kg)`;
   };
   const draftYear = profile.bio?.draft_year ? `${profile.bio.draft_year}` : null;
-  const draftPick = profile.bio?.draft_pick ?? null;
-  const draftDetails = draftYear && draftPick ? `${draftYear} - ${draftPick}` : draftYear ?? draftPick ?? "";
+  const draftPickRaw = profile.bio?.draft_pick ?? null;
+  const normalizedDraftPick = (() => {
+    if (!draftPickRaw) return null;
+    const trimmed = draftPickRaw.trim();
+    if (!trimmed) return null;
+    const asNumber = Number.parseInt(trimmed, 10);
+    if (!Number.isNaN(asNumber) && `${asNumber}` === trimmed) {
+      return `Pick ${asNumber}`;
+    }
+    if (/^pick\s+\d+$/i.test(trimmed)) {
+      return `Pick ${trimmed.replace(/^pick\s+/i, "")}`;
+    }
+    return trimmed;
+  })();
+  const draftDetails = draftYear && normalizedDraftPick
+    ? `${draftYear}, ${normalizedDraftPick}`
+    : draftYear ?? normalizedDraftPick ?? "";
+  const jerseyValue =
+    profile.info?.jersey && profile.info.jersey.trim() ? `#${profile.info.jersey.trim()}` : null;
+  const positionPill = { label: "Position", value: profile.info?.position ?? null };
+  const jerseyPill = { label: "Jersey", value: jerseyValue };
   const agePill = { label: "Age", value: profile.age ? `${profile.age}` : "—" };
   const experiencePill = { label: "Experience", value: profile.experience };
   const heightPill = { label: "Height", value: formatHeight(profile.bio?.height) };
   const weightPill = { label: "Weight", value: formatWeight(profile.bio?.weight ?? null) };
   const draftPill = { label: "Draft", value: draftDetails || null };
-  const collegePill = { label: "College", value: profile.bio?.college ?? null };
-  const countryPill = { label: "Country", value: profile.bio?.country ?? null };
+  const collegePill = { label: "College", value: profile.bio?.college ?? profile.info?.school ?? null };
+  const countryPill = { label: "Country", value: profile.bio?.country ?? profile.info?.country ?? null };
   const infoRows: Array<Array<{ label: string; value: string | null } | null>> = [
+    [positionPill, jerseyPill],
     [agePill, experiencePill],
     [heightPill, weightPill],
-    [collegePill, countryPill],
     [draftPill],
+    [collegePill, countryPill],
   ];
   const infoItems = infoRows.flat().filter((item): item is { label: string; value: string } => Boolean(item?.value));
   const careerTitle = getCareerTitle(profile.rating);

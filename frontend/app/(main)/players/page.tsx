@@ -11,30 +11,38 @@ type Player = {
   is_active: boolean;
 };
 
-type PlayerStatsRow = {
+type LeagueLeaderRow = {
   player_id: number;
+  rank: number;
   player_name: string;
   team_abbreviation: string | null;
-  points: number;
-  rebounds: number;
-  assists: number;
+  stat_value: number;
+  stat_category: string;
 };
 
-type PlayerStatMetric = "points" | "rebounds" | "assists";
+type LeaderStatCategory = "PTS" | "REB" | "AST" | "STL" | "BLK";
 
 type Leaderboard = {
   id: string;
   label: string;
   metric: string;
-  valueKey: PlayerStatMetric;
-  rows: PlayerStatsRow[];
+  category: LeaderStatCategory;
+  digits?: number;
+  rows: LeagueLeaderRow[];
 };
 
 type SearchParams = {
   [key: string]: string | string[] | undefined;
 };
 
-const DIRECTORY_LIMIT = 60;
+const LEADER_LIMIT = 5;
+const LEADERBOARDS: Array<Omit<Leaderboard, "rows">> = [
+  { id: "points", label: "Scoring leaders", metric: "PTS", category: "PTS" },
+  { id: "rebounds", label: "Glass cleaners", metric: "REB", category: "REB" },
+  { id: "assists", label: "Assist leaders", metric: "AST", category: "AST" },
+  { id: "steals", label: "Pickpockets", metric: "STL", category: "STL" },
+  { id: "blocks", label: "Rim protectors", metric: "BLK", category: "BLK" },
+];
 
 function formatNumber(value: number, digits = 1) {
   return value.toFixed(digits);
@@ -51,6 +59,20 @@ type PlayersPageProps = {
   searchParams?: SearchParams | Promise<SearchParams>;
 };
 
+async function fetchLeaders(
+  category: LeaderStatCategory,
+  seasonType: string,
+): Promise<LeagueLeaderRow[]> {
+  const params = new URLSearchParams({
+    season: DEFAULT_SEASON,
+    season_type: seasonType,
+    per_mode: "PerGame",
+    stat_category: category,
+    limit: String(LEADER_LIMIT),
+  });
+  return nbaFetch<LeagueLeaderRow[]>(`/v1/league/leaders?${params.toString()}`);
+}
+
 export default async function PlayersPage({ searchParams }: PlayersPageProps) {
   const resolvedSearchParams = await Promise.resolve(searchParams ?? {});
   const query = extractParam(resolvedSearchParams, "q").trim();
@@ -63,28 +85,16 @@ export default async function PlayersPage({ searchParams }: PlayersPageProps) {
   const requestParams = new URLSearchParams({ season: DEFAULT_SEASON, page_size: "150", page: "1" });
   if (query) requestParams.set("search", query);
   if (active !== undefined) requestParams.set("active", String(active));
-  const statsParams = new URLSearchParams({
-    season: DEFAULT_SEASON,
-    season_type: seasonType,
-    page_size: "60",
-  });
-
-  const [directory, stats] = await Promise.all([
+  const [directory, leaderboardsRows] = await Promise.all([
     nbaFetch<Player[]>(`/v1/players?${requestParams.toString()}`),
-    nbaFetch<PlayerStatsRow[]>(`/v1/players/stats?${statsParams.toString()}`),
+    Promise.all(LEADERBOARDS.map((board) => fetchLeaders(board.category, seasonType))),
   ]);
 
-  const scoringLeaders = [...stats].sort((a, b) => b.points - a.points).slice(0, 5);
-  const reboundLeaders = [...stats].sort((a, b) => b.rebounds - a.rebounds).slice(0, 5);
-  const assistLeaders = [...stats].sort((a, b) => b.assists - a.assists).slice(0, 5);
-
-  const leaderboards: Leaderboard[] = [
-    { id: "points", label: "Scoring leaders", metric: "PTS", valueKey: "points", rows: scoringLeaders },
-    { id: "rebounds", label: "Glass cleaners", metric: "REB", valueKey: "rebounds", rows: reboundLeaders },
-    { id: "assists", label: "Assist leaders", metric: "AST", valueKey: "assists", rows: assistLeaders },
-  ];
-
-  const directorySubset = directory.slice(0, DIRECTORY_LIMIT);
+  const leaderboards: Leaderboard[] = LEADERBOARDS.map((board, index) => ({
+    ...board,
+    rows: leaderboardsRows[index] ?? [],
+  }));
+  const directoryCount = directory.length;
 
   return (
     <div className="space-y-12">
@@ -95,6 +105,9 @@ export default async function PlayersPage({ searchParams }: PlayersPageProps) {
           <p className="mt-2 max-w-2xl text-sm text-white/70">
             Use the global directory backed by the nba_data_api service to quickly jump into scouting reports, verify roster spots,
             or route into individual profile pages for deeper analytics.
+          </p>
+          <p className="mt-2 text-xs uppercase tracking-[0.3em] text-white/50">
+            {directoryCount.toLocaleString()} players matched current filters
           </p>
         </div>
         <Suspense
@@ -161,12 +174,14 @@ export default async function PlayersPage({ searchParams }: PlayersPageProps) {
                         className="flex items-center justify-between rounded-2xl bg-slate-950/40 px-4 py-3 transition hover:bg-slate-950/60"
                       >
                         <div>
-                          <p className="text-xs uppercase tracking-[0.3em] text-white/40">#{index + 1}</p>
+                          <p className="text-xs uppercase tracking-[0.3em] text-white/40">
+                            #{row.rank || index + 1}
+                          </p>
                           <p className="text-base font-semibold text-white">{row.player_name}</p>
                           <p className="text-white/60">{row.team_abbreviation ?? "FA"}</p>
                         </div>
                         <span className="text-2xl font-semibold text-white">
-                          {formatNumber(row[board.valueKey])}
+                          {formatNumber(row.stat_value, board.digits ?? 1)}
                         </span>
                       </Link>
                     </li>
