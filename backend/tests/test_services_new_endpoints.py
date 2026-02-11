@@ -125,3 +125,74 @@ async def test_get_league_leaders_respects_limit(monkeypatch):
     assert result.data[0].player_name == "Player A"
     assert result.data[0].stat_value == pytest.approx(30.1)
     assert result.data[0].stat_category == "PTS"
+
+
+def _client() -> NBAStatsClient:
+    settings = Settings()
+    cache = InMemoryCacheBackend(settings)
+    resolver = NameResolver(cache)
+    return NBAStatsClient(settings, cache, resolver)
+
+
+def test_normalize_advanced_player_supports_estimated_v3_keys():
+    client = _client()
+    normalized = client._normalize_advanced_player(
+        {
+            "personId": 201939,
+            "nameI": "S.Curry",
+            "teamId": 1610612744,
+            "teamTricode": "GSW",
+            "minutes": "34:10",
+            "estimatedOffensiveRating": 123.4,
+            "estimatedDefensiveRating": 109.2,
+            "estimatedNetRating": 14.2,
+            "estimatedUsagePercentage": 0.31,
+            "trueShootingPercentage": 0.663,
+            "effectiveFieldGoalPercentage": 0.602,
+            "assistPercentage": 0.321,
+            "reboundPercentage": 0.104,
+            "estimatedPace": 101.5,
+            "pacePer40": 84.7,
+            "possessions": 68.2,
+            "PIE": 0.188,
+        }
+    )
+
+    assert normalized["player_id"] == 201939
+    assert normalized["player_name"] == "S.Curry"
+    assert normalized["team_id"] == 1610612744
+    assert normalized["team_abbreviation"] == "GSW"
+    assert normalized["offensive_rating"] == pytest.approx(123.4)
+    assert normalized["defensive_rating"] == pytest.approx(109.2)
+    assert normalized["net_rating"] == pytest.approx(14.2)
+    assert normalized["usage_pct"] == pytest.approx(0.31)
+    assert normalized["pace"] == pytest.approx(101.5)
+    assert normalized["pie"] == pytest.approx(0.188)
+
+
+def test_normalize_advanced_player_supports_estimated_v2_keys():
+    client = _client()
+    normalized = client._normalize_advanced_player(
+        {
+            "PLAYER_ID": "123",
+            "PLAYER_NAME": "Sample Player",
+            "TEAM_ID": "1",
+            "TEAM_ABBREVIATION": "AAA",
+            "MIN": "29:00",
+            "E_OFF_RATING": "110.5",
+            "E_DEF_RATING": "105.1",
+            "E_NET_RATING": "5.4",
+            "E_USG_PCT": "0.24",
+            "E_PACE": "98.7",
+        }
+    )
+
+    assert normalized["player_id"] == 123
+    assert normalized["player_name"] == "Sample Player"
+    assert normalized["team_id"] == 1
+    assert normalized["team_abbreviation"] == "AAA"
+    assert normalized["offensive_rating"] == pytest.approx(110.5)
+    assert normalized["defensive_rating"] == pytest.approx(105.1)
+    assert normalized["net_rating"] == pytest.approx(5.4)
+    assert normalized["usage_pct"] == pytest.approx(0.24)
+    assert normalized["pace"] == pytest.approx(98.7)

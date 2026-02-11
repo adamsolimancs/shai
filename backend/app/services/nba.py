@@ -1435,19 +1435,48 @@ class NBAStatsClient:
             return None
 
         def team_abbr() -> str | None:
-            value = pick("TEAM_ABBREVIATION", "teamTricode")
+            value = pick("TEAM_ABBREVIATION", "teamTricode", "teamAbbreviation")
             return str(value) if value else None
 
+        def player_name() -> str:
+            value = pick("PLAYER_NAME", "playerName", "nameI")
+            if value:
+                return str(value)
+            first = pick("FIRST_NAME", "firstName")
+            last = pick("LAST_NAME", "familyName")
+            full = " ".join(
+                part.strip() for part in [str(first or ""), str(last or "")] if part
+            ).strip()
+            return full or "Unknown player"
+
         return {
-            "player_id": self._safe_int(pick("PLAYER_ID", "personId")),
-            "player_name": pick("PLAYER_NAME", "playerName", "nameI", "firstName"),
+            "player_id": self._safe_int(pick("PLAYER_ID", "personId", "playerId")),
+            "player_name": player_name(),
             "team_id": self._safe_int(pick("TEAM_ID", "teamId")),
-            "team_abbreviation": team_abbr(),
+            "team_abbreviation": team_abbr() or "UNK",
             "minutes": pick("MIN", "minutes"),
-            "offensive_rating": self._coerce_float(pick("OFF_RATING", "offensiveRating")),
-            "defensive_rating": self._coerce_float(pick("DEF_RATING", "defensiveRating")),
-            "net_rating": self._coerce_float(pick("NET_RATING", "netRating")),
-            "usage_pct": self._coerce_float(pick("USG_PCT", "usagePercentage")),
+            "offensive_rating": self._coerce_float(
+                pick(
+                    "OFF_RATING",
+                    "E_OFF_RATING",
+                    "offensiveRating",
+                    "estimatedOffensiveRating",
+                )
+            ),
+            "defensive_rating": self._coerce_float(
+                pick(
+                    "DEF_RATING",
+                    "E_DEF_RATING",
+                    "defensiveRating",
+                    "estimatedDefensiveRating",
+                )
+            ),
+            "net_rating": self._coerce_float(
+                pick("NET_RATING", "E_NET_RATING", "netRating", "estimatedNetRating")
+            ),
+            "usage_pct": self._coerce_float(
+                pick("USG_PCT", "E_USG_PCT", "usagePercentage", "estimatedUsagePercentage")
+            ),
             "true_shooting_pct": self._coerce_float(pick("TS_PCT", "trueShootingPercentage")),
             "effective_fg_pct": self._coerce_float(pick("EFG_PCT", "effectiveFieldGoalPercentage")),
             "assist_pct": self._coerce_float(pick("AST_PCT", "assistPercentage")),
@@ -1459,10 +1488,10 @@ class NBAStatsClient:
             "defensive_rebound_pct": self._coerce_float(
                 pick("DREB_PCT", "defensiveReboundPercentage")
             ),
-            "pace": self._coerce_float(pick("PACE", "pace")),
+            "pace": self._coerce_float(pick("PACE", "E_PACE", "pace", "estimatedPace")),
             "pace_per40": self._coerce_float(pick("PACE_PER40", "pacePer40")),
             "possessions": self._coerce_float(pick("POSS", "possessions")),
-            "pie": self._coerce_float(pick("PIE", "PIE")),
+            "pie": self._coerce_float(pick("PIE", "pie")),
         }
 
     def _build_team_card(

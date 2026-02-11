@@ -1535,16 +1535,25 @@ function normalizeAdvancedBoxscorePlayerRow(row) {
   };
   const playerId = toPlayerId(pick("PLAYER_ID", "personId", "player_id"));
   if (!playerId) return null;
+  const firstName = toText(pick("firstName", "FIRST_NAME"));
+  const familyName = toText(pick("familyName", "LAST_NAME"));
+  const fallbackName = [firstName, familyName].filter(Boolean).join(" ").trim();
   return {
     player_id: playerId,
-    player_name: toText(pick("PLAYER_NAME", "playerName", "nameI", "firstName")),
+    player_name: toText(pick("PLAYER_NAME", "playerName", "nameI")) || fallbackName || null,
     team_id: toNumber(pick("TEAM_ID", "teamId")),
-    team_abbreviation: toText(pick("TEAM_ABBREVIATION", "teamTricode")),
+    team_abbreviation: toText(pick("TEAM_ABBREVIATION", "teamTricode", "teamAbbreviation")),
     minutes: toText(pick("MIN", "minutes")),
-    offensive_rating: toNumber(pick("OFF_RATING", "offensiveRating")),
-    defensive_rating: toNumber(pick("DEF_RATING", "defensiveRating")),
-    net_rating: toNumber(pick("NET_RATING", "netRating")),
-    usage_pct: toNumber(pick("USG_PCT", "usagePercentage")),
+    offensive_rating: toNumber(
+      pick("OFF_RATING", "E_OFF_RATING", "offensiveRating", "estimatedOffensiveRating")
+    ),
+    defensive_rating: toNumber(
+      pick("DEF_RATING", "E_DEF_RATING", "defensiveRating", "estimatedDefensiveRating")
+    ),
+    net_rating: toNumber(pick("NET_RATING", "E_NET_RATING", "netRating", "estimatedNetRating")),
+    usage_pct: toNumber(
+      pick("USG_PCT", "E_USG_PCT", "usagePercentage", "estimatedUsagePercentage")
+    ),
     true_shooting_pct: toNumber(pick("TS_PCT", "trueShootingPercentage")),
     effective_fg_pct: toNumber(pick("EFG_PCT", "effectiveFieldGoalPercentage")),
     assist_pct: toNumber(pick("AST_PCT", "assistPercentage")),
@@ -1552,23 +1561,33 @@ function normalizeAdvancedBoxscorePlayerRow(row) {
     rebound_pct: toNumber(pick("REB_PCT", "reboundPercentage")),
     offensive_rebound_pct: toNumber(pick("OREB_PCT", "offensiveReboundPercentage")),
     defensive_rebound_pct: toNumber(pick("DREB_PCT", "defensiveReboundPercentage")),
-    pace: toNumber(pick("PACE", "pace")),
+    pace: toNumber(pick("PACE", "E_PACE", "pace", "estimatedPace")),
     pace_per40: toNumber(pick("PACE_PER40", "pacePer40")),
     possessions: toNumber(pick("POSS", "possessions")),
-    pie: toNumber(pick("PIE")),
+    pie: toNumber(pick("PIE", "pie")),
   };
 }
 
 async function fetchBoxscoreAdvancedPlayers(gameId) {
-  const url = new URL("https://stats.nba.com/stats/boxscoreadvancedv2");
-  url.searchParams.set("GameID", gameId);
-  url.searchParams.set("StartPeriod", "0");
-  url.searchParams.set("EndPeriod", "0");
-  url.searchParams.set("StartRange", "0");
-  url.searchParams.set("EndRange", "0");
-  url.searchParams.set("RangeType", "0");
-  const payload = await statsRequest(url.toString());
-  const rows = extractResultSetRows(payload, "PlayerStats");
+  const loadRows = async (endpoint, includeLeagueId) => {
+    const url = new URL(`https://stats.nba.com/stats/${endpoint}`);
+    url.searchParams.set("GameID", gameId);
+    url.searchParams.set("StartPeriod", "0");
+    url.searchParams.set("EndPeriod", "0");
+    url.searchParams.set("StartRange", "0");
+    url.searchParams.set("EndRange", "0");
+    url.searchParams.set("RangeType", "0");
+    if (includeLeagueId) {
+      url.searchParams.set("LeagueID", "00");
+    }
+    const payload = await statsRequest(url.toString());
+    return extractResultSetRows(payload, "PlayerStats");
+  };
+
+  let rows = await loadRows("boxscoreadvancedv2", true);
+  if (!rows.length) {
+    rows = await loadRows("boxscoreadvancedv3", false);
+  }
   const byPlayer = new Map();
   for (const row of rows) {
     const normalized = normalizeAdvancedBoxscorePlayerRow(row);

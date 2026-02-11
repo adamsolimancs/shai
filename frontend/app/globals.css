@@ -311,10 +311,26 @@ body {
   background: linear-gradient(
     90deg,
     transparent,
-    rgba(var(--color-app-foreground-rgb), 0.12),
+    rgba(var(--color-app-foreground-rgb), 0.08),
     transparent
   );
   animation: skeleton-shimmer 1.6s ease-in-out infinite;
+}
+
+/* Keep loading placeholders muted across all screens. */
+.skeleton-block.bg-white\/5,
+.animate-pulse.bg-white\/5 {
+  background-color: rgba(var(--color-app-foreground-rgb) / 0.08) !important;
+}
+
+.skeleton-block.bg-white\/10,
+.animate-pulse.bg-white\/10 {
+  background-color: rgba(var(--color-app-foreground-rgb) / 0.12) !important;
+}
+
+.skeleton-block.border-white\/10,
+.animate-pulse.border-white\/10 {
+  border-color: rgba(var(--color-app-foreground-rgb) / 0.16) !important;
 }
 
 @keyframes skeleton-shimmer {

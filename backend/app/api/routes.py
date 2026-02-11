@@ -220,6 +220,39 @@ def _needs_shooting(data: list[Any]) -> bool:
     return False
 
 
+ADVANCED_BOX_SCORE_FIELDS = (
+    "offensive_rating",
+    "defensive_rating",
+    "net_rating",
+    "usage_pct",
+    "true_shooting_pct",
+    "effective_fg_pct",
+    "assist_pct",
+    "assist_to_turnover",
+    "rebound_pct",
+    "offensive_rebound_pct",
+    "defensive_rebound_pct",
+    "pace",
+    "pace_per40",
+    "possessions",
+    "pie",
+)
+
+
+def _has_advanced_boxscore_metrics(rows: list[Any]) -> bool:
+    for row in rows:
+        if any(_row_value(row, field) is not None for field in ADVANCED_BOX_SCORE_FIELDS):
+            return True
+    return False
+
+
+def _needs_boxscore_advanced(data: Any) -> bool:
+    rows = _row_value(data, "advanced_players")
+    if not isinstance(rows, list) or not rows:
+        return True
+    return not _has_advanced_boxscore_metrics(rows)
+
+
 @router.get("/meta", response_model=Envelope[MetaResponse])
 async def meta(request: Request, client: NBAClientDep) -> Envelope[MetaResponse]:
     payload = await client.get_meta()
@@ -721,6 +754,23 @@ async def full_boxscore(
                 nocache=nocache_allowed,
             )
             if data is not None:
+                if settings.nba_api_calls_allowed and _needs_boxscore_advanced(data):
+                    try:
+                        result = await client.get_boxscore_details(game_id)
+                        api_rows = _row_value(result.data, "advanced_players")
+                        if isinstance(api_rows, list) and _has_advanced_boxscore_metrics(
+                            api_rows
+                        ):
+                            enriched = _row_to_dict(data)
+                            enriched["advanced_players"] = [
+                                _row_to_dict(row) for row in api_rows
+                            ]
+                            _log_data_source(request, "db_enrich", cache_meta)
+                            return success(request, enriched, cache=cache_meta)
+                    except Exception:
+                        logger.exception(
+                            "boxscore advanced enrich failed; returning db payload"
+                        )
                 _log_data_source(request, _source_from_cache(cache_meta, "db"), cache_meta)
                 return success(request, data, cache=cache_meta)
         except Exception:
