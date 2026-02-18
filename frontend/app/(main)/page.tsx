@@ -23,7 +23,10 @@ type Game = {
 
 type PlayerStatsRow = {
   player_id: number;
-  player_name: string;
+  player_name?: string | null;
+  playerName?: string | null;
+  name?: string | null;
+  full_name?: string | null;
   team_abbreviation: string | null;
   points: number;
   rebounds: number;
@@ -52,6 +55,12 @@ type PlayerHighlight = {
   points: number;
   rebounds: number;
   assists: number;
+};
+
+type PlayerInfo = {
+  display_name?: string | null;
+  first_name?: string | null;
+  last_name?: string | null;
 };
 
 type FranchiseLocation = {
@@ -168,17 +177,54 @@ async function fetchPlayerHighlights(): Promise<PlayerHighlight[]> {
     `/v1/players/stats?season=${DEFAULT_SEASON}&measure=Base&per_mode=PerGame&page_size=200`,
     { next: { revalidate: 300 } },
   );
-  return [...stats]
+  const placeholderNamePattern = /^Player \d+$/;
+
+  const resolvePlayerName = (player: PlayerStatsRow): string => {
+    const candidates = [player.player_name, player.playerName, player.name, player.full_name];
+    for (const candidate of candidates) {
+      const value = candidate?.trim();
+      if (value) {
+        return value;
+      }
+    }
+    return `Player ${player.player_id}`;
+  };
+
+  const topPlayers = [...stats]
     .sort((a, b) => b.points - a.points)
-    .slice(0, 3)
-    .map((player) => ({
-      id: player.player_id,
-      name: player.player_name,
-      team: player.team_abbreviation ?? "FA",
-      points: player.points,
-      rebounds: player.rebounds,
-      assists: player.assists,
-    }));
+    .slice(0, 3);
+
+  return Promise.all(
+    topPlayers.map(async (player) => {
+      let name = resolvePlayerName(player);
+      if (placeholderNamePattern.test(name)) {
+        try {
+          const info = await nbaFetch<PlayerInfo | null>(`/v1/players/${player.player_id}/info`, {
+            next: { revalidate: 300 },
+          });
+          const fallbackName = info?.display_name?.trim();
+          if (fallbackName) {
+            name = fallbackName;
+          } else {
+            const composed = [info?.first_name, info?.last_name].filter(Boolean).join(" ").trim();
+            if (composed) {
+              name = composed;
+            }
+          }
+        } catch {
+          // Keep deterministic placeholder when player profile info isn't available.
+        }
+      }
+      return {
+        id: player.player_id,
+        name,
+        team: player.team_abbreviation ?? "FA",
+        points: player.points,
+        rebounds: player.rebounds,
+        assists: player.assists,
+      };
+    }),
+  );
 }
 
 async function fetchLeagueStandings(): Promise<LeagueStanding[]> {
@@ -321,6 +367,7 @@ export default async function HomePage() {
               <ScoreCard
                 key={game.id}
                 href={`/boxscore/${game.id}`}
+                prefetch={false}
                 className="w-full max-w-[360px]"
                 density="compact"
                 timeLabel={<LocalGameTime value={game.timeValue} fallback={game.timeFallback} showTime={game.showTime} />}
@@ -349,9 +396,11 @@ export default async function HomePage() {
               color="var(--color-star-border)"
               speed="6.5s"
             >
-              <div className="flex items-center justify-between text-xs text-white/60 sm:text-sm">
-                <span className="font-semibold text-white">{player.name}</span>
-                <span>{player.team}</span>
+              <div className="text-center">
+                <p className="text-xl font-semibold text-white sm:text-2xl">
+                  {player.name || `Player ${player.id}`}
+                </p>
+                <p className="mt-1 text-xs text-white/60 sm:text-sm">{player.team}</p>
               </div>
               <dl className="mt-4 grid grid-cols-3 gap-2 text-center text-sm sm:mt-6 sm:gap-3">
                 <div>

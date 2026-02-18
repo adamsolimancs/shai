@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, timedelta
 from typing import Annotated, Any, Literal
 
@@ -97,6 +98,7 @@ async def authenticate_and_rate_limit(
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(authenticate_and_rate_limit)])
 logger = logging.getLogger("data_source")
+PLAYER_NAME_PLACEHOLDER_RE = re.compile(r"^Player\s+\d+$")
 
 
 def _source_from_cache(cache_meta: CacheMeta | None, miss_source: str) -> str:
@@ -110,6 +112,10 @@ def _log_data_source(
     source: str,
     cache_meta: CacheMeta | None = None,
 ) -> None:
+    request.state.data_source = source
+    if cache_meta:
+        request.state.cache_hit = cache_meta.hit
+        request.state.cache_stale = cache_meta.stale
     payload = {"source": source}
     if cache_meta:
         payload["cache_hit"] = cache_meta.hit
@@ -204,6 +210,26 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
     if hasattr(row, "model_dump"):
         return row.model_dump()
     return dict(row)
+
+
+def _normalize_player_stats_names(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for row in rows:
+        player_name = str(row.get("player_name") or "").strip()
+        if player_name:
+            normalized.append(row)
+            continue
+        player_id = row.get("player_id")
+        fallback_name = f"Player {player_id}" if player_id not in (None, "") else "Unknown player"
+        normalized.append({**row, "player_name": fallback_name})
+    return normalized
+
+
+def _is_placeholder_player_name(value: Any) -> bool:
+    if value is None:
+        return False
+    text = str(value).strip()
+    return bool(PLAYER_NAME_PLACEHOLDER_RE.match(text))
 
 
 def _needs_shooting(data: list[Any]) -> bool:
@@ -373,7 +399,7 @@ async def players(
                 ),
             )
             if data or not settings.nba_api_calls_allowed:
-                paged, pagination = paginate(data or [], page, page_size)
+                paged, pagination = paginate(data, page, page_size)
                 pagination_meta = _apply_pagination_links(request, pagination.model_dump())
                 _log_data_source(request, _source_from_cache(cache_meta, "db"), cache_meta)
                 return success(request, paged, cache=cache_meta, pagination=pagination_meta)
@@ -758,19 +784,13 @@ async def full_boxscore(
                     try:
                         result = await client.get_boxscore_details(game_id)
                         api_rows = _row_value(result.data, "advanced_players")
-                        if isinstance(api_rows, list) and _has_advanced_boxscore_metrics(
-                            api_rows
-                        ):
+                        if isinstance(api_rows, list) and _has_advanced_boxscore_metrics(api_rows):
                             enriched = _row_to_dict(data)
-                            enriched["advanced_players"] = [
-                                _row_to_dict(row) for row in api_rows
-                            ]
+                            enriched["advanced_players"] = [_row_to_dict(row) for row in api_rows]
                             _log_data_source(request, "db_enrich", cache_meta)
                             return success(request, enriched, cache=cache_meta)
                     except Exception:
-                        logger.exception(
-                            "boxscore advanced enrich failed; returning db payload"
-                        )
+                        logger.exception("boxscore advanced enrich failed; returning db payload")
                 _log_data_source(request, _source_from_cache(cache_meta, "db"), cache_meta)
                 return success(request, data, cache=cache_meta)
         except Exception:
@@ -974,7 +994,21 @@ async def player_stats(
                 ),
             )
             if data or not settings.nba_api_calls_allowed:
-                paged, pagination = paginate(data or [], page, page_size)
+                rows = _normalize_player_stats_names(data or [])
+                has_placeholder_names = any(
+                    _is_placeholder_player_name(row.get("player_name")) for row in rows
+                )
+                if cache_meta.hit and has_placeholder_names:
+                    refreshed = await fetch_player_stats(
+                        supabase,
+                        season=season,
+                        season_type=normalized_season_type,
+                        team_id=team_id,
+                    )
+                    rows = _normalize_player_stats_names(refreshed)
+                    await cache.set(key, rows, TTLS.player_stats)
+                    cache_meta = CacheMeta(hit=False, stale=False)
+                paged, pagination = paginate(rows, page, page_size)
                 pagination_meta = _apply_pagination_links(request, pagination.model_dump())
                 _log_data_source(request, _source_from_cache(cache_meta, "db"), cache_meta)
                 return success(request, paged, cache=cache_meta, pagination=pagination_meta)

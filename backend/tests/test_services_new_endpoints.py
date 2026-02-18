@@ -196,3 +196,44 @@ def test_normalize_advanced_player_supports_estimated_v2_keys():
     assert normalized["net_rating"] == pytest.approx(5.4)
     assert normalized["usage_pct"] == pytest.approx(0.24)
     assert normalized["pace"] == pytest.approx(98.7)
+
+
+def test_normalize_player_stats_falls_back_to_alternate_name_keys():
+    client = _client()
+    normalized = client._normalize_player_stats(
+        {
+            "PLAYER_ID": 123,
+            "PLAYER_NAME": "   ",
+            "PLAYER": "Sample Player",
+            "TEAM_ID": 1,
+            "TEAM": "AAA",
+            "PTS": 10.0,
+            "REB": 5.0,
+            "AST": 3.0,
+            "MIN": 28.5,
+        }
+    )
+
+    assert normalized["player_id"] == 123
+    assert normalized["player_name"] == "Sample Player"
+    assert normalized["team_id"] == 1
+    assert normalized["team_abbreviation"] == "AAA"
+    assert normalized["points"] == pytest.approx(10.0)
+
+
+def test_normalize_player_stats_uses_placeholder_when_name_missing():
+    client = _client()
+    normalized = client._normalize_player_stats(
+        {
+            "PLAYER_ID": 987,
+            "TEAM_ABBREVIATION": "BBB",
+            "PTS": 20.0,
+            "REB": 7.0,
+            "AST": 4.0,
+            "MIN": 33.1,
+        }
+    )
+
+    assert normalized["player_id"] == 987
+    assert normalized["player_name"] == "Player 987"
+    assert normalized["team_abbreviation"] == "BBB"
