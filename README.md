@@ -21,7 +21,7 @@ Prereqs: Node 20+, Python 3.11+. Redis is optional but recommended.
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"  # or: pip install -r requirements.txt
-# configure backend/.env (see backend/README.md)
+cp .env.example .env
 uvicorn app.main:app --reload --port 8080
 ```
 
@@ -29,7 +29,7 @@ uvicorn app.main:app --reload --port 8080
 ```bash
 cd frontend
 npm install
-# configure frontend/.env (see frontend/README.md)
+cp .env.example .env
 npm run dev
 # http://localhost:3000
 ```

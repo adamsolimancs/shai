@@ -87,6 +87,25 @@ class PlayerBio(BaseModel):
     country: str | None = None
 
 
+class PlayerInfo(BaseModel):
+    player_id: int
+    display_name: str
+    first_name: str | None = None
+    last_name: str | None = None
+    position: str | None = None
+    jersey: str | None = None
+    birthdate: date | None = None
+    school: str | None = None
+    country: str | None = None
+    season_experience: int | None = None
+    roster_status: str | None = None
+    from_year: int | None = None
+    to_year: int | None = None
+    team_id: int | None = None
+    team_name: str | None = None
+    team_abbreviation: str | None = None
+
+
 class Game(BaseModel):
     game_id: str
     date: date
@@ -388,6 +407,25 @@ class TeamDetail(BaseModel):
     social_sites: dict[str, str]
 
 
+class TeamSeasonHistoryRow(BaseModel):
+    team_id: int
+    team_city: str | None = None
+    team_name: str | None = None
+    season: str
+    games_played: int
+    wins: int
+    losses: int
+    win_pct: float
+    conference_rank: int | None = None
+    division_rank: int | None = None
+    playoff_wins: int | None = None
+    playoff_losses: int | None = None
+    finals_result: str | None = None
+    points: float | None = None
+    field_goal_pct: float | None = None
+    three_point_pct: float | None = None
+
+
 class ResolveRequest(BaseModel):
     player: str | None = None
     team: str | None = None
@@ -421,3 +459,22 @@ class TeamGameRow(BaseModel):
     matchup: str
     result: str | None = None
     points: float
+
+
+class LeagueLeaderRow(BaseModel):
+    player_id: int
+    rank: int
+    player_name: str
+    team_id: int | None = None
+    team_abbreviation: str | None = None
+    games_played: int
+    minutes: float | None = None
+    points: float | None = None
+    rebounds: float | None = None
+    assists: float | None = None
+    steals: float | None = None
+    blocks: float | None = None
+    turnovers: float | None = None
+    efficiency: float | None = None
+    stat_value: float
+    stat_category: str

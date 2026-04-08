@@ -162,7 +162,7 @@ const SiteFooter = () => {
         <div className="flex flex-col gap-6 text-[color:var(--color-app-foreground-muted)] md:flex-row md:items-center md:justify-between">
           <div className="space-y-2">
             <p className="text-lg font-semibold text-[var(--color-app-foreground)]">ShAI</p>
-            <p className="text-sm">Real-time NBA scores, stats, and AI-powered insights, powered by nba_api.</p>
+            <p className="text-sm">Real-time NBA scores, stats, and AI-powered insights.</p>
           </div>
           <div className="flex flex-wrap gap-4 text-sm">
             <Link href="/teams" className="transition hover:text-[var(--color-app-foreground)]">

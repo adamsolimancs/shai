@@ -4,19 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
-from collections.abc import Awaitable
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
+import httpx
 from fastapi.encoders import jsonable_encoder
 
-try:
-    from redis import asyncio as redis_asyncio
-except Exception:  # pragma: no cover - redis is an optional dependency during tests
-    redis_asyncio = None  # type: ignore[assignment]
-
 from .config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class CacheBackend(Protocol):
@@ -33,6 +31,34 @@ class CacheBackend(Protocol):
     async def close(self) -> None: ...
 
 
+class RedisClientProtocol(Protocol):
+    """Subset of Redis operations used by the backend."""
+
+    async def ping(self) -> Any: ...
+
+    async def get(self, key: str) -> str | None: ...
+
+    async def set(
+        self,
+        key: str,
+        value: str,
+        *,
+        ex: int | None = None,
+        px: int | None = None,
+        nx: bool = False,
+    ) -> Any: ...
+
+    async def delete(self, *keys: str) -> int | None: ...
+
+    async def incr(self, key: str) -> int: ...
+
+    async def expire(self, key: str, seconds: int) -> int: ...
+
+    async def ttl(self, key: str) -> int: ...
+
+    async def close(self) -> None: ...
+
+
 @dataclass
 class CacheResult:
     """Represents a cache lookup outcome."""
@@ -41,10 +67,82 @@ class CacheResult:
     stale: bool
 
 
+class UpstashRedisClient:
+    """Minimal async Upstash REST client for Redis-compatible commands."""
+
+    def __init__(
+        self,
+        *,
+        url: str,
+        token: str,
+        timeout: float = 5.0,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
+        self._request_url = f"{url.rstrip('/')}/"
+        self._client = http_client or httpx.AsyncClient(timeout=timeout)
+        self._client.headers["Authorization"] = f"Bearer {token}"
+
+    async def _execute(self, *command: str) -> Any:
+        response = await self._client.post(self._request_url, json=list(command))
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("Unexpected Upstash response payload.")
+        if "error" in payload:
+            raise RuntimeError(str(payload["error"]))
+        return payload.get("result")
+
+    async def ping(self) -> Any:
+        return await self._execute("PING")
+
+    async def get(self, key: str) -> str | None:
+        result = await self._execute("GET", key)
+        return str(result) if result is not None else None
+
+    async def set(
+        self,
+        key: str,
+        value: str,
+        *,
+        ex: int | None = None,
+        px: int | None = None,
+        nx: bool = False,
+    ) -> Any:
+        command = ["SET", key, value]
+        if ex is not None:
+            command.extend(["EX", str(ex)])
+        if px is not None:
+            command.extend(["PX", str(px)])
+        if nx:
+            command.append("NX")
+        return await self._execute(*command)
+
+    async def delete(self, *keys: str) -> int | None:
+        if not keys:
+            return 0
+        result = await self._execute("DEL", *keys)
+        return int(result) if result is not None else None
+
+    async def incr(self, key: str) -> int:
+        result = await self._execute("INCR", key)
+        return int(result)
+
+    async def expire(self, key: str, seconds: int) -> int:
+        result = await self._execute("EXPIRE", key, str(seconds))
+        return int(result)
+
+    async def ttl(self, key: str) -> int:
+        result = await self._execute("TTL", key)
+        return int(result)
+
+    async def close(self) -> None:
+        await self._client.aclose()
+
+
 class RedisCacheBackend:
     """Redis wrapper implementing the CacheBackend protocol."""
 
-    def __init__(self, client: redis_asyncio.Redis, settings: Settings):
+    def __init__(self, client: RedisClientProtocol, settings: Settings):
         self.client = client
         self.settings = settings
 
@@ -64,8 +162,7 @@ class RedisCacheBackend:
         return json.loads(raw) if raw else None
 
     async def delete(self, key: str) -> None:
-        await self.client.delete(key)
-        await self.client.delete(f"{key}:stale")
+        await self.client.delete(key, f"{key}:stale")
 
     async def close(self) -> None:
         await self.client.close()
@@ -120,14 +217,15 @@ class InMemoryCacheBackend:
 async def init_cache(settings: Settings) -> tuple[CacheBackend, Any | None]:
     """Instantiate the preferred cache backend."""
 
-    if redis_asyncio is not None:
+    if settings.upstash_redis_rest_url and settings.upstash_redis_rest_token:
+        redis_client = UpstashRedisClient(
+            url=settings.upstash_redis_rest_url,
+            token=settings.upstash_redis_rest_token,
+        )
         try:
-            client_raw = redis_asyncio.from_url(  # type: ignore[no-untyped-call]
-                settings.redis_url, encoding="utf-8", decode_responses=False
-            )
-            redis_client = cast("redis_asyncio.Redis", client_raw)
-            await cast(Awaitable[Any], redis_client.ping())
+            await redis_client.ping()
             return RedisCacheBackend(redis_client, settings), redis_client
         except Exception:
-            pass
+            logger.warning("upstash redis unavailable; falling back to in-memory cache")
+            await redis_client.close()
     return InMemoryCacheBackend(settings), None

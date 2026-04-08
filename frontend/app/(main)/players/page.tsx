@@ -1,44 +1,38 @@
-import Link from "next/link";
-import { Suspense } from "react";
-
-import PlayerProfileSearch from "@/components/PlayerProfileSearch";
+import MagicBentoLeaderboardGrid from "@/components/MagicBentoLeaderboardGrid";
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
 
-type Player = {
-  id: number;
-  full_name: string;
-  team_abbreviation: string | null;
-  is_active: boolean;
-};
-
-type PlayerStatsRow = {
+type LeagueLeaderRow = {
   player_id: number;
+  rank: number;
   player_name: string;
   team_abbreviation: string | null;
-  points: number;
-  rebounds: number;
-  assists: number;
+  stat_value: number;
+  stat_category: string;
 };
 
-type PlayerStatMetric = "points" | "rebounds" | "assists";
+type LeaderStatCategory = "PTS" | "REB" | "AST" | "STL" | "BLK";
 
 type Leaderboard = {
   id: string;
   label: string;
   metric: string;
-  valueKey: PlayerStatMetric;
-  rows: PlayerStatsRow[];
+  category: LeaderStatCategory;
+  digits?: number;
+  rows: LeagueLeaderRow[];
 };
 
 type SearchParams = {
   [key: string]: string | string[] | undefined;
 };
 
-const DIRECTORY_LIMIT = 60;
-
-function formatNumber(value: number, digits = 1) {
-  return value.toFixed(digits);
-}
+const LEADER_LIMIT = 5;
+const LEADERBOARDS: Array<Omit<Leaderboard, "rows">> = [
+  { id: "points", label: "Scoring leaders", metric: "PTS", category: "PTS" },
+  { id: "rebounds", label: "Glass cleaners", metric: "REB", category: "REB" },
+  { id: "assists", label: "Assist leaders", metric: "AST", category: "AST" },
+  { id: "steals", label: "Pickpockets", metric: "STL", category: "STL" },
+  { id: "blocks", label: "Rim protectors", metric: "BLK", category: "BLK" },
+];
 
 function extractParam(params: SearchParams, key: string): string {
   const raw = params[key];
@@ -51,131 +45,46 @@ type PlayersPageProps = {
   searchParams?: SearchParams | Promise<SearchParams>;
 };
 
+async function fetchLeaders(
+  category: LeaderStatCategory,
+  seasonType: string,
+): Promise<LeagueLeaderRow[]> {
+  const params = new URLSearchParams({
+    season: DEFAULT_SEASON,
+    season_type: seasonType,
+    per_mode: "PerGame",
+    stat_category: category,
+    limit: String(LEADER_LIMIT),
+  });
+  return nbaFetch<LeagueLeaderRow[]>(`/v1/league/leaders?${params.toString()}`);
+}
+
 export default async function PlayersPage({ searchParams }: PlayersPageProps) {
   const resolvedSearchParams = await Promise.resolve(searchParams ?? {});
-  const query = extractParam(resolvedSearchParams, "q").trim();
-  const activeParam = extractParam(resolvedSearchParams, "active");
   const seasonTypeParam = extractParam(resolvedSearchParams, "season_type");
-  const active = activeParam === "true" ? true : activeParam === "false" ? false : undefined;
   const seasonType =
     seasonTypeParam.toLowerCase() === "playoffs" ? "Playoffs" : "Regular Season";
 
-  const requestParams = new URLSearchParams({ season: DEFAULT_SEASON, page_size: "150", page: "1" });
-  if (query) requestParams.set("search", query);
-  if (active !== undefined) requestParams.set("active", String(active));
-  const statsParams = new URLSearchParams({
-    season: DEFAULT_SEASON,
-    season_type: seasonType,
-    page_size: "60",
-  });
+  const leaderboardsRows = await Promise.all(
+    LEADERBOARDS.map((board) => fetchLeaders(board.category, seasonType)),
+  );
 
-  const [directory, stats] = await Promise.all([
-    nbaFetch<Player[]>(`/v1/players?${requestParams.toString()}`),
-    nbaFetch<PlayerStatsRow[]>(`/v1/players/stats?${statsParams.toString()}`),
-  ]);
-
-  const scoringLeaders = [...stats].sort((a, b) => b.points - a.points).slice(0, 5);
-  const reboundLeaders = [...stats].sort((a, b) => b.rebounds - a.rebounds).slice(0, 5);
-  const assistLeaders = [...stats].sort((a, b) => b.assists - a.assists).slice(0, 5);
-
-  const leaderboards: Leaderboard[] = [
-    { id: "points", label: "Scoring leaders", metric: "PTS", valueKey: "points", rows: scoringLeaders },
-    { id: "rebounds", label: "Glass cleaners", metric: "REB", valueKey: "rebounds", rows: reboundLeaders },
-    { id: "assists", label: "Assist leaders", metric: "AST", valueKey: "assists", rows: assistLeaders },
-  ];
-
-  const directorySubset = directory.slice(0, DIRECTORY_LIMIT);
+  const leaderboards: Leaderboard[] = LEADERBOARDS.map((board, index) => ({
+    ...board,
+    rows: leaderboardsRows[index] ?? [],
+  }));
 
   return (
-    <div className="space-y-12">
-      <header className="space-y-6">
-        <div>
-          <p className="text-xs uppercase tracking-[0.5em] text-blue-300/80">Player index</p>
-          <h1 className="mt-3 text-4xl font-semibold text-white">Search rosters and surface leaders</h1>
-          <p className="mt-2 max-w-2xl text-sm text-white/70">
-            Use the global directory backed by the nba_data_api service to quickly jump into scouting reports, verify roster spots,
-            or route into individual profile pages for deeper analytics.
-          </p>
-        </div>
-        <Suspense
-          fallback={
-            <div className="h-[64px] w-full animate-pulse rounded-3xl border border-white/10 bg-white/5" aria-hidden="true" />
-          }
-        >
-          <PlayerProfileSearch initialValue={query} />
-        </Suspense>
-        <form className="flex flex-wrap items-center gap-4 rounded-3xl border border-white/10 bg-slate-950/40 p-4" method="GET">
-          <input type="hidden" name="q" value={query} />
-          <label className="text-xs uppercase tracking-[0.3em] text-white/60" htmlFor="player-active-filter">
-            Roster filter
-          </label>
-          <select
-            id="player-active-filter"
-            name="active"
-            defaultValue={activeParam}
-            className="rounded-2xl border border-white/10 bg-transparent px-4 py-2.5 text-sm text-white focus:border-white/40 focus:outline-none"
-          >
-            <option value="">All players</option>
-            <option value="true">Active roster</option>
-            <option value="false">Inactive / alumni</option>
-          </select>
-          <label className="text-xs uppercase tracking-[0.3em] text-white/60" htmlFor="player-season-type">
-            Season type
-          </label>
-          <select
-            id="player-season-type"
-            name="season_type"
-            defaultValue={seasonType}
-            className="rounded-2xl border border-white/10 bg-transparent px-4 py-2.5 text-sm text-white focus:border-white/40 focus:outline-none"
-          >
-            <option value="Regular Season">Regular season</option>
-            <option value="Playoffs">Playoffs</option>
-          </select>
-          <button
-            type="submit"
-            className="rounded-2xl border border-white/20 px-5 py-2 text-sm font-semibold text-white transition hover:border-white/40"
-          >
-            Apply
-          </button>
-        </form>
-      </header>
-
+    <div className="space-y-8">
       <section className="space-y-4">
         <div>
           <p className="text-xs uppercase tracking-[0.4em] text-white/40">Leaderboards</p>
           <h2 className="mt-2 text-2xl font-semibold text-white">
-            {seasonType === "Playoffs" ? "Playoff pace checks" : "Season pace checks"}
+            {seasonType === "Playoffs" ? "Playoff Leaders" : "Season Leaders"}
           </h2>
+          <p className="mt-1 text-xs uppercase tracking-[0.28em] text-white/45">Per game</p>
         </div>
-        <div className="grid gap-4 lg:grid-cols-3">
-          {leaderboards.map((board) => (
-            <article key={board.id} className="rounded-3xl border border-white/10 bg-slate-950/60 p-5">
-              <p className="text-xs uppercase tracking-[0.4em] text-white/50">{board.label}</p>
-              <ol className="mt-4 space-y-3 text-sm">
-                {board.rows.map((row, index) => {
-                  const slug = encodeURIComponent(String(row.player_id));
-                  return (
-                    <li key={row.player_id}>
-                      <Link
-                        href={`/players/${slug}`}
-                        className="flex items-center justify-between rounded-2xl bg-slate-950/40 px-4 py-3 transition hover:bg-slate-950/60"
-                      >
-                        <div>
-                          <p className="text-xs uppercase tracking-[0.3em] text-white/40">#{index + 1}</p>
-                          <p className="text-base font-semibold text-white">{row.player_name}</p>
-                          <p className="text-white/60">{row.team_abbreviation ?? "FA"}</p>
-                        </div>
-                        <span className="text-2xl font-semibold text-white">
-                          {formatNumber(row[board.valueKey])}
-                        </span>
-                      </Link>
-                    </li>
-                  );
-                })}
-              </ol>
-            </article>
-          ))}
-        </div>
+        <MagicBentoLeaderboardGrid leaderboards={leaderboards} />
       </section>
     </div>
   );

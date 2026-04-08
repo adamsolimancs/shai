@@ -52,9 +52,16 @@ class NameResolver:
     CACHE_KEY = "resolver:data"
     MIN_PLAYER_ROWS = 2000
 
-    def __init__(self, cache: CacheBackend, supabase: SupabaseClient | None = None):
+    def __init__(
+        self,
+        cache: CacheBackend,
+        supabase: SupabaseClient | None = None,
+        *,
+        allow_upstream: bool = True,
+    ):
         self.cache = cache
         self.supabase = supabase
+        self.allow_upstream = allow_upstream
         self.players: dict[str, dict[str, Any]] = {}
         self.players_by_id: dict[int, dict[str, Any]] = {}
         self.teams: dict[str, dict[str, Any]] = {}
@@ -106,15 +113,24 @@ class NameResolver:
                     "resolver player list seems incomplete; merging nba_api fallback",
                     extra={"player_count": len(data["players"])},
                 )
-                try:
-                    fallback = await asyncio.get_running_loop().run_in_executor(
-                        None, self._fetch_latest
+                if self.allow_upstream:
+                    try:
+                        fallback = await asyncio.get_running_loop().run_in_executor(
+                            None, self._fetch_latest
+                        )
+                        data = self._merge_data(fallback, data)
+                        self._fallback_attempted = True
+                    except Exception:
+                        logger.exception("resolver nba_api fallback failed; using db results")
+                else:
+                    logger.warning(
+                        "resolver upstream fallback disabled; using db results only",
+                        extra={"player_count": len(data["players"])},
                     )
-                    data = self._merge_data(fallback, data)
-                    self._fallback_attempted = True
-                except Exception:
-                    logger.exception("resolver nba_api fallback failed; using db results")
         if data is None:
+            if not self.allow_upstream:
+                logger.warning("resolver refresh has no db data and upstream is disabled")
+                return
             try:
                 data = await asyncio.get_running_loop().run_in_executor(None, self._fetch_latest)
                 self._fallback_attempted = True
@@ -257,6 +273,8 @@ class NameResolver:
 
     def _fallback_player(self, query: str, allow_fallback: bool) -> Resolution | None:
         if not allow_fallback:
+            return None
+        if not self.allow_upstream:
             return None
         static_resolution = self._resolve_from_static_players(query)
         if static_resolution:

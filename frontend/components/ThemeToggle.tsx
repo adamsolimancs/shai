@@ -44,15 +44,24 @@ const ThemeToggle = () => {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const storedConsent = window.localStorage.getItem(CONSENT_KEY) as ConsentState | null;
-    setConsent(storedConsent === "granted" || storedConsent === "denied" ? storedConsent : null);
+    let storedConsent: ConsentState | null = null;
+    try {
+      const value = window.localStorage.getItem(CONSENT_KEY) as ConsentState | null;
+      storedConsent = value === "granted" || value === "denied" ? value : null;
+    } catch {
+      storedConsent = null;
+    }
     const prefersDark =
       typeof window.matchMedia === "function" &&
       window.matchMedia("(prefers-color-scheme: dark)").matches;
     const storedMode = storedConsent === "granted" ? (getCookie(THEME_COOKIE) as ThemeMode | null) : null;
     const initialMode = storedMode ?? (prefersDark ? "dark" : "light");
-    setMode(initialMode);
-    applyThemeMode(initialMode);
+    const id = setTimeout(() => {
+      setConsent(storedConsent);
+      setMode(initialMode);
+      applyThemeMode(initialMode);
+    }, 0);
+    return () => clearTimeout(id);
   }, []);
 
   const handleToggle = () => {

@@ -111,6 +111,21 @@ test("season list helpers", () => {
   assert.equal(worker.seasonsMatch(["2023-24"], ["2022-23"]), false);
 });
 
+test("buildSupportedSeasons uses configured year range", () => {
+  assert.deepEqual(
+    worker.buildSupportedSeasons({
+      startYear: 2024,
+      date: new Date("2026-04-08T00:00:00Z"),
+    }),
+    ["2024-25", "2025-26", "2026-27"],
+  );
+});
+
+test("normalizeActiveFlag handles nba roster statuses", () => {
+  assert.equal(worker.normalizeActiveFlag("Active"), "true");
+  assert.equal(worker.normalizeActiveFlag("Inactive"), "false");
+});
+
 test("row mappers normalize payloads", () => {
   assert.deepEqual(worker.mapTeamRow({ team_id: 1, name: "Knicks" }), {
     team_id: 1,
@@ -138,6 +153,204 @@ test("row mappers normalize payloads", () => {
     away_team_score: null,
     season: 2024,
   });
+});
+
+test("normalizeLeagueStanding enriches rows with team directory data", () => {
+  const teamsById = new Map([[1, { team_id: 1, abbreviation: "NYK", city: "New York", name: "Knicks" }]]);
+  assert.deepEqual(
+    worker.normalizeLeagueStanding(
+      {
+        TeamID: 1,
+        TeamCity: "New York",
+        TeamName: "Knicks",
+        Conference: "East",
+        PlayoffRank: "2",
+        Division: "Atlantic",
+        DivisionRank: "1",
+        WINS: "50",
+        LOSSES: "32",
+        WinPCT: "0.610",
+        ConferenceGamesBack: "2.0",
+        DivisionGamesBack: "0.0",
+        Record: "50-32",
+        HOME: "28-13",
+        ROAD: "22-19",
+        L10: "7-3",
+        strCurrentStreak: "W3",
+      },
+      teamsById,
+    ),
+    {
+      team_id: 1,
+      team_name: "Knicks",
+      team_city: "New York",
+      team_slug: null,
+      team_abbreviation: "NYK",
+      conference: "East",
+      conference_rank: 2,
+      division: "Atlantic",
+      division_rank: 1,
+      wins: 50,
+      losses: 32,
+      win_pct: 0.61,
+      games_back: 2,
+      division_games_back: 0,
+      record: "50-32",
+      home_record: "28-13",
+      road_record: "22-19",
+      last_ten: "7-3",
+      streak: "W3",
+    },
+  );
+});
+
+test("normalizeServingTeamStatsRow fills team abbreviation from team directory", () => {
+  const teamsById = new Map([[1, { team_id: 1, abbreviation: "NYK", name: "Knicks" }]]);
+  assert.deepEqual(
+    worker.normalizeServingTeamStatsRow(
+      {
+        TEAM_ID: 1,
+        TEAM_NAME: "Knicks",
+        GP: 82,
+        W: 50,
+        L: 32,
+        W_PCT: 0.61,
+        PTS: 115.2,
+        FG_PCT: 0.472,
+        REB: 44.1,
+        AST: 27.3,
+        STL: 7.9,
+        BLK: 4.7,
+        TOV: 12.4,
+        PLUS_MINUS: 4.1,
+      },
+      teamsById,
+    ),
+    {
+      team_id: 1,
+      team_abbreviation: "NYK",
+      team_name: "Knicks",
+      games_played: 82,
+      wins: 50,
+      losses: 32,
+      win_pct: 0.61,
+      points: 115.2,
+      field_goal_pct: 0.472,
+      rebounds: 44.1,
+      assists: 27.3,
+      steals: 7.9,
+      blocks: 4.7,
+      turnovers: 12.4,
+      plus_minus: 4.1,
+    },
+  );
+});
+
+test("normalizePlayerInfoRow maps common player info payload", () => {
+  const normalized = worker.normalizePlayerInfoRow({
+    PERSON_ID: "2544",
+    FIRST_NAME: "LeBron",
+    LAST_NAME: "James",
+    DISPLAY_FIRST_LAST: "LeBron James",
+    POSITION: "F",
+    JERSEY: "23",
+    BIRTHDATE: "1984-12-30T00:00:00",
+    SCHOOL: "St. Vincent-St. Mary HS",
+    COUNTRY: "USA",
+    SEASON_EXP: "21",
+    ROSTERSTATUS: "Active",
+    FROM_YEAR: "2003",
+    TO_YEAR: "2026",
+    TEAM_ID: "1610612747",
+    TEAM_NAME: "Lakers",
+    TEAM_ABBREVIATION: "LAL",
+  });
+
+  assert.equal(normalized.player_id, "2544");
+  assert.equal(normalized.display_name, "LeBron James");
+  assert.equal(normalized.birthdate, "1984-12-30");
+  assert.equal(normalized.team_abbreviation, "LAL");
+  assert.equal(typeof normalized.updated_at, "string");
+});
+
+test("normalizePlayerStatsSnapshotRow normalizes serving payload", () => {
+  const normalized = worker.normalizePlayerStatsSnapshotRow({
+    PLAYER_ID: "201939",
+    PLAYER_NAME: "Stephen Curry",
+    TEAM_ID: "1610612744",
+    TEAM_ABBREVIATION: "GSW",
+    PTS: "29.4",
+    REB: "5.1",
+    AST: "6.3",
+    MIN: "34.2",
+  });
+
+  assert.deepEqual(normalized, {
+    player_id: 201939,
+    player_name: "Stephen Curry",
+    team_id: 1610612744,
+    team_abbreviation: "GSW",
+    points: 29.4,
+    rebounds: 5.1,
+    assists: 6.3,
+    minutes: 34.2,
+  });
+});
+
+test("mapTeamHistoryRow normalizes year-by-year payload", () => {
+  const mapped = worker.mapTeamHistoryRow(
+    {
+      TEAM_ID: "1610612747",
+      TEAM_CITY: "Los Angeles",
+      TEAM_NAME: "Lakers",
+      YEAR: "2023-24",
+      GP: "82",
+      WINS: "47",
+      LOSSES: "35",
+      WIN_PCT: "0.573",
+      CONF_RANK: "8",
+      DIV_RANK: "3",
+      PO_WINS: "1",
+      PO_LOSSES: "4",
+      NBA_FINALS_APPEARANCE: "N/A",
+      PTS: "9558",
+      FG_PCT: "0.499",
+      FG3_PCT: "0.377",
+    },
+    "Regular Season",
+    "Totals"
+  );
+
+  assert.equal(mapped.team_id, 1610612747);
+  assert.equal(mapped.season, "2023-24");
+  assert.equal(mapped.finals_result, null);
+  assert.equal(mapped.points, 9558);
+  assert.equal(typeof mapped.updated_at, "string");
+});
+
+test("mapLeagueLeaderRow preserves stat category specific value", () => {
+  const mapped = worker.mapLeagueLeaderRow(
+    {
+      PLAYER_ID: "201939",
+      RANK: "1",
+      PLAYER: "Stephen Curry",
+      TEAM_ID: "1610612744",
+      TEAM: "GSW",
+      GP: "70",
+      MIN: "34.1",
+      PTS: "29.4",
+    },
+    "2025-26",
+    "Regular Season",
+    "PerGame",
+    "PTS"
+  );
+
+  assert.equal(mapped.player_id, "201939");
+  assert.equal(mapped.rank, 1);
+  assert.equal(mapped.stat_value, 29.4);
+  assert.equal(mapped.team_abbreviation, "GSW");
+  assert.equal(typeof mapped.updated_at, "string");
 });
 
 test("applyRanks assigns rank order", () => {

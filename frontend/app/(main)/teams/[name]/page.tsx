@@ -52,10 +52,30 @@ type TeamDetail = {
   social_sites: Record<string, string>;
 };
 
+type TeamSeasonHistoryRow = {
+  team_id: number;
+  team_city?: string | null;
+  team_name?: string | null;
+  season: string;
+  games_played: number;
+  wins: number;
+  losses: number;
+  win_pct: number;
+  conference_rank?: number | null;
+  division_rank?: number | null;
+  playoff_wins?: number | null;
+  playoff_losses?: number | null;
+  finals_result?: string | null;
+  points?: number | null;
+  field_goal_pct?: number | null;
+  three_point_pct?: number | null;
+};
+
 type TeamContext = {
   team: Team;
   standing: LeagueStanding | null;
   details: TeamDetail | null;
+  history: TeamSeasonHistoryRow[];
   season: string;
 };
 
@@ -135,6 +155,30 @@ const formatDivision = (value?: string | null): string | null => {
   return trimmed || null;
 };
 
+const formatHistoryWinPct = (value?: number | null): string | null => {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return null;
+  }
+  return value.toFixed(3);
+};
+
+const formatPlayoffSummary = (row: TeamSeasonHistoryRow): string | null => {
+  const finals = row.finals_result?.trim();
+  if (finals && finals.toLowerCase() !== "n/a") {
+    return finals;
+  }
+  const wins = row.playoff_wins;
+  const losses = row.playoff_losses;
+  if (
+    typeof wins === "number" &&
+    typeof losses === "number" &&
+    (wins > 0 || losses > 0)
+  ) {
+    return `Playoffs ${wins}-${losses}`;
+  }
+  return null;
+};
+
 const formatSocialLabel = (value: string): string => {
   return value
     .replace(/[-_]+/g, " ")
@@ -190,19 +234,35 @@ async function fetchTeamDetails(teamId: number): Promise<TeamDetail | null> {
   }
 }
 
+async function fetchTeamHistory(teamId: number): Promise<TeamSeasonHistoryRow[]> {
+  try {
+    return await nbaFetch<TeamSeasonHistoryRow[]>(
+      `/v1/teams/${teamId}/history?season_type=Regular%20Season&per_mode=Totals&limit=8`,
+      { next: { revalidate: 3600 } },
+    );
+  } catch {
+    return [];
+  }
+}
+
 async function fetchTeamContext(slug: string): Promise<TeamContext | null> {
   const decodedSlug = decodeURIComponent(slug);
   const teams = await fetchTeams();
   const team = resolveTeamBySlug(teams, decodedSlug);
   if (!team) return null;
 
-  const [standings, details] = await Promise.all([fetchLeagueStandings(), fetchTeamDetails(team.id)]);
+  const [standings, details, history] = await Promise.all([
+    fetchLeagueStandings(),
+    fetchTeamDetails(team.id),
+    fetchTeamHistory(team.id),
+  ]);
   const standing = standings.find((row) => row.team_id === team.id) ?? null;
 
   return {
     team,
     standing,
     details,
+    history,
     season: DEFAULT_SEASON,
   };
 }
@@ -276,8 +336,13 @@ export default async function TeamDetailPage({
   const socialEntries = details?.social_sites
     ? Object.entries(details.social_sites).filter(([, url]) => typeof url === "string" && url.trim())
     : [];
+  const recentHistory = context.history
+    .filter((row) => row.season)
+    .sort((a, b) => b.season.localeCompare(a.season))
+    .slice(0, 6);
 
   const showCompetitive = competitiveFacts.length > 0;
+  const showRecentHistory = recentHistory.length > 0;
   const showHistory = historyFacts.length > 0 || legacyFacts.length > 0 || socialEntries.length > 0;
 
   return (
@@ -324,6 +389,44 @@ export default async function TeamDetailPage({
               </div>
             ))}
           </dl>
+        </section>
+      ) : null}
+
+      {showRecentHistory ? (
+        <section className="rounded-3xl border border-white/10 bg-slate-950/60 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-2xl font-semibold text-white">Recent Seasons</h2>
+            </div>
+            <span className="text-xs uppercase tracking-[0.3em] text-white/60">
+              Last {recentHistory.length}
+            </span>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-2">
+            {recentHistory.map((row) => {
+              const playoffSummary = formatPlayoffSummary(row);
+              const winPct = formatHistoryWinPct(row.win_pct);
+              return (
+                <article
+                  key={row.season}
+                  className="rounded-2xl border border-white/10 bg-slate-950/40 p-4"
+                >
+                  <div className="flex items-baseline justify-between gap-3">
+                    <p className="text-sm uppercase tracking-[0.35em] text-white/50">{row.season}</p>
+                    <p className="text-lg font-semibold text-white">
+                      {row.wins}-{row.losses}
+                    </p>
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs text-white/70">
+                    {winPct ? <span>Win% {winPct}</span> : null}
+                    {row.conference_rank ? <span>Conf #{row.conference_rank}</span> : null}
+                    {row.division_rank ? <span>Div #{row.division_rank}</span> : null}
+                    {playoffSummary ? <span>{playoffSummary}</span> : null}
+                  </div>
+                </article>
+              );
+            })}
+          </div>
         </section>
       ) : null}
 

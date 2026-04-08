@@ -10,6 +10,7 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any, TypeVar, cast
+from zoneinfo import ZoneInfo
 
 import requests
 from fastapi import HTTPException, status
@@ -19,16 +20,20 @@ from nba_api.stats.endpoints import (
     boxscoresummaryv2,
     boxscoretraditionalv2,
     commonallplayers,
-    leaguedashplayerstats,
+    commonplayerinfo,
     leaguedashplayerbiostats,
+    leaguedashplayerstats,
     leaguedashteamstats,
     leaguegamefinder,
+    leagueleaders,
     leaguestandingsv3,
     playerawards,
     playercareerstats,
     playergamelog,
+    scoreboardv2,
     shotchartdetail,
     teamdetails,
+    teamyearbyyearstats,
 )
 from pydantic import ValidationError
 
@@ -39,13 +44,15 @@ from ..schemas import (
     BoxScoreGame,
     CacheMeta,
     Game,
+    LeagueLeaderRow,
     LeagueStanding,
     MetaResponse,
     Player,
-    PlayerBio,
     PlayerAward,
+    PlayerBio,
     PlayerCareerStatsRow,
     PlayerGameLog,
+    PlayerInfo,
     PlayerStatsRow,
     ResolutionPayload,
     ResolveResult,
@@ -53,6 +60,7 @@ from ..schemas import (
     Team,
     TeamDetail,
     TeamGameRow,
+    TeamSeasonHistoryRow,
     TeamStatsRow,
 )
 from ..utils import paginate, validate_season
@@ -79,6 +87,26 @@ DIRECTORY_TTL = 60 * 60 * 24
 AGGREGATE_TTL = 60 * 60 * 6
 GAMES_TTL = 60 * 60 * 2
 SHOTS_TTL = 60 * 60 * 12
+SCOREBOARD_TTL = 60 * 5
+
+SCOREBOARD_ET_TIPOFF_PATTERN = re.compile(
+    r"^\s*(\d{1,2}):(\d{2})\s*([ap]m)\s*ET\s*$",
+    re.IGNORECASE,
+)
+
+LEAGUE_LEADER_STAT_FIELDS: dict[str, str] = {
+    "PTS": "PTS",
+    "REB": "REB",
+    "AST": "AST",
+    "STL": "STL",
+    "BLK": "BLK",
+    "TOV": "TOV",
+    "EFF": "EFF",
+    "MIN": "MIN",
+    "FG_PCT": "FG_PCT",
+    "FG3_PCT": "FG3_PCT",
+    "FT_PCT": "FT_PCT",
+}
 
 
 class UpstreamError(HTTPException):
@@ -108,8 +136,8 @@ class NBAStatsClient:
         self.cache = cache
         self.resolver = resolver
         self._last_refresh: dict[str, datetime | None] = {}
-        # Stats.nba.com endpoints are sluggish; keep a generous timeout floor.
-        self._stats_timeout = max(self.settings.upstream_timeout_seconds, 60.0)
+        # Respect configured upstream timeout so dev can fail fast.
+        self._stats_timeout = self.settings.upstream_timeout_seconds
 
     async def get_meta(self) -> MetaResponse:
         seasons = self._supported_seasons()
@@ -129,6 +157,8 @@ class NBAStatsClient:
                 season=season,
                 measure_type_detailed_defense="Base",
                 per_mode_detailed="PerGame",
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
             )
             df = endpoint.get_data_frames()[0]
             rows: list[dict[str, Any]] = []
@@ -137,10 +167,7 @@ class NBAStatsClient:
                 if not team_id:
                     continue
                 abbreviation = (
-                    row.get("TEAM_ABBREVIATION")
-                    or row.get("TEAM")
-                    or row.get("TEAM_NAME")
-                    or ""
+                    row.get("TEAM_ABBREVIATION") or row.get("TEAM") or row.get("TEAM_NAME") or ""
                 )
                 name = row.get("TEAM_NAME") or abbreviation or "Unknown"
                 rows.append(
@@ -205,12 +232,51 @@ class NBAStatsClient:
         per_team: bool,
     ) -> ServiceResult:
         season = validate_season(season)
+        single_day_query = (
+            date_from is not None and date_to is not None and date_from == date_to and not per_team
+        )
+        if (
+            single_day_query
+            and date_from is not None
+            and season == self._season_for_date(date_from)
+        ):
+            try:
+                scoreboard_result = await self.get_scoreboard_games(date_from, season=season)
+                scoreboard_filtered = self._filter_game_rows(
+                    scoreboard_result.data, team_id, team_abbr, date_from, date_to
+                )
+                if scoreboard_filtered:
+                    games: list[Game] = []
+                    for row in scoreboard_filtered:
+                        try:
+                            games.append(Game(**row))
+                        except ValidationError as exc:
+                            logger.warning(
+                                "Skipping malformed scoreboard row",
+                                extra={
+                                    "error": str(exc),
+                                    "game_id": row.get("game_id"),
+                                    "row": row,
+                                },
+                            )
+                    return ServiceResult(games, scoreboard_result.cache)
+            except Exception:
+                logger.warning(
+                    "scoreboard fetch failed; falling back to leaguegamefinder",
+                    exc_info=True,
+                    extra={"season": season, "date": date_from.isoformat()},
+                )
+
         key = f"games:{season}"
 
         def fetch() -> list[dict[str, Any]]:
             endpoint = leaguegamefinder.LeagueGameFinder(
                 season_nullable=season,
                 league_id_nullable="00",
+                date_from_nullable=date_from.isoformat() if date_from else "",
+                date_to_nullable=date_to.isoformat() if date_to else "",
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
             )
             df = endpoint.get_data_frames()[0]
             return cast(list[dict[str, Any]], df.to_dict("records"))
@@ -224,6 +290,21 @@ class NBAStatsClient:
 
         deduped = self._dedupe_games(raw_rows, season)
         filtered = self._filter_game_rows(deduped, team_id, team_abbr, date_from, date_to)
+        if (
+            not filtered
+            and date_from is not None
+            and date_to is not None
+            and date_from == date_to
+        ):
+            scoreboard_result = await self.get_scoreboard_games(date_from, season=season)
+            filtered = self._filter_game_rows(
+                scoreboard_result.data,
+                team_id,
+                team_abbr,
+                date_from,
+                date_to,
+            )
+            cache_meta = scoreboard_result.cache
         games: list[Game] = []
         for row in filtered:
             try:
@@ -234,6 +315,28 @@ class NBAStatsClient:
                     extra={"error": str(exc), "game_id": row.get("game_id"), "row": row},
                 )
         return ServiceResult(games, cache_meta)
+
+    async def get_scoreboard_games(
+        self,
+        game_date: date,
+        season: str | None = None,
+    ) -> ServiceResult:
+        key = f"scoreboard:{game_date.isoformat()}"
+        normalized_season = validate_season(season) if season else self._season_for_date(game_date)
+
+        def fetch() -> list[dict[str, Any]]:
+            endpoint = scoreboardv2.ScoreboardV2(
+                game_date=game_date.strftime("%m/%d/%Y"),
+                league_id="00",
+                day_offset=0,
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
+            )
+            payload = endpoint.get_dict()
+            return self._normalize_scoreboard_rows(payload, game_date, normalized_season)
+
+        rows, cache_meta = await self._cached_call(key, SCOREBOARD_TTL, fetch)
+        return ServiceResult(rows, cache_meta)
 
     async def get_league_standings(
         self,
@@ -251,6 +354,8 @@ class NBAStatsClient:
                 league_id=league_id,
                 season=season,
                 season_type=season_type,
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
             )
             df = endpoint.standings.get_data_frame()
             return cast(list[dict[str, Any]], df.to_dict("records"))
@@ -291,6 +396,8 @@ class NBAStatsClient:
                 season_type_all_star=season_type,
                 date_from_nullable=date_from.isoformat() if date_from else "",
                 date_to_nullable=date_to.isoformat() if date_to else "",
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
             )
             df = endpoint.get_data_frames()[0]
             return cast(list[dict[str, Any]], df.to_dict("records"))
@@ -319,7 +426,11 @@ class NBAStatsClient:
         )
 
         def fetch() -> list[dict[str, Any]]:
-            endpoint = playercareerstats.PlayerCareerStats(player_id=player_id)
+            endpoint = playercareerstats.PlayerCareerStats(
+                player_id=player_id,
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
+            )
             payload = endpoint.get_dict()
             result_sets = payload.get("resultSets", [])
             for result_set in result_sets:
@@ -327,7 +438,7 @@ class NBAStatsClient:
                     continue
                 headers = result_set.get("headers", [])
                 rows = result_set.get("rowSet") or result_set.get("data") or []
-                return [dict(zip(headers, row)) for row in rows if headers and row]
+                return [dict(zip(headers, row, strict=False)) for row in rows if headers and row]
             return []
 
         rows, cache_meta = await self._cached_call(key, AGGREGATE_TTL, fetch)
@@ -338,7 +449,11 @@ class NBAStatsClient:
         key = f"player_awards:{player_id}"
 
         def fetch() -> list[dict[str, Any]]:
-            endpoint = playerawards.PlayerAwards(player_id=player_id)
+            endpoint = playerawards.PlayerAwards(
+                player_id=player_id,
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
+            )
             df = endpoint.get_data_frames()[0]
             return cast(list[dict[str, Any]], df.to_dict("records"))
 
@@ -364,6 +479,8 @@ class NBAStatsClient:
             endpoint = leaguedashplayerbiostats.LeagueDashPlayerBioStats(
                 season=season,
                 season_type_all_star="Regular Season",
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
             )
             df = endpoint.get_data_frames()[0]
             return cast(list[dict[str, Any]], df.to_dict("records"))
@@ -385,11 +502,138 @@ class NBAStatsClient:
             )
             return ServiceResult(None, cache_meta)
 
+    async def get_player_info(self, player_id: int) -> ServiceResult:
+        key = f"player_info:{player_id}"
+
+        def fetch() -> list[dict[str, Any]]:
+            endpoint = commonplayerinfo.CommonPlayerInfo(
+                player_id=player_id,
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
+            )
+            df = endpoint.common_player_info.get_data_frame()
+            return cast(list[dict[str, Any]], df.to_dict("records"))
+
+        rows, cache_meta = await self._cached_call(key, AGGREGATE_TTL, fetch)
+        if not rows:
+            return ServiceResult(None, cache_meta)
+        row = rows[0]
+        try:
+            normalized = self._normalize_player_info(row)
+            return ServiceResult(PlayerInfo(**normalized), cache_meta)
+        except (KeyError, TypeError, ValueError, ValidationError) as exc:
+            logger.warning(
+                "Skipping malformed player info row",
+                extra={"error": str(exc), "player_id": player_id, "row": row},
+            )
+            return ServiceResult(None, cache_meta)
+
+    async def get_team_history(
+        self,
+        team_id: int,
+        season_type: str,
+        per_mode: str,
+    ) -> ServiceResult:
+        season_type = (season_type or "Regular Season").strip()
+        per_mode = (per_mode or "Totals").strip()
+        key = f"team_history:{team_id}:{season_type}:{per_mode}"
+
+        def fetch() -> list[dict[str, Any]]:
+            endpoint = teamyearbyyearstats.TeamYearByYearStats(
+                team_id=team_id,
+                league_id="00",
+                per_mode_simple=per_mode,
+                season_type_all_star=season_type,
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
+            )
+            df = endpoint.team_stats.get_data_frame()
+            return cast(list[dict[str, Any]], df.to_dict("records"))
+
+        rows, cache_meta = await self._cached_call(key, AGGREGATE_TTL, fetch)
+        history: list[TeamSeasonHistoryRow] = []
+        for row in rows:
+            try:
+                normalized = self._normalize_team_history_row(row)
+                history.append(TeamSeasonHistoryRow(**normalized))
+            except (KeyError, TypeError, ValueError, ValidationError) as exc:
+                logger.warning(
+                    "Skipping malformed team history row",
+                    extra={"error": str(exc), "team_id": team_id, "row": row},
+                )
+                continue
+        history.sort(key=lambda item: self._season_sort_key(item.season), reverse=True)
+        return ServiceResult(history, cache_meta)
+
+    async def get_league_leaders(
+        self,
+        season: str,
+        season_type: str,
+        per_mode: str,
+        stat_category: str,
+        limit: int,
+    ) -> ServiceResult:
+        season = validate_season(season)
+        season_type = (season_type or "Regular Season").strip()
+        per_mode = (per_mode or "PerGame").strip()
+        stat_category = (stat_category or "PTS").strip().upper()
+        stat_field = LEAGUE_LEADER_STAT_FIELDS.get(stat_category)
+        if not stat_field:
+            supported = ", ".join(sorted(LEAGUE_LEADER_STAT_FIELDS))
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "INVALID_STAT_CATEGORY",
+                    "message": (
+                        f"Unsupported stat_category '{stat_category}'. " f"Use one of: {supported}."
+                    ),
+                    "retryable": False,
+                },
+            )
+        key = f"league_leaders:{season}:{season_type}:{per_mode}:{stat_category}:{limit}"
+
+        def fetch() -> list[dict[str, Any]]:
+            endpoint = leagueleaders.LeagueLeaders(
+                league_id="00",
+                per_mode48=per_mode,
+                season=season,
+                season_type_all_star=season_type,
+                stat_category_abbreviation=stat_category,
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
+            )
+            df = endpoint.league_leaders.get_data_frame()
+            return cast(list[dict[str, Any]], df.to_dict("records"))
+
+        rows, cache_meta = await self._cached_call(key, AGGREGATE_TTL, fetch)
+        leaders: list[LeagueLeaderRow] = []
+        for row in rows:
+            try:
+                normalized = self._normalize_league_leader_row(row, stat_category, stat_field)
+                leaders.append(LeagueLeaderRow(**normalized))
+            except (KeyError, TypeError, ValueError, ValidationError) as exc:
+                logger.warning(
+                    "Skipping malformed league leader row",
+                    extra={
+                        "error": str(exc),
+                        "season": season,
+                        "stat_category": stat_category,
+                        "row": row,
+                    },
+                )
+                continue
+        leaders.sort(key=lambda item: item.rank)
+        return ServiceResult(leaders[:limit], cache_meta)
+
     async def get_team_details(self, team_id: int) -> ServiceResult:
         key = f"team_details:{team_id}"
 
         def fetch() -> dict[str, list[dict[str, Any]]]:
-            endpoint = teamdetails.TeamDetails(team_id=team_id)
+            endpoint = teamdetails.TeamDetails(
+                team_id=team_id,
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
+            )
             return {
                 "background": self._dataset_to_rows(endpoint.team_background),
                 "championships": self._dataset_to_rows(endpoint.team_awards_championships),
@@ -474,6 +718,8 @@ class NBAStatsClient:
                 context_measure_simple="FGA",
                 date_from_nullable=date_from.isoformat() if date_from else "",
                 date_to_nullable=date_to.isoformat() if date_to else "",
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
             )
             df = endpoint.shot_chart_detail.get_data_frame()
             return cast(list[dict[str, Any]], df.to_dict("records"))
@@ -497,6 +743,8 @@ class NBAStatsClient:
                 season=season,
                 measure_type_detailed_defense=measure,
                 per_mode_detailed=per_mode,
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
             )
             df = endpoint.get_data_frames()[0]
             return cast(list[dict[str, Any]], df.to_dict("records"))
@@ -559,6 +807,8 @@ class NBAStatsClient:
                 measure_type_detailed_defense=measure,
                 per_mode_detailed=per_mode,
                 team_id_nullable=team_id,
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
             )
             df = endpoint.get_data_frames()[0]
             return cast(list[dict[str, Any]], df.to_dict("records"))
@@ -573,9 +823,7 @@ class NBAStatsClient:
         player_result = self._resolution_payload(
             self.resolver.resolve_player(player) if player else None
         )
-        team_result = self._resolution_payload(
-            self.resolver.resolve_team(team) if team else None
-        )
+        team_result = self._resolution_payload(self.resolver.resolve_team(team) if team else None)
         return ResolveResult(player=player_result, team=team_result)
 
     async def refresh_hot_keys(self) -> None:
@@ -589,7 +837,12 @@ class NBAStatsClient:
 
     def _load_players_frame(self, season: str):
         try:
-            endpoint = commonallplayers.CommonAllPlayers(season=season, is_only_current_season=0)
+            endpoint = commonallplayers.CommonAllPlayers(
+                season=season,
+                is_only_current_season=0,
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
+            )
             return endpoint.get_data_frames()[0]
         except Exception as exc:
             logger.warning(
@@ -597,7 +850,11 @@ class NBAStatsClient:
                 season,
                 exc,
             )
-            fallback = commonallplayers.CommonAllPlayers(is_only_current_season=0)
+            fallback = commonallplayers.CommonAllPlayers(
+                is_only_current_season=0,
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
+            )
             return fallback.get_data_frames()[0]
 
     async def _cached_call(
@@ -649,6 +906,18 @@ class NBAStatsClient:
         for year in range(start, current_year + 1):
             seasons.append(f"{year}-{str((year + 1) % 100).zfill(2)}")
         return seasons
+
+    def _season_for_date(self, value: date) -> str:
+        start_year = value.year if value.month >= 10 else value.year - 1
+        return f"{start_year}-{str((start_year + 1) % 100).zfill(2)}"
+
+    def _season_sort_key(self, season: str | None) -> int:
+        if not season:
+            return 0
+        match = re.match(r"^(\d{4})", season.strip())
+        if not match:
+            return 0
+        return int(match.group(1))
 
     def _dedupe_games(
         self, rows: Sequence[dict[str, Any]], season: str | None = None
@@ -840,6 +1109,80 @@ class NBAStatsClient:
             "result": row["WL"],
             "points": row["PTS"],
         }
+
+    def _normalize_scoreboard_rows(
+        self,
+        payload: dict[str, Any],
+        game_date: date,
+        season: str,
+    ) -> list[dict[str, Any]]:
+        game_headers = self._result_set_rows(payload, "GameHeader")
+        line_score_rows = self._result_set_rows(payload, "LineScore")
+
+        lines_by_game: dict[str, dict[int, dict[str, Any]]] = {}
+        for row in line_score_rows:
+            game_id = self._clean_text_value(row.get("GAME_ID"))
+            team_id = self._coerce_int(row.get("TEAM_ID"))
+            if not game_id or team_id is None:
+                continue
+            lines_by_game.setdefault(game_id, {})[team_id] = row
+
+        games: list[dict[str, Any]] = []
+        for header in game_headers:
+            game_id = self._clean_text_value(header.get("GAME_ID"))
+            if not game_id:
+                continue
+
+            home_team_id = self._coerce_int(header.get("HOME_TEAM_ID"))
+            away_team_id = self._coerce_int(header.get("VISITOR_TEAM_ID"))
+            if home_team_id is None or away_team_id is None:
+                continue
+
+            game_date_value = self._parse_datetime(
+                self._clean_text_value(header.get("GAME_DATE_EST"))
+            )
+            resolved_date = game_date_value.date() if game_date_value else game_date
+            status_text = self._clean_text_value(header.get("GAME_STATUS_TEXT"))
+            status_id = self._coerce_int(header.get("GAME_STATUS_ID"))
+            normalized_status = status_text
+            if status_id == 1:
+                normalized_status = "Scheduled"
+            elif status_id == 3 and not normalized_status:
+                normalized_status = "Final"
+            start_time = self._parse_scoreboard_tipoff(resolved_date, status_text)
+
+            game_lines = lines_by_game.get(game_id, {})
+            home_row = game_lines.get(home_team_id, {})
+            away_row = game_lines.get(away_team_id, {})
+
+            home_team_name = self._clean_text_value(
+                home_row.get("TEAM_NAME") or home_row.get("TEAM_NICKNAME")
+            )
+            away_team_name = self._clean_text_value(
+                away_row.get("TEAM_NAME") or away_row.get("TEAM_NICKNAME")
+            )
+            home_team_abbr = self._clean_text_value(home_row.get("TEAM_ABBREVIATION"))
+            away_team_abbr = self._clean_text_value(away_row.get("TEAM_ABBREVIATION"))
+
+            games.append(
+                {
+                    "game_id": game_id,
+                    "date": resolved_date,
+                    "start_time": start_time,
+                    "home_team_id": home_team_id,
+                    "home_team_name": home_team_name or home_team_abbr or f"Team {home_team_id}",
+                    "home_team_abbreviation": home_team_abbr,
+                    "home_team_score": self._coerce_int(home_row.get("PTS")) or 0,
+                    "away_team_id": away_team_id,
+                    "away_team_name": away_team_name or away_team_abbr or f"Team {away_team_id}",
+                    "away_team_abbreviation": away_team_abbr,
+                    "away_team_score": self._coerce_int(away_row.get("PTS")) or 0,
+                    "season": season,
+                    "status": normalized_status,
+                }
+            )
+
+        return games
 
     def _filter_games(
         self,
@@ -1297,19 +1640,48 @@ class NBAStatsClient:
             return None
 
         def team_abbr() -> str | None:
-            value = pick("TEAM_ABBREVIATION", "teamTricode")
+            value = pick("TEAM_ABBREVIATION", "teamTricode", "teamAbbreviation")
             return str(value) if value else None
 
+        def player_name() -> str:
+            value = pick("PLAYER_NAME", "playerName", "nameI")
+            if value:
+                return str(value)
+            first = pick("FIRST_NAME", "firstName")
+            last = pick("LAST_NAME", "familyName")
+            full = " ".join(
+                part.strip() for part in [str(first or ""), str(last or "")] if part
+            ).strip()
+            return full or "Unknown player"
+
         return {
-            "player_id": self._safe_int(pick("PLAYER_ID", "personId")),
-            "player_name": pick("PLAYER_NAME", "playerName", "nameI", "firstName"),
+            "player_id": self._safe_int(pick("PLAYER_ID", "personId", "playerId")),
+            "player_name": player_name(),
             "team_id": self._safe_int(pick("TEAM_ID", "teamId")),
-            "team_abbreviation": team_abbr(),
+            "team_abbreviation": team_abbr() or "UNK",
             "minutes": pick("MIN", "minutes"),
-            "offensive_rating": self._coerce_float(pick("OFF_RATING", "offensiveRating")),
-            "defensive_rating": self._coerce_float(pick("DEF_RATING", "defensiveRating")),
-            "net_rating": self._coerce_float(pick("NET_RATING", "netRating")),
-            "usage_pct": self._coerce_float(pick("USG_PCT", "usagePercentage")),
+            "offensive_rating": self._coerce_float(
+                pick(
+                    "OFF_RATING",
+                    "E_OFF_RATING",
+                    "offensiveRating",
+                    "estimatedOffensiveRating",
+                )
+            ),
+            "defensive_rating": self._coerce_float(
+                pick(
+                    "DEF_RATING",
+                    "E_DEF_RATING",
+                    "defensiveRating",
+                    "estimatedDefensiveRating",
+                )
+            ),
+            "net_rating": self._coerce_float(
+                pick("NET_RATING", "E_NET_RATING", "netRating", "estimatedNetRating")
+            ),
+            "usage_pct": self._coerce_float(
+                pick("USG_PCT", "E_USG_PCT", "usagePercentage", "estimatedUsagePercentage")
+            ),
             "true_shooting_pct": self._coerce_float(pick("TS_PCT", "trueShootingPercentage")),
             "effective_fg_pct": self._coerce_float(pick("EFG_PCT", "effectiveFieldGoalPercentage")),
             "assist_pct": self._coerce_float(pick("AST_PCT", "assistPercentage")),
@@ -1321,10 +1693,10 @@ class NBAStatsClient:
             "defensive_rebound_pct": self._coerce_float(
                 pick("DREB_PCT", "defensiveReboundPercentage")
             ),
-            "pace": self._coerce_float(pick("PACE", "pace")),
+            "pace": self._coerce_float(pick("PACE", "E_PACE", "pace", "estimatedPace")),
             "pace_per40": self._coerce_float(pick("PACE_PER40", "pacePer40")),
             "possessions": self._coerce_float(pick("POSS", "possessions")),
-            "pie": self._coerce_float(pick("PIE", "PIE")),
+            "pie": self._coerce_float(pick("PIE", "pie")),
         }
 
     def _build_team_card(
@@ -1439,6 +1811,32 @@ class NBAStatsClient:
             except ValueError:
                 return None
 
+    def _parse_scoreboard_tipoff(self, game_date: date, status_text: str | None) -> datetime | None:
+        if not status_text:
+            return None
+        match = SCOREBOARD_ET_TIPOFF_PATTERN.match(status_text)
+        if not match:
+            return None
+
+        hour = int(match.group(1)) % 12
+        minute = int(match.group(2))
+        if match.group(3).lower() == "pm":
+            hour += 12
+
+        try:
+            eastern_tz = ZoneInfo("America/New_York")
+        except Exception:  # pragma: no cover - zoneinfo should be available in runtime images
+            eastern_tz = None
+
+        return datetime(
+            game_date.year,
+            game_date.month,
+            game_date.day,
+            hour,
+            minute,
+            tzinfo=eastern_tz,
+        )
+
     def _normalize_shot(self, row: dict[str, Any]) -> dict[str, Any]:
         return {
             "game_id": row["GAME_ID"],
@@ -1472,15 +1870,42 @@ class NBAStatsClient:
         }
 
     def _normalize_player_stats(self, row: dict[str, Any]) -> dict[str, Any]:
+        player_id = self._safe_int(
+            row.get("PLAYER_ID") or row.get("player_id") or row.get("personId")
+        )
+        player_name = next(
+            (
+                value
+                for value in (
+                    self._clean_text_value(row.get("PLAYER_NAME")),
+                    self._clean_text_value(row.get("player_name")),
+                    self._clean_text_value(row.get("PLAYER")),
+                    self._clean_text_value(row.get("playerName")),
+                    self._clean_text_value(row.get("name")),
+                    self._clean_text_value(row.get("nameI")),
+                )
+                if value
+            ),
+            None,
+        )
+        if not player_name:
+            player_name = f"Player {player_id}" if player_id else "Unknown player"
         return {
-            "player_id": int(row["PLAYER_ID"]),
-            "player_name": row["PLAYER_NAME"],
-            "team_id": row.get("TEAM_ID"),
-            "team_abbreviation": row.get("TEAM_ABBREVIATION"),
-            "points": self._safe_float(row.get("PTS")),
-            "rebounds": self._safe_float(row.get("REB")),
-            "assists": self._safe_float(row.get("AST")),
-            "minutes": self._safe_float(row.get("MIN")),
+            "player_id": player_id,
+            "player_name": player_name,
+            "team_id": self._coerce_int(
+                row.get("TEAM_ID") or row.get("team_id") or row.get("teamId")
+            ),
+            "team_abbreviation": self._clean_text_value(
+                row.get("TEAM_ABBREVIATION")
+                or row.get("team_abbreviation")
+                or row.get("TEAM")
+                or row.get("teamTricode")
+            ),
+            "points": self._safe_float(row.get("PTS") or row.get("points")),
+            "rebounds": self._safe_float(row.get("REB") or row.get("rebounds")),
+            "assists": self._safe_float(row.get("AST") or row.get("assists")),
+            "minutes": self._safe_float(row.get("MIN") or row.get("minutes")),
         }
 
     def _normalize_career_row(self, row: dict[str, Any]) -> dict[str, Any]:
@@ -1596,6 +2021,113 @@ class NBAStatsClient:
             "country": clean_text(row.get("COUNTRY")),
         }
 
+    def _normalize_player_info(self, row: dict[str, Any]) -> dict[str, Any]:
+        birthdate: date | None = None
+        birth_raw = row.get("BIRTHDATE")
+        if isinstance(birth_raw, str):
+            parsed = self._parse_datetime(birth_raw)
+            if parsed:
+                birthdate = parsed.date()
+
+        display_name = self._clean_text_value(row.get("DISPLAY_FIRST_LAST"))
+        first_name = self._clean_text_value(row.get("FIRST_NAME"))
+        last_name = self._clean_text_value(row.get("LAST_NAME"))
+        if not display_name:
+            display_name = " ".join(part for part in [first_name, last_name] if part).strip()
+
+        return {
+            "player_id": self._safe_int(row.get("PERSON_ID")),
+            "display_name": display_name or "Unknown",
+            "first_name": first_name,
+            "last_name": last_name,
+            "position": self._clean_text_value(row.get("POSITION")),
+            "jersey": self._clean_text_value(row.get("JERSEY")),
+            "birthdate": birthdate,
+            "school": self._clean_text_value(row.get("SCHOOL")),
+            "country": self._clean_text_value(row.get("COUNTRY")),
+            "season_experience": self._coerce_int(row.get("SEASON_EXP")),
+            "roster_status": self._clean_text_value(row.get("ROSTERSTATUS")),
+            "from_year": self._coerce_int(row.get("FROM_YEAR")),
+            "to_year": self._coerce_int(row.get("TO_YEAR")),
+            "team_id": self._coerce_int(row.get("TEAM_ID")),
+            "team_name": self._clean_text_value(row.get("TEAM_NAME")),
+            "team_abbreviation": self._clean_text_value(row.get("TEAM_ABBREVIATION")),
+        }
+
+    def _normalize_team_history_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        season = str(row.get("YEAR") or "").strip()
+        if not season:
+            raise ValueError("Team history row missing season")
+        conference_rank = self._coerce_int(row.get("CONF_RANK"))
+        if conference_rank is not None and conference_rank <= 0:
+            conference_rank = None
+        division_rank = self._coerce_int(row.get("DIV_RANK"))
+        if division_rank is not None and division_rank <= 0:
+            division_rank = None
+
+        finals_result = self._clean_text_value(row.get("NBA_FINALS_APPEARANCE"))
+        if finals_result and finals_result.lower() in {"n/a", "na"}:
+            finals_result = None
+
+        return {
+            "team_id": self._safe_int(row.get("TEAM_ID")),
+            "team_city": self._clean_text_value(row.get("TEAM_CITY")),
+            "team_name": self._clean_text_value(row.get("TEAM_NAME")),
+            "season": season,
+            "games_played": self._safe_int(row.get("GP")),
+            "wins": self._safe_int(row.get("WINS")),
+            "losses": self._safe_int(row.get("LOSSES")),
+            "win_pct": self._safe_float(row.get("WIN_PCT")),
+            "conference_rank": conference_rank,
+            "division_rank": division_rank,
+            "playoff_wins": self._coerce_int(row.get("PO_WINS")),
+            "playoff_losses": self._coerce_int(row.get("PO_LOSSES")),
+            "finals_result": finals_result,
+            "points": self._coerce_float(row.get("PTS")),
+            "field_goal_pct": self._coerce_float(row.get("FG_PCT")),
+            "three_point_pct": self._coerce_float(row.get("FG3_PCT")),
+        }
+
+    def _normalize_league_leader_row(
+        self,
+        row: dict[str, Any],
+        stat_category: str,
+        stat_field: str,
+    ) -> dict[str, Any]:
+        stat_value = self._coerce_float(row.get(stat_field))
+        if stat_value is None:
+            stat_value = 0.0
+
+        return {
+            "player_id": self._safe_int(row.get("PLAYER_ID")),
+            "rank": self._safe_int(row.get("RANK")),
+            "player_name": self._clean_text_value(row.get("PLAYER")) or "Unknown",
+            "team_id": self._coerce_int(row.get("TEAM_ID")),
+            "team_abbreviation": self._clean_text_value(row.get("TEAM")),
+            "games_played": self._safe_int(row.get("GP")),
+            "minutes": self._coerce_float(row.get("MIN")),
+            "points": self._coerce_float(row.get("PTS")),
+            "rebounds": self._coerce_float(row.get("REB")),
+            "assists": self._coerce_float(row.get("AST")),
+            "steals": self._coerce_float(row.get("STL")),
+            "blocks": self._coerce_float(row.get("BLK")),
+            "turnovers": self._coerce_float(row.get("TOV")),
+            "efficiency": self._coerce_float(row.get("EFF")),
+            "stat_value": stat_value,
+            "stat_category": stat_category,
+        }
+
+    def _clean_text_value(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        lowered = text.lower()
+        if lowered in {"nan", "none", "n/a", "null"}:
+            return None
+        return text
+
     def _dataset_to_rows(self, dataset: Any) -> list[dict[str, Any]]:
         payload = dataset.get_dict()
         headers: list[Any] = payload.get("headers") or []
@@ -1606,6 +2138,21 @@ class NBAStatsClient:
                 {str(headers[idx]): row[idx] for idx in range(min(len(headers), len(row)))}
             )
         return normalized
+
+    def _result_set_rows(self, payload: dict[str, Any], name: str) -> list[dict[str, Any]]:
+        result_sets = payload.get("resultSets") or []
+        for result_set in result_sets:
+            if result_set.get("name") != name:
+                continue
+            headers = result_set.get("headers") or []
+            rows = result_set.get("rowSet") or result_set.get("data") or []
+            normalized: list[dict[str, Any]] = []
+            for row in rows:
+                if not isinstance(row, list | tuple):
+                    continue
+                normalized.append(dict(zip(headers, row, strict=False)))
+            return normalized
+        return []
 
     def _resolution_payload(self, resolution: Resolution | None) -> ResolutionPayload | None:
         if not resolution:

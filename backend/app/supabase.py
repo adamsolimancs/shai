@@ -1,4 +1,4 @@
-"""Supabase REST client for read-only access."""
+"""Supabase REST client for backend reads and lightweight writes."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from .config import Settings
 
 
 class SupabaseClient:
-    """Minimal Supabase REST wrapper for selects."""
+    """Minimal Supabase REST wrapper for selects and upserts."""
 
     def __init__(self, settings: Settings):
         if not settings.supabase_url or not settings.supabase_key:
@@ -81,6 +81,29 @@ class SupabaseClient:
                 break
             offset += page_size
         return rows
+
+    async def upsert(
+        self,
+        table: str,
+        rows: list[dict[str, Any]],
+        *,
+        on_conflict: str,
+    ) -> None:
+        if not rows:
+            return
+        url = f"{self._base_url}/rest/v1/{table}"
+        response = await self._client.post(
+            url,
+            params={"on_conflict": on_conflict},
+            json=rows,
+            headers={
+                **self._headers,
+                "Content-Type": "application/json",
+                "Content-Profile": self._schema,
+                "Prefer": "resolution=merge-duplicates",
+            },
+        )
+        response.raise_for_status()
 
     async def close(self) -> None:
         await self._client.aclose()

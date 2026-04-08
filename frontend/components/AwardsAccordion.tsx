@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
 type Award = {
   season: string;
@@ -15,24 +15,23 @@ type AwardsAccordionProps = {
 
 const AwardsAccordion = ({ awards }: AwardsAccordionProps) => {
   const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement>(null);
   const [maxHeight, setMaxHeight] = useState("0px");
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  const updateHeight = () => {
-    if (!containerRef.current) return;
-    const nextHeight = open ? `${containerRef.current.scrollHeight}px` : "0px";
-    setMaxHeight(nextHeight);
+  const handleToggle = () => {
+    setOpen((prev) => {
+      const next = !prev;
+      const nextHeight = next ? `${containerRef.current?.scrollHeight ?? 0}px` : "0px";
+      setMaxHeight(nextHeight);
+      return next;
+    });
   };
-
-  useEffect(() => {
-    updateHeight();
-  }, [open, awards.length]);
 
   return (
     <div className="mt-3 rounded-xl border border-[color:rgba(var(--color-app-foreground-rgb),0.15)] bg-[color:rgba(var(--color-app-foreground-rgb),0.02)] px-3 py-2">
       <button
         type="button"
-        onClick={() => setOpen((prev) => !prev)}
+        onClick={handleToggle}
         aria-expanded={open}
         className="flex w-full cursor-pointer select-none items-center justify-center gap-2 text-sm font-semibold text-[color:var(--color-app-foreground)]"
       >
@@ -41,7 +40,7 @@ const AwardsAccordion = ({ awards }: AwardsAccordionProps) => {
       </button>
       <div
         ref={containerRef}
-        className="transition-[max-height] duration-300 ease-in-out overflow-hidden"
+        className="overflow-hidden transition-[max-height] duration-300 ease-in-out"
         style={{ maxHeight }}
       >
         <ul className="mt-3 max-h-64 space-y-3 overflow-y-auto pr-1 text-sm">

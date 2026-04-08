@@ -9,6 +9,7 @@ type TeamScore = {
 
 export type ScoreCardProps = {
   href?: string;
+  prefetch?: boolean;
   variant?: "landing" | "scoreboard";
   density?: "regular" | "compact";
   timeLabel?: ReactNode;
@@ -34,6 +35,7 @@ export default function ScoreCard({
   winner = "even",
   home,
   away,
+  prefetch = false,
   className = "",
 }: ScoreCardProps) {
   const isLanding = variant === "landing";
@@ -114,7 +116,7 @@ export default function ScoreCard({
 
   if (href) {
     return (
-      <Link href={href} className={`${outerClasses} ${className}`}>
+      <Link href={href} prefetch={prefetch} className={`${outerClasses} ${className}`}>
         {content}
       </Link>
     );

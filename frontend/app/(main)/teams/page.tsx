@@ -194,39 +194,15 @@ function compareByCurrentOrder(a: Team, b: Team): number {
   return aIndex - bIndex;
 }
 
-async function fetchTeamStats(season: string, teamIds: number[]): Promise<TeamStatsRow[]> {
-  let stats: TeamStatsRow[] = [];
+async function fetchTeamStats(season: string): Promise<TeamStatsRow[]> {
   try {
-    stats = await nbaFetch<TeamStatsRow[]>(
+    return await nbaFetch<TeamStatsRow[]>(
       `/v1/teams/stats?season=${season}&measure=Base&per_mode=PerGame`,
       { next: { revalidate: 600 } },
     );
-  } catch (error) {
-    if (!isNotFoundError(error)) {
-      throw error;
-    }
+  } catch {
+    return [];
   }
-
-  if (stats.length > 0 || teamIds.length === 0) {
-    return stats;
-  }
-
-  const uniqueTeamIds = [...new Set(teamIds)];
-  const perTeam = await Promise.all(
-    uniqueTeamIds.map(async (teamId) => {
-      try {
-        const rows = await nbaFetch<TeamStatsRow[]>(
-          `/v1/teams/${teamId}/stats?season=${season}&measure=Base&per_mode=PerGame`,
-          { next: { revalidate: 600 } },
-        );
-        return rows[0];
-      } catch {
-        return undefined;
-      }
-    }),
-  );
-
-  return perTeam.filter((row): row is TeamStatsRow => Boolean(row));
 }
 
 async function fetchLeagueStandingsData(season: string): Promise<LeagueStanding[]> {
@@ -259,10 +235,7 @@ export default async function TeamsPage({ searchParams = {} }: { searchParams?: 
   const teamMap = new Map<number, Team>(currentTeams.map((team) => [team.id, team]));
 
   const [teamStats, leagueStandings] = await Promise.all([
-    fetchTeamStats(
-      activeSeason,
-      currentTeams.map((team) => team.id),
-    ),
+    fetchTeamStats(activeSeason),
     fetchLeagueStandingsData(activeSeason),
   ]);
 

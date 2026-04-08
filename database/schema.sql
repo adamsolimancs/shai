@@ -32,7 +32,16 @@
   net_rating real,
   usage_pct text,
   true_shooting_pct real,
-  effective_fg_pct real\n);\n |
+  effective_fg_pct real,
+  assist_pct real,
+  assist_to_turnover real,
+  rebound_pct real,
+  offensive_rebound_pct real,
+  defensive_rebound_pct real,
+  pace real,
+  pace_per40 real,
+  possessions real,
+  pie real\n);\n |
 | CREATE TABLE public.boxscores (\n  game_id text NOT NULL,
   status text NOT NULL,
   game_date text,
@@ -54,6 +63,9 @@
   away_team_name text,
   away_team_score smallint,
   season integer\n);\n                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| CREATE TABLE public.api_snapshots (\n  cache_key text NOT NULL,
+  payload text,
+  updated_at text\n);\n                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | CREATE TABLE public.ingestion_state (\n  id text,
   source text NOT NULL,
   entity text NOT NULL,
@@ -107,6 +119,23 @@
   free_throw_pct_pg real,
   true_shooting_pct_pg real,
   season_type text NOT NULL DEFAULT 'Regular Season'::text\n);\n                                                                                                                                                                                                                                                                                                                                                                                                       |
+| CREATE TABLE public.player_info (\n  player_id text NOT NULL,
+  first_name text,
+  last_name text,
+  display_name text,
+  position text,
+  jersey text,
+  birthdate text,
+  school text,
+  country text,
+  season_experience smallint,
+  roster_status text,
+  from_year smallint,
+  to_year smallint,
+  team_id bigint,
+  team_name text,
+  team_abbreviation text,
+  updated_at text\n);\n                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | CREATE TABLE public.players (\n  player_id text NOT NULL,
   full_name text,
   current_team_id bigint,
@@ -117,6 +146,25 @@
   draft_pick text,
   country text,
   college text\n);\n                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| CREATE TABLE public.team_season_history (\n  season text NOT NULL,
+  team_id bigint NOT NULL,
+  season_type text NOT NULL DEFAULT 'Regular Season'::text,
+  per_mode text NOT NULL DEFAULT 'Totals'::text,
+  team_city text,
+  team_name text,
+  games_played smallint,
+  wins smallint,
+  losses smallint,
+  win_pct real,
+  conference_rank smallint,
+  division_rank smallint,
+  playoff_wins smallint,
+  playoff_losses smallint,
+  finals_result text,
+  points real,
+  field_goal_pct real,
+  three_point_pct real,
+  updated_at text\n);\n                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | CREATE TABLE public.team_advanced_stats (\n  season text NOT NULL,
   team_id bigint NOT NULL,
   ppg double precision,
@@ -142,6 +190,26 @@
   hall_of_famers text,
   retired_numbers text,
   social_sites text\n);\n                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| CREATE TABLE public.league_leader_rows (\n  season text NOT NULL,
+  season_type text NOT NULL DEFAULT 'Regular Season'::text,
+  per_mode text NOT NULL DEFAULT 'PerGame'::text,
+  stat_category text NOT NULL,
+  rank smallint NOT NULL,
+  player_id text NOT NULL,
+  player_name text,
+  team_id bigint,
+  team_abbreviation text,
+  games_played smallint,
+  minutes real,
+  points real,
+  rebounds real,
+  assists real,
+  steals real,
+  blocks real,
+  turnovers real,
+  efficiency real,
+  stat_value real,
+  updated_at text\n);\n                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | CREATE TABLE public.teams (\n  team_id bigint NOT NULL,
   abbreviation text,
   city text,
@@ -158,18 +226,27 @@
 | ALTER TABLE public.boxscores ADD CONSTRAINT boxscores_game_id_fkey FOREIGN KEY (game_id) REFERENCES games(game_id) ON UPDATE CASCADE ON DELETE RESTRICT;\n                              |
 | ALTER TABLE public.boxscores ADD CONSTRAINT boxscores_pkey PRIMARY KEY (game_id);\n                                                                                                     |
 | ALTER TABLE public.games ADD CONSTRAINT games_pkey PRIMARY KEY (game_id);\n                                                                                                             |
+| ALTER TABLE public.api_snapshots ADD CONSTRAINT api_snapshots_pkey PRIMARY KEY (cache_key);\n                                                                                           |
 | ALTER TABLE public.ingestion_state ADD CONSTRAINT ingestion_state_pkey PRIMARY KEY (source, entity);\n                                                                                  |
 | ALTER TABLE public.league_standings ADD CONSTRAINT league_standings_pkey PRIMARY KEY (season, team_id);\n                                                                               |
 | ALTER TABLE public.league_standings ADD CONSTRAINT league_standings_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams(team_id) ON UPDATE RESTRICT ON DELETE RESTRICT;\n               |
 | ALTER TABLE public.news_articles ADD CONSTRAINT news_articles_pkey PRIMARY KEY (id);\n                                                                                                  |
 | ALTER TABLE public.player_awards ADD CONSTRAINT player_awards_pkey PRIMARY KEY (player_id, season, description);\n                                                                      |
 | ALTER TABLE public.player_awards ADD CONSTRAINT player_awards_player_id_fkey FOREIGN KEY (player_id) REFERENCES players(player_id) ON UPDATE RESTRICT ON DELETE RESTRICT;\n             |
+| ALTER TABLE public.player_info ADD CONSTRAINT player_info_pkey PRIMARY KEY (player_id);\n                                                                                                |
+| ALTER TABLE public.player_info ADD CONSTRAINT player_info_player_id_fkey FOREIGN KEY (player_id) REFERENCES players(player_id) ON UPDATE RESTRICT ON DELETE RESTRICT;\n                  |
+| ALTER TABLE public.player_info ADD CONSTRAINT player_info_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams(team_id) ON UPDATE RESTRICT ON DELETE RESTRICT;\n                            |
 | ALTER TABLE public.player_season_stats ADD CONSTRAINT player_season_stats_pkey PRIMARY KEY (season, player_id, season_type);\n                                                          |
 | ALTER TABLE public.player_season_stats ADD CONSTRAINT player_season_stats_player_id_fkey FOREIGN KEY (player_id) REFERENCES players(player_id) ON UPDATE RESTRICT ON DELETE RESTRICT;\n |
 | ALTER TABLE public.player_season_stats ADD CONSTRAINT player_season_stats_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams(team_id) ON UPDATE RESTRICT ON DELETE RESTRICT;\n         |
 | ALTER TABLE public.players ADD CONSTRAINT players_pkey PRIMARY KEY (player_id);\n                                                                                                       |
+| ALTER TABLE public.team_season_history ADD CONSTRAINT team_season_history_pkey PRIMARY KEY (season, team_id, season_type, per_mode);\n                                                   |
+| ALTER TABLE public.team_season_history ADD CONSTRAINT team_season_history_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams(team_id) ON UPDATE RESTRICT ON DELETE RESTRICT;\n            |
 | ALTER TABLE public.team_advanced_stats ADD CONSTRAINT team_stats_pkey PRIMARY KEY (season, team_id);\n                                                                                  |
 | ALTER TABLE public.team_advanced_stats ADD CONSTRAINT team_stats_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams(team_id) ON UPDATE RESTRICT ON DELETE RESTRICT;\n                  |
 | ALTER TABLE public.team_details ADD CONSTRAINT team_details_pkey PRIMARY KEY (team_id);\n                                                                                               |
 | ALTER TABLE public.team_details ADD CONSTRAINT team_details_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams(team_id) ON UPDATE CASCADE ON DELETE RESTRICT;\n                        |
+| ALTER TABLE public.league_leader_rows ADD CONSTRAINT league_leader_rows_pkey PRIMARY KEY (season, season_type, per_mode, stat_category, rank, player_id);\n                             |
+| ALTER TABLE public.league_leader_rows ADD CONSTRAINT league_leader_rows_player_id_fkey FOREIGN KEY (player_id) REFERENCES players(player_id) ON UPDATE RESTRICT ON DELETE RESTRICT;\n    |
+| ALTER TABLE public.league_leader_rows ADD CONSTRAINT league_leader_rows_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams(team_id) ON UPDATE RESTRICT ON DELETE RESTRICT;\n            |
 | ALTER TABLE public.teams ADD CONSTRAINT teams_pkey PRIMARY KEY (team_id);\n                                                                                                             |
