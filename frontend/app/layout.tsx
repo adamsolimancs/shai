@@ -110,9 +110,12 @@ const SiteHeader = async () => {
             <div className="order-2 ml-auto flex w-auto items-center md:order-none md:ml-0 md:absolute md:right-0 md:top-1/2 md:w-auto md:-translate-y-1/2 md:justify-end">
               {user ? (
                 <div className="surface-card--soft app-offwhite-shell flex items-center gap-2 rounded-full px-3 py-1.5 text-xs md:gap-3 md:px-4 md:py-2 md:text-sm">
-                  <span className="rounded-full px-3 py-1 font-medium text-[color:var(--color-app-foreground-muted)] md:text-sm">
+                  <Link
+                    href="/profile"
+                    className="rounded-full px-3 py-1 font-medium text-[color:var(--color-app-foreground-muted)] transition hover:bg-[var(--color-app-background-soft)] hover:text-[color:var(--color-app-foreground)] md:text-sm"
+                  >
                     Hi, {userName}!
-                  </span>
+                  </Link>
                   <form
                     action={async () => {
                       "use server";

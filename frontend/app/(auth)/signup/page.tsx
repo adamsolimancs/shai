@@ -15,10 +15,12 @@ export default async function SignUpPage() {
   return (
     <div className="space-y-8 text-[var(--color-app-foreground)]">
       <div>
-        <p className="text-xs uppercase tracking-[0.5em] text-[var(--color-app-primary)]/80">ShAI Beta</p>
+        <p className="inline-flex items-center rounded-full bg-[color:var(--color-app-primary)] px-3 py-1 text-[0.72rem] font-semibold uppercase tracking-[0.28em] text-[color:var(--color-app-primary-foreground)] shadow-sm">
+          ShAI Beta
+        </p>
         <h1 className="mt-3 text-3xl font-semibold">Create your ShAI profile</h1>
         <p className="mt-2 text-sm text-[color:var(--color-app-foreground-muted)]">
-          Secure your spot for advanced scouting tools, alerting, and shared workspaces. Sign up with Google or create a Supabase-backed email/password account.
+          Secure your spot for advanced scouting tools, alerting, and shared workspaces. Sign up with Google or create an email/password account.
         </p>
       </div>
 

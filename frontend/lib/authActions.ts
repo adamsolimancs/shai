@@ -9,6 +9,17 @@ import {
   signUpSupabasePasswordUser,
   SupabaseAuthError,
 } from "@/lib/supabaseAuth";
+import { syncUserAccount } from "@/lib/userAccountsApi";
+
+const isProduction = process.env.NODE_ENV === "production";
+
+const signInUnavailableMessage = isProduction
+  ? "Email/password sign-in is unavailable right now."
+  : "Email/password sign-in is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY.";
+
+const signUpUnavailableMessage = isProduction
+  ? "Email/password sign-up is unavailable right now."
+  : "Email/password sign-up is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY.";
 
 const getField = (formData: FormData, key: string) => {
   const value = formData.get(key);
@@ -20,14 +31,17 @@ const handleAuthError = (error: unknown): AuthFormState => {
     return {
       error:
         error.type === "CredentialsSignin"
-          ? "Invalid email or password."
+          ? "Invalid email, username, or password."
           : "Authentication failed. Please try again.",
       success: null,
     };
   }
 
   if (error instanceof SupabaseAuthError) {
-    return { error: error.message, success: null };
+    return {
+      error: isProduction ? error.message.replace(/supabase/gi, "email/password") : error.message,
+      success: null,
+    };
   }
 
   throw error;
@@ -39,21 +53,20 @@ export async function signInWithPasswordAction(
 ): Promise<AuthFormState> {
   if (!hasSupabasePasswordConfigured) {
     return {
-      error:
-        "Email/password sign-in is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY.",
+      error: signInUnavailableMessage,
       success: null,
     };
   }
 
-  const email = getField(formData, "email").toLowerCase();
+  const identifier = getField(formData, "identifier").toLowerCase();
   const password = getField(formData, "password");
-  if (!email || !password) {
-    return { error: "Email and password are required.", success: null };
+  if (!identifier || !password) {
+    return { error: "Email or username and password are required.", success: null };
   }
 
   try {
     await signIn("credentials", {
-      email,
+      identifier,
       password,
       redirectTo: "/",
     });
@@ -70,8 +83,7 @@ export async function signUpWithPasswordAction(
 ): Promise<AuthFormState> {
   if (!hasSupabasePasswordConfigured) {
     return {
-      error:
-        "Email/password sign-up is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY.",
+      error: signUpUnavailableMessage,
       success: null,
     };
   }
@@ -108,9 +120,20 @@ export async function signUpWithPasswordAction(
 
     if (!result.user) {
       return {
-        error: "Account creation failed. Supabase did not return a user record.",
+        error: "We couldn't create your account. Please try again.",
         success: null,
       };
+    }
+
+    try {
+      await syncUserAccount({
+        auth_user_id: result.user.id,
+        email: result.user.email,
+        name: result.user.name,
+        username: result.user.username,
+      });
+    } catch {
+      // Best effort only. A later credentials sign-in will backfill the record.
     }
 
     if (!result.hasSession) {
@@ -122,7 +145,7 @@ export async function signUpWithPasswordAction(
     }
 
     await signIn("credentials", {
-      email,
+      identifier: email,
       password,
       redirectTo: "/",
     });

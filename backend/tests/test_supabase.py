@@ -165,6 +165,98 @@ async def test_upsert_builds_request(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
+async def test_list_auth_users_builds_request(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "service-key")
+
+    def responder(_method, _params, _json):
+        return DummyResponse({"users": [{"id": "user-1"}]})
+
+    fake_client = RecordingClient(responder)
+    monkeypatch.setattr("app.supabase.httpx.AsyncClient", lambda **_: fake_client)
+
+    settings = Settings(_env_file=None)
+    client = SupabaseClient(settings)
+
+    users = await client.list_auth_users()
+
+    assert users == [{"id": "user-1"}]
+    request = fake_client.requests[0]
+    assert request["method"] == "GET"
+    assert request["url"].endswith("/auth/v1/admin/users")
+    assert request["headers"]["Authorization"] == "Bearer service-key"
+    assert "Accept-Profile" not in request["headers"]
+
+
+@pytest.mark.asyncio
+async def test_create_auth_user_builds_request(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "service-key")
+
+    def responder(_method, _params, json):
+        return DummyResponse({"id": "fbdf5a53-161e-4460-98ad-0e39408d8689", **(json or {})})
+
+    fake_client = RecordingClient(responder)
+    monkeypatch.setattr("app.supabase.httpx.AsyncClient", lambda **_: fake_client)
+
+    settings = Settings(_env_file=None)
+    client = SupabaseClient(settings)
+
+    user = await client.create_auth_user(
+        email="scout@example.com",
+        user_metadata={"name": "Scout", "username": "scout"},
+    )
+
+    assert user["id"] == "fbdf5a53-161e-4460-98ad-0e39408d8689"
+    request = fake_client.requests[0]
+    assert request["method"] == "POST"
+    assert request["url"].endswith("/auth/v1/admin/users")
+    assert request["json"] == {
+        "email": "scout@example.com",
+        "email_confirm": True,
+        "user_metadata": {"name": "Scout", "username": "scout"},
+    }
+    assert request["headers"]["Content-Type"] == "application/json"
+
+
+@pytest.mark.asyncio
+async def test_ensure_auth_user_reuses_existing_match(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "service-key")
+
+    def responder(method, _params, _json):
+        if method == "GET":
+            return DummyResponse(
+                {
+                    "users": [
+                        {
+                            "id": "fbdf5a53-161e-4460-98ad-0e39408d8689",
+                            "email": "scout@example.com",
+                        }
+                    ]
+                }
+            )
+        raise AssertionError("create_auth_user should not run when a user already exists")
+
+    fake_client = RecordingClient(responder)
+    monkeypatch.setattr("app.supabase.httpx.AsyncClient", lambda **_: fake_client)
+
+    settings = Settings(_env_file=None)
+    client = SupabaseClient(settings)
+
+    user = await client.ensure_auth_user(
+        email="SCOUT@EXAMPLE.COM",
+        user_metadata={"name": "Scout"},
+    )
+
+    assert user == {
+        "id": "fbdf5a53-161e-4460-98ad-0e39408d8689",
+        "email": "scout@example.com",
+    }
+    assert len(fake_client.requests) == 1
+
+
+@pytest.mark.asyncio
 async def test_rpc_builds_request(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
     monkeypatch.setenv("SUPABASE_SECRET_KEY", "service-key")

@@ -8,11 +8,23 @@ type SupabaseAuthUser = {
   user_metadata?: JsonRecord | null;
 };
 
+type PasswordAuthUser = {
+  id: string;
+  email: string;
+  name: string;
+  username: string | null;
+};
+
 type SupabasePasswordSignInResponse = {
+  access_token?: string | null;
+  refresh_token?: string | null;
   user?: SupabaseAuthUser | null;
+  session?: JsonRecord | null;
 };
 
 type SupabaseSignUpResponse = {
+  access_token?: string | null;
+  refresh_token?: string | null;
   user?: SupabaseAuthUser | null;
   session?: JsonRecord | null;
 };
@@ -33,6 +45,9 @@ const supabasePublishableKey =
 export const hasSupabasePasswordConfigured = Boolean(supabaseUrl && supabasePublishableKey);
 
 const authUrl = (path: string) => `${supabaseUrl.replace(/\/$/, "")}/auth/v1${path}`;
+
+const isRecord = (value: unknown): value is JsonRecord =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 
 const getText = (value: unknown): string | null => {
   if (typeof value !== "string") {
@@ -56,6 +71,64 @@ const readErrorMessage = (payload: unknown): string => {
   );
 };
 
+const getRecord = (value: unknown): JsonRecord | null => (isRecord(value) ? value : null);
+
+const getNestedRecord = (record: JsonRecord | null, key: string): JsonRecord | null =>
+  getRecord(record?.[key]);
+
+const extractUser = (payload: unknown): SupabaseAuthUser | null => {
+  const record = getRecord(payload);
+  if (!record) {
+    return null;
+  }
+
+  const dataRecord = getNestedRecord(record, "data");
+  const userRecord = getNestedRecord(record, "user") ?? getNestedRecord(dataRecord, "user") ?? record;
+  const id = getText(userRecord.id);
+  if (!id) {
+    return null;
+  }
+
+  return {
+    id,
+    email: getText(userRecord.email),
+    user_metadata: getRecord(userRecord.user_metadata),
+  };
+};
+
+const extractAccessToken = (payload: unknown): string | null => {
+  const record = getRecord(payload);
+  if (!record) {
+    return null;
+  }
+
+  const dataRecord = getNestedRecord(record, "data");
+  const sessionRecord = getNestedRecord(record, "session") ?? getNestedRecord(dataRecord, "session");
+
+  return (
+    getText(record.access_token) ||
+    getText(dataRecord?.access_token) ||
+    getText(sessionRecord?.access_token)
+  );
+};
+
+const hasSessionPayload = (payload: unknown): boolean => {
+  const record = getRecord(payload);
+  if (!record) {
+    return false;
+  }
+
+  const dataRecord = getNestedRecord(record, "data");
+  const sessionRecord = getNestedRecord(record, "session") ?? getNestedRecord(dataRecord, "session");
+
+  return Boolean(
+    extractAccessToken(payload) ||
+      getText(record.refresh_token) ||
+      getText(dataRecord?.refresh_token) ||
+      getText(sessionRecord?.refresh_token),
+  );
+};
+
 const normalizeName = (user: SupabaseAuthUser): string => {
   const metadata = user.user_metadata ?? {};
   const name =
@@ -73,13 +146,19 @@ const normalizeName = (user: SupabaseAuthUser): string => {
 
 const normalizeEmail = (value: string) => value.trim().toLowerCase();
 
+const normalizeUsername = (user: SupabaseAuthUser): string | null => {
+  const metadata = user.user_metadata ?? {};
+  const username = getText(metadata.username);
+  return username ? username.toLowerCase() : null;
+};
+
 async function supabaseAuthRequest<T>(
   path: string,
   payload: JsonRecord,
 ): Promise<T> {
   if (!hasSupabasePasswordConfigured) {
     throw new SupabaseAuthError(
-      "Supabase email/password auth is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY (or NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY).",
+      "Email/password authentication is not configured. Set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY (or NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY).",
     );
   }
 
@@ -101,6 +180,24 @@ async function supabaseAuthRequest<T>(
   return body as T;
 }
 
+async function fetchSupabaseAuthUser(accessToken: string) {
+  const response = await fetch(authUrl("/user"), {
+    method: "GET",
+    cache: "no-store",
+    headers: {
+      apikey: supabasePublishableKey,
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  const body = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new SupabaseAuthError(readErrorMessage(body));
+  }
+
+  return extractUser(body);
+}
+
 export async function verifySupabasePasswordUser(email: string, password: string) {
   const payload = await supabaseAuthRequest<SupabasePasswordSignInResponse>(
     "/token?grant_type=password",
@@ -110,7 +207,8 @@ export async function verifySupabasePasswordUser(email: string, password: string
     },
   );
 
-  const user = payload.user;
+  const accessToken = extractAccessToken(payload);
+  const user = extractUser(payload) ?? (accessToken ? await fetchSupabaseAuthUser(accessToken) : null);
   if (!user?.id) {
     throw new SupabaseAuthError("Invalid email or password.");
   }
@@ -119,7 +217,8 @@ export async function verifySupabasePasswordUser(email: string, password: string
     id: user.id,
     email: normalizeEmail(user.email ?? email),
     name: normalizeName(user),
-  };
+    username: normalizeUsername(user),
+  } satisfies PasswordAuthUser;
 }
 
 export async function signUpSupabasePasswordUser(input: {
@@ -145,13 +244,16 @@ export async function signUpSupabasePasswordUser(input: {
     },
   });
 
+  const user = extractUser(payload);
+
   return {
-    hasSession: Boolean(payload.session),
-    user: payload.user
+    hasSession: hasSessionPayload(payload),
+    user: user
       ? {
-          id: payload.user.id,
-          email: normalizeEmail(payload.user.email ?? input.email),
-          name: normalizeName(payload.user),
+          id: user.id,
+          email: normalizeEmail(user.email ?? input.email),
+          name: normalizeName(user),
+          username: normalizeUsername(user),
         }
       : null,
   };

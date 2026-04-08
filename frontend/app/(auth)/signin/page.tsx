@@ -15,10 +15,12 @@ export default async function SignInPage() {
   return (
     <div className="space-y-8 text-[var(--color-app-foreground)]">
       <div>
-        <p className="text-xs uppercase tracking-[0.5em] text-[var(--color-app-primary)]/80">ShAI access</p>
+        <p className="inline-flex items-center rounded-full bg-[color:var(--color-app-primary)] px-3 py-1 text-[0.72rem] font-semibold uppercase tracking-[0.28em] text-[color:var(--color-app-primary-foreground)] shadow-sm">
+          ShAI access
+        </p>
         <h1 className="mt-3 text-3xl font-semibold">Sign in to your locker room</h1>
         <p className="mt-2 text-sm text-[color:var(--color-app-foreground-muted)]">
-          Use Google OAuth or your email/password account to sync watchlists, custom dashboards, and nightly alerts across devices.
+          Use Google OAuth or your email/password account with your email or username to sync watchlists, custom dashboards, and nightly alerts across devices.
         </p>
       </div>
 

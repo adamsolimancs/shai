@@ -118,6 +118,11 @@ def _first_non_empty_text(*values: Any) -> str | None:
     return None
 
 
+def _normalize_username(value: Any) -> str | None:
+    text = _first_non_empty_text(value)
+    return text.lower() if text else None
+
+
 def _parse_minutes(value: Any) -> float:
     if value is None:
         return 0.0
@@ -270,6 +275,89 @@ async def fetch_news_articles(
         for row in rows
         if _first_non_empty_text(row.get("id")) and _first_non_empty_text(row.get("url"))
     ]
+
+
+async def fetch_user_account_by_auth_user_id(
+    supabase: SupabaseClient,
+    *,
+    auth_user_id: str,
+) -> dict[str, Any] | None:
+    normalized_auth_user_id = _first_non_empty_text(auth_user_id)
+    if not normalized_auth_user_id:
+        return None
+    row = await supabase.select_one(
+        "user_accounts",
+        filters={"auth_user_id": f"eq.{normalized_auth_user_id}"},
+    )
+    if not row:
+        return None
+    return {
+        "auth_user_id": _first_non_empty_text(row.get("auth_user_id")) or "",
+        "email": _first_non_empty_text(row.get("email")) or "",
+        "name": _first_non_empty_text(row.get("name")),
+        "username": _normalize_username(row.get("username")),
+    }
+
+
+async def fetch_user_account_by_username(
+    supabase: SupabaseClient,
+    *,
+    username: str,
+) -> dict[str, Any] | None:
+    normalized_username = _normalize_username(username)
+    if not normalized_username:
+        return None
+    row = await supabase.select_one(
+        "user_accounts",
+        filters={"username": f"eq.{normalized_username}"},
+    )
+    if not row:
+        return None
+    return {
+        "auth_user_id": _first_non_empty_text(row.get("auth_user_id")) or "",
+        "email": _first_non_empty_text(row.get("email")) or "",
+        "name": _first_non_empty_text(row.get("name")),
+        "username": _normalize_username(row.get("username")),
+    }
+
+
+async def upsert_user_account(
+    supabase: SupabaseClient,
+    *,
+    auth_user_id: str,
+    email: str,
+    name: str | None = None,
+    username: str | None = None,
+) -> dict[str, Any]:
+    normalized_auth_user_id = _first_non_empty_text(auth_user_id)
+    normalized_email = _first_non_empty_text(email)
+    if not normalized_auth_user_id or not normalized_email:
+        raise ValueError("auth_user_id and email are required")
+
+    await supabase.upsert(
+        "user_accounts",
+        [
+            {
+                "auth_user_id": normalized_auth_user_id,
+                "email": normalized_email.lower(),
+                "name": _first_non_empty_text(name),
+                "username": _normalize_username(username),
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+        ],
+        on_conflict="auth_user_id",
+    )
+
+    account = await fetch_user_account_by_auth_user_id(
+        supabase,
+        auth_user_id=normalized_auth_user_id,
+    )
+    return account or {
+        "auth_user_id": normalized_auth_user_id,
+        "email": normalized_email.lower(),
+        "name": _first_non_empty_text(name),
+        "username": _normalize_username(username),
+    }
 
 
 async def store_api_snapshot(supabase: SupabaseClient, cache_key: str, payload: Any) -> None:
