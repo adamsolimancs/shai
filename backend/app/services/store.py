@@ -696,11 +696,13 @@ async def fetch_games(
     return rows
 
 
-async def fetch_boxscore(supabase: SupabaseClient, game_id: str) -> dict[str, Any] | None:
-    row = await supabase.select_one("boxscores", filters={"game_id": f"eq.{game_id}"})
+def _build_boxscore_payload(
+    row: dict[str, Any] | None,
+    players: list[dict[str, Any]],
+) -> dict[str, Any] | None:
     if not row:
         return None
-    players = await supabase.select("boxscore_players", filters={"game_id": f"eq.{game_id}"})
+    payload = dict(row)
     traditional = []
     advanced = []
     advanced_fields = (
@@ -777,21 +779,42 @@ async def fetch_boxscore(supabase: SupabaseClient, game_id: str) -> dict[str, An
                     "pie": player.get("pie"),
                 }
             )
-    row["officials"] = _parse_json(row.get("officials"), [])
-    row["home_team"] = _parse_json(
-        row.get("home_team"),
+    payload["officials"] = _parse_json(payload.get("officials"), [])
+    payload["home_team"] = _parse_json(
+        payload.get("home_team"),
         {"team_id": 0, "score": 0, "is_home": True, "leaders": []},
     )
-    row["away_team"] = _parse_json(
-        row.get("away_team"),
+    payload["away_team"] = _parse_json(
+        payload.get("away_team"),
         {"team_id": 0, "score": 0, "is_home": False, "leaders": []},
     )
-    row["line_score"] = _parse_json(row.get("line_score"), [])
-    row["team_totals"] = _parse_json(row.get("team_totals"), [])
-    row.setdefault("starter_bench", [])
-    row["traditional_players"] = traditional
-    row["advanced_players"] = advanced
-    return row
+    payload["line_score"] = _parse_json(payload.get("line_score"), [])
+    payload["team_totals"] = _parse_json(payload.get("team_totals"), [])
+    payload.setdefault("starter_bench", [])
+    payload["traditional_players"] = traditional
+    payload["advanced_players"] = advanced
+    return payload
+
+
+async def fetch_boxscore(supabase: SupabaseClient, game_id: str) -> dict[str, Any] | None:
+    try:
+        snapshot = await supabase.rpc("get_boxscore_snapshot", {"p_game_id": game_id})
+    except Exception:
+        snapshot = None
+    if isinstance(snapshot, dict):
+        row = snapshot.get("boxscore")
+        if isinstance(row, dict):
+            players = snapshot.get("players")
+            return _build_boxscore_payload(
+                row,
+                players if isinstance(players, list) else [],
+            )
+
+    row = await supabase.select_one("boxscores", filters={"game_id": f"eq.{game_id}"})
+    if not row:
+        return None
+    players = await supabase.select("boxscore_players", filters={"game_id": f"eq.{game_id}"})
+    return _build_boxscore_payload(row, players)
 
 
 async def fetch_ingestion_state(

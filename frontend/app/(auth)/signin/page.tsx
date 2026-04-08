@@ -1,6 +1,8 @@
 import Link from "next/link";
 
 import { auth, signIn, hasGoogleOAuthConfigured } from "@/auth";
+import { EmailSignInForm } from "@/components/PasswordAuthForms";
+import { hasSupabasePasswordConfigured } from "@/lib/supabaseAuth";
 
 export default async function SignInPage() {
   const session = await auth();
@@ -16,7 +18,7 @@ export default async function SignInPage() {
         <p className="text-xs uppercase tracking-[0.5em] text-[var(--color-app-primary)]/80">ShAI access</p>
         <h1 className="mt-3 text-3xl font-semibold">Sign in to your locker room</h1>
         <p className="mt-2 text-sm text-[color:var(--color-app-foreground-muted)]">
-          Use your Google account to sync watchlists, custom dashboards, and nightly alerts across devices.
+          Use Google OAuth or your email/password account to sync watchlists, custom dashboards, and nightly alerts across devices.
         </p>
       </div>
 
@@ -52,40 +54,7 @@ export default async function SignInPage() {
               or
             </span>
           </div>
-          <form className="surface-card--soft space-y-4 rounded-2xl p-5">
-            <div className="space-y-2">
-              <label htmlFor="email" className="text-xs uppercase tracking-[0.3em] text-[color:var(--color-app-foreground-muted)]">
-                Username / Email
-              </label>
-              <input
-                id="email"
-                name="email"
-                type="email"
-                placeholder="jalen-brunson@shai.app"
-                className="w-full rounded-xl border border-[color:var(--color-app-border)] bg-[var(--color-app-surface)] px-4 py-2.5 text-sm text-[var(--color-app-foreground)] placeholder:text-[color:var(--color-app-foreground-muted)] focus:border-[color:var(--color-app-primary)] focus:outline-none"
-                autoComplete="email"
-              />
-            </div>
-            <div className="space-y-2">
-              <label htmlFor="password" className="text-xs uppercase tracking-[0.3em] text-[color:var(--color-app-foreground-muted)]">
-                Password
-              </label>
-              <input
-                id="password"
-                name="password"
-                type="password"
-                placeholder="••••••••"
-                className="w-full rounded-xl border border-[color:var(--color-app-border)] bg-[var(--color-app-surface)] px-4 py-2.5 text-sm text-[var(--color-app-foreground)] placeholder:text-[color:var(--color-app-foreground-muted)] focus:border-[color:var(--color-app-primary)] focus:outline-none"
-                autoComplete="current-password"
-              />
-            </div>
-            <button
-              type="submit"
-              className="btn-primary w-full rounded-2xl px-4 py-2.5 text-sm font-semibold"
-            >
-              Continue with email
-            </button>
-          </form>
+          <EmailSignInForm enabled={hasSupabasePasswordConfigured} />
         </div>
       )}
 

@@ -33,8 +33,25 @@ def test_json_formatter_includes_exception():
     assert payload["message"] == "oops"
 
 
+def test_json_formatter_redacts_sensitive_urls_in_production():
+    record = logging.LogRecord(
+        "test",
+        logging.ERROR,
+        __file__,
+        12,
+        "supabase failed at %s",
+        ("https://abc.supabase.co/rest/v1/players",),
+        None,
+    )
+    record.extra = {"cache_url": "https://nba-cache.upstash.io"}
+    payload = json.loads(JsonFormatter(redact_sensitive_urls=True).format(record))
+
+    assert payload["message"] == "supabase failed at [redacted-supabase-url]"
+    assert payload["cache_url"] == "[redacted-upstash-url]"
+
+
 def test_configure_logging_sets_level():
-    configure_logging("debug", "json")
+    configure_logging("debug", "json", "development")
     root = logging.getLogger()
     assert root.level == logging.DEBUG
     assert root.handlers

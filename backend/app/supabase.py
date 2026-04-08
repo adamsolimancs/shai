@@ -105,5 +105,22 @@ class SupabaseClient:
         )
         response.raise_for_status()
 
+    async def rpc(self, function_name: str, params: dict[str, Any] | None = None) -> Any:
+        url = f"{self._base_url}/rest/v1/rpc/{function_name}"
+        response = await self._client.post(
+            url,
+            json=params or {},
+            headers={
+                **self._headers,
+                "Content-Type": "application/json",
+                "Accept-Profile": self._schema,
+                "Content-Profile": self._schema,
+            },
+        )
+        response.raise_for_status()
+        if response.status_code == 204:
+            return None
+        return response.json()
+
     async def close(self) -> None:
         await self._client.aclose()

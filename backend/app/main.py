@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
-    configure_logging(settings.log_level, settings.log_format)
+    configure_logging(settings.log_level, settings.log_format, settings.environment)
     cache, redis_client = await init_cache(settings)
     supabase = None
     if settings.supabase_url and settings.supabase_key:
@@ -74,7 +74,7 @@ app = FastAPI(
 )
 
 settings = get_settings()
-configure_logging(settings.log_level, settings.log_format)
+configure_logging(settings.log_level, settings.log_format, settings.environment)
 
 app.add_middleware(RequestContextMiddleware, settings=settings)
 app.add_middleware(

@@ -1,5 +1,11 @@
 import NextAuth from "next-auth";
+import Credentials from "next-auth/providers/credentials";
 import Google from "next-auth/providers/google";
+
+import {
+  hasSupabasePasswordConfigured,
+  verifySupabasePasswordUser,
+} from "@/lib/supabaseAuth";
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
@@ -23,6 +29,36 @@ if (hasGoogleOAuthConfigured) {
 } else {
   console.warn(
     "[ShAI] Google OAuth environment variables are missing. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to enable Google auth.",
+  );
+}
+
+if (hasSupabasePasswordConfigured) {
+  providers.push(
+    Credentials({
+      name: "Email and Password",
+      credentials: {
+        email: { label: "Email", type: "email" },
+        password: { label: "Password", type: "password" },
+      },
+      async authorize(credentials) {
+        const email = typeof credentials.email === "string" ? credentials.email : "";
+        const password = typeof credentials.password === "string" ? credentials.password : "";
+        if (!email || !password) {
+          return null;
+        }
+
+        try {
+          const user = await verifySupabasePasswordUser(email, password);
+          return {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+          };
+        } catch {
+          return null;
+        }
+      },
+    }),
   );
 }
 

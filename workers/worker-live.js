@@ -40,6 +40,12 @@ function toText(value) {
   return JSON.stringify(value);
 }
 
+function compactObject(value) {
+  return Object.fromEntries(
+    Object.entries(value || {}).filter(([, entry]) => entry !== undefined && entry !== null)
+  );
+}
+
 function seasonToYear(value) {
   if (value === undefined || value === null) return null;
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -93,6 +99,20 @@ function cleanText(value) {
   return text;
 }
 
+function toDateText(value) {
+  const text = cleanText(value);
+  if (!text) return null;
+  return text.includes("T") ? text.split("T", 1)[0] : text;
+}
+
+function inferSeasonYear(value) {
+  const text = cleanText(value);
+  if (!text) return null;
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return seasonToYear(getSeasonForDate(CONFIG.timeZone, parsed));
+}
+
 function buildSupportedSeasons({
   startYear = CONFIG.supportedSeasonStartYear,
   date = new Date(),
@@ -110,7 +130,7 @@ const CONFIG = {
   apiBaseUrl: normalizeBaseUrl(process.env.BACKEND_API_BASE_URL || "http://localhost:8080"),
   apiKey: process.env.BACKEND_API_KEY,
   supabaseUrl: process.env.SUPABASE_URL,
-  supabaseKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+  supabaseKey: process.env.SUPABASE_SECRET_KEY,
   supabaseSchema: process.env.SUPABASE_SCHEMA || "public",
   supportedSeasonStartYear: Number(process.env.SUPPORTED_SEASON_START_YEAR || 1996),
   seasonOverride: process.env.NBA_SEASON,
@@ -201,7 +221,7 @@ const CONFIG = {
 
 function validateConfig() {
   if (!CONFIG.supabaseUrl || !CONFIG.supabaseKey) {
-    throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
+    throw new Error("SUPABASE_URL and SUPABASE_SECRET_KEY are required.");
   }
 }
 
@@ -252,7 +272,7 @@ const cacheStats = {
 let cronBudget = null;
 
 process.on("unhandledRejection", (reason) => {
-  console.error("Unhandled rejection", reason);
+  console.error("Unhandled rejection", formatErrorForLog(reason, { includeStack: true }));
 });
 
 function log(message, extra) {
@@ -270,6 +290,33 @@ function logUpsert(table, count, extra) {
 
 function logDbWrite(action, table, details) {
   log(`DB ${action}`, { table, ...details });
+}
+
+function formatErrorForLog(error, options = {}) {
+  const { includeStack = false, maxCauseDepth = 1 } = options;
+  const source = error && typeof error === "object" ? error : null;
+  const details = compactObject({
+    error: String(error),
+    error_name: error instanceof Error ? error.name : null,
+    error_message: error instanceof Error ? error.message : null,
+    error_code: source?.code ?? null,
+    error_errno: source?.errno ?? null,
+    error_type: source?.type ?? null,
+    error_syscall: source?.syscall ?? null,
+    error_hostname: source?.hostname ?? null,
+    error_address: source?.address ?? null,
+    error_port: source?.port ?? null,
+  });
+  if (includeStack && error instanceof Error && error.stack) {
+    details.error_stack = error.stack;
+  }
+  if (maxCauseDepth > 0 && source?.cause) {
+    details.cause = formatErrorForLog(source.cause, {
+      includeStack,
+      maxCauseDepth: maxCauseDepth - 1,
+    });
+  }
+  return details;
 }
 
 function initCronBudget() {
@@ -400,7 +447,7 @@ async function writeCache(key, payload, ttlSeconds) {
     recordCacheWrite(true);
   } catch (error) {
     recordCacheWrite(false);
-    log("Redis cache write failed", { key, error: String(error) });
+    log("Redis cache write failed", { key, ...formatErrorForLog(error) });
   }
 }
 
@@ -409,7 +456,7 @@ async function deleteCacheKey(key) {
   try {
     await cache.del(key, `${key}:stale`);
   } catch (error) {
-    log("Redis cache delete failed", { key, error: String(error) });
+    log("Redis cache delete failed", { key, ...formatErrorForLog(error) });
   }
 }
 
@@ -429,7 +476,7 @@ async function invalidateCachePattern(pattern) {
       }
     } while (cursor !== "0");
   } catch (error) {
-    log("Redis cache invalidation failed", { pattern: match, error: String(error) });
+    log("Redis cache invalidation failed", { pattern: match, ...formatErrorForLog(error) });
   }
 }
 
@@ -1158,8 +1205,11 @@ async function requestWithRetry(url) {
       }
       const waitMs = computeRetryWaitMs(delay);
       log("API request failed; backing off", {
-        error: String(error),
+        url,
+        attempt: attempt + 1,
+        max_attempts: CONFIG.apiRetryMax + 1,
         wait_ms: waitMs,
+        ...formatErrorForLog(error),
       });
       await sleep(waitMs);
       delay *= 2;
@@ -1186,8 +1236,13 @@ async function requestWithRetry(url) {
     const retryAfter = Number(response.headers.get("retry-after"));
     const waitMs = computeRetryWaitMs(delay, retryAfter);
     log("API request throttled; backing off", {
+      url,
+      attempt: attempt + 1,
+      max_attempts: CONFIG.apiRetryMax + 1,
       status: response.status,
+      retry_after_s: Number.isFinite(retryAfter) ? retryAfter : null,
       wait_ms: waitMs,
+      body_preview: body.slice(0, 200),
     });
     await sleep(waitMs);
     delay *= 2;
@@ -1219,9 +1274,11 @@ async function statsRequestWithRetry(url) {
       }
       const waitMs = computeRetryWaitMs(delay);
       log("NBA stats request failed; backing off", {
-        error: String(error),
-        wait_ms: waitMs,
         url,
+        attempt: attempt + 1,
+        max_attempts: maxAttempts + 1,
+        wait_ms: waitMs,
+        ...formatErrorForLog(error),
       });
       await sleep(waitMs);
       delay *= 2;
@@ -1242,9 +1299,13 @@ async function statsRequestWithRetry(url) {
     const retryAfter = Number(response.headers.get("retry-after"));
     const waitMs = computeRetryWaitMs(delay, retryAfter);
     log("NBA stats request throttled; backing off", {
-      status: response.status,
-      wait_ms: waitMs,
       url,
+      attempt: attempt + 1,
+      max_attempts: maxAttempts + 1,
+      status: response.status,
+      retry_after_s: Number.isFinite(retryAfter) ? retryAfter : null,
+      wait_ms: waitMs,
+      body_preview: body.slice(0, 200),
     });
     await sleep(waitMs);
     delay *= 2;
@@ -1311,7 +1372,7 @@ async function supabaseInsert(table, rows, options = {}) {
     log("Supabase insert failed", {
       table,
       count: Array.isArray(rows) ? rows.length : 0,
-      error: String(error),
+      ...formatErrorForLog(error),
     });
     if (recordState) {
       await updateIngestionState(table, "failed", cursor, String(error));
@@ -1358,7 +1419,7 @@ async function supabaseDelete(table, filters, options = {}) {
     log("Supabase delete failed", {
       table,
       filters,
-      error: String(error),
+      ...formatErrorForLog(error),
     });
     if (recordState) {
       await updateIngestionState(table, "failed", cursor, String(error));
@@ -1372,6 +1433,15 @@ function isNoUniqueConstraintError(error) {
   return (
     message.includes("\"code\":\"42P10\"") ||
     message.includes("no unique or exclusion constraint matching the ON CONFLICT specification")
+  );
+}
+
+function isMissingRpcFunctionError(error) {
+  const message = String(error || "");
+  return (
+    message.includes("\"code\":\"PGRST202\"") ||
+    message.includes("Could not find the function") ||
+    message.includes("Searched for the function")
   );
 }
 
@@ -1408,6 +1478,32 @@ async function supabaseUpsertRaw(table, rows, onConflict) {
   });
 }
 
+async function supabaseRpc(functionName, payload = {}) {
+  const url = new URL(`${CONFIG.supabaseUrl}/rest/v1/rpc/${functionName}`);
+  const response = await fetch(url.toString(), {
+    method: "POST",
+    headers: {
+      apikey: CONFIG.supabaseKey,
+      Authorization: `Bearer ${CONFIG.supabaseKey}`,
+      "Content-Type": "application/json",
+      "Accept-Profile": CONFIG.supabaseSchema,
+      "Content-Profile": CONFIG.supabaseSchema,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`Supabase rpc ${functionName} failed: ${response.status} ${body}`);
+  }
+  logDbWrite("rpc", functionName, {
+    keys: Object.keys(payload || {}),
+  });
+  if (response.status === 204) {
+    return null;
+  }
+  return response.json();
+}
+
 async function supabaseUpsert(table, rows, onConflict, options = {}) {
   const recordState = options.recordState !== false && shouldRecordIngestionState(table);
   const cursor = options.cursor ?? null;
@@ -1441,7 +1537,7 @@ async function supabaseUpsert(table, rows, onConflict, options = {}) {
       table,
       on_conflict: onConflict || null,
       count: Array.isArray(rows) ? rows.length : 0,
-      error: message,
+      ...formatErrorForLog(error),
     });
     if (recordState) {
       await updateIngestionState(table, "failed", cursor, message);
@@ -2030,17 +2126,9 @@ async function fetchGamesFromApi(season, { dateFrom, dateTo } = {}) {
 }
 
 async function fetchGames(season, { dateFrom, dateTo } = {}) {
-  try {
-    return await fetchGamesFromApi(season, { dateFrom, dateTo });
-  } catch (error) {
-    log("API games fetch failed; falling back to stats.nba.com", {
-      season,
-      date_from: dateFrom ?? null,
-      date_to: dateTo ?? null,
-      error: String(error),
-    });
-    return fetchGamesFromStats(season, { dateFrom, dateTo });
-  }
+  // Ingestion should source fresh game lists directly from upstream rather than
+  // looping through the serving API's DB-backed /games route.
+  return fetchGamesFromStats(season, { dateFrom, dateTo });
 }
 
 async function loadGamesForSeason(season) {
@@ -2406,7 +2494,7 @@ async function refreshPlayerBioStats() {
         await refreshPlayerBioStatsForSeason(season);
       } catch (error) {
         errors.push({ season, error: String(error) });
-        log("players_bio season failed", { season, error: String(error) });
+        log("players_bio season failed", { season, ...formatErrorForLog(error) });
       }
     }
     if (errors.length) {
@@ -2739,7 +2827,7 @@ async function refreshPlayerSeasonStats() {
         await refreshPlayerSeasonStatsForSeason(season);
       } catch (error) {
         errors.push({ season, error: String(error) });
-        log("player_season_stats season failed", { season, error: String(error) });
+        log("player_season_stats season failed", { season, ...formatErrorForLog(error) });
       }
     }
     if (errors.length) {
@@ -2970,7 +3058,7 @@ async function fetchBoxscoreFromStats(gameId) {
   } catch (error) {
     log("Failed to refresh boxscore advanced players from stats.nba.com", {
       game_id: gameId,
-      error: String(error),
+      ...formatErrorForLog(error),
     });
   }
 
@@ -3143,7 +3231,7 @@ async function fetchBoxscore(gameId) {
   } catch (error) {
     log("Stats boxscore fetch failed; falling back to CDN", {
       game_id: gameId,
-      error: String(error),
+      ...formatErrorForLog(error),
     });
     return fetchBoxscoreFromCdn(gameId);
   }
@@ -3265,6 +3353,32 @@ function toBoxscorePlayers(boxscore) {
   return combined;
 }
 
+function buildGameSnapshotGameRow(boxscore) {
+  const homeTeam = boxscore?.home_team || {};
+  const awayTeam = boxscore?.away_team || {};
+  const gameDate = toDateText(boxscore?.game_date ?? boxscore?.start_time);
+  return compactObject({
+    game_id: cleanText(boxscore?.game_id),
+    date: gameDate,
+    start_time: toText(boxscore?.start_time),
+    home_team_id: toInteger(homeTeam.team_id),
+    home_team_name: cleanText(homeTeam.team_name),
+    home_team_score: toInteger(homeTeam.score),
+    away_team_id: toInteger(awayTeam.team_id),
+    away_team_name: cleanText(awayTeam.team_name),
+    away_team_score: toInteger(awayTeam.score),
+    season: inferSeasonYear(gameDate),
+  });
+}
+
+function buildGameSnapshotPayload(boxscore) {
+  return {
+    p_game: buildGameSnapshotGameRow(boxscore),
+    p_boxscore: toBoxscoreRow(boxscore),
+    p_players: toBoxscorePlayers(boxscore),
+  };
+}
+
 async function upsertBoxscore(boxscore) {
   await supabaseUpsert("boxscores", [toBoxscoreRow(boxscore)], "game_id");
   const players = toBoxscorePlayers(boxscore);
@@ -3294,23 +3408,33 @@ async function upsertBoxscore(boxscore) {
   return players.length;
 }
 
+async function publishGameSnapshot(boxscore) {
+  const payload = buildGameSnapshotPayload(boxscore);
+  try {
+    const result = await supabaseRpc("publish_game_snapshot", payload);
+    if (result && typeof result.players_upserted === "number") {
+      return result.players_upserted;
+    }
+    return payload.p_players.length;
+  } catch (error) {
+    if (!isMissingRpcFunctionError(error)) {
+      throw error;
+    }
+    log("publish_game_snapshot RPC unavailable; falling back to legacy writes", {
+      game_id: boxscore.game_id,
+      ...formatErrorForLog(error),
+    });
+    if (payload.p_game && Object.keys(payload.p_game).length > 1) {
+      await supabaseUpsert("games", [payload.p_game], "game_id", { recordState: false });
+    }
+    const playersCount = await upsertBoxscore(boxscore);
+    return playersCount;
+  }
+}
+
 async function updateBoxscoreForGame(gameId) {
   const boxscore = await fetchBoxscore(gameId);
-  const playersCount = await upsertBoxscore(boxscore);
-  const startTime = toText(boxscore.start_time);
-  if (startTime) {
-    await supabaseUpsert(
-      "games",
-      [
-        {
-          game_id: boxscore.game_id,
-          start_time: startTime,
-        },
-      ],
-      "game_id",
-      { recordState: false }
-    );
-  }
+  const playersCount = await publishGameSnapshot(boxscore);
   const status = boxscore.status || null;
   const boxscoreTtl = isLiveStatus(status)
     ? CONFIG.cacheTtlBoxscoreLiveSec
@@ -3449,7 +3573,7 @@ async function runWithConcurrency(items, limit, fn, { strict = false } = {}) {
           return;
         }
         errors.push({ item, error: String(error) });
-        log("Worker task failed", { item, error: String(error) });
+        log("Worker task failed", { item, ...formatErrorForLog(error, { includeStack: true }) });
       }
     }
   });
@@ -3477,7 +3601,7 @@ function scheduleTask(name, intervalMs, fn, runImmediately = true) {
     try {
       await fn();
     } catch (error) {
-      log(`${name} task failed`, String(error));
+      log(`${name} task failed`, formatErrorForLog(error, { includeStack: true }));
     } finally {
       inFlight = false;
     }
@@ -3492,12 +3616,11 @@ function startWorker() {
   try {
     validateConfig();
   } catch (error) {
-    console.error(error instanceof Error ? error.message : error);
+    console.error("Worker configuration invalid", formatErrorForLog(error, { includeStack: true }));
     process.exit(1);
   }
 
   log("Worker starting", {
-    apiBaseUrl: CONFIG.apiBaseUrl,
     timeZone: CONFIG.timeZone,
   });
 }
@@ -3517,7 +3640,7 @@ async function runCronTask(entity, intervalMs, fn) {
     if (isCronBudgetError(error)) {
       throw error;
     }
-    log(`${entity} task failed`, String(error));
+    log(`${entity} task failed`, formatErrorForLog(error, { includeStack: true }));
   }
 }
 
@@ -3608,7 +3731,7 @@ async function runCron() {
     if (isCronBudgetError(error)) {
       log("Cron budget exceeded; stopping remaining tasks");
     } else {
-      log("Cron run failed", errorMessage);
+      log("Cron run failed", formatErrorForLog(error, { includeStack: true }));
     }
   } finally {
     if (cronBudget?.exceeded && finalStatus === "ok") {
@@ -3647,7 +3770,7 @@ if (require.main === module) {
         log("Cron run complete");
       })
       .catch((error) => {
-        console.error("Cron run failed", error);
+        console.error("Cron run failed", formatErrorForLog(error, { includeStack: true }));
         process.exitCode = 1;
       });
   }
@@ -3691,7 +3814,15 @@ module.exports = {
   applyRanks,
   computeRetryWaitMs,
   dedupeRowsForConflict,
+  formatErrorForLog,
+  compactObject,
+  toDateText,
+  inferSeasonYear,
+  isMissingRpcFunctionError,
   parseCursor,
   parseCronBudgetCursor,
   chunkArray,
+  buildGameSnapshotGameRow,
+  buildGameSnapshotPayload,
+  fetchGames,
 };

@@ -11,20 +11,64 @@ import time
 from collections.abc import Mapping
 from typing import Any
 
+_SENSITIVE_URL_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"https?://[^\s'\"]*supabase\.co[^\s'\"]*", re.IGNORECASE),
+        "[redacted-supabase-url]",
+    ),
+    (
+        re.compile(r"https?://[^\s'\"]*upstash(?:redis)?\.(?:io|com)[^\s'\"]*", re.IGNORECASE),
+        "[redacted-upstash-url]",
+    ),
+)
+
+
+def _redact_sensitive_text(text: str, *, redact: bool) -> str:
+    if not redact or not text:
+        return text
+    sanitized = text
+    for pattern, replacement in _SENSITIVE_URL_PATTERNS:
+        sanitized = pattern.sub(replacement, sanitized)
+    return sanitized
+
+
+def _sanitize_value(value: Any, *, redact: bool) -> Any:
+    if not redact:
+        return value
+    if isinstance(value, str):
+        return _redact_sensitive_text(value, redact=redact)
+    if isinstance(value, Mapping):
+        return {key: _sanitize_value(inner, redact=redact) for key, inner in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_value(item, redact=redact) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_value(item, redact=redact) for item in value)
+    return value
+
 
 class JsonFormatter(logging.Formatter):
     """Simple JSON log formatter with support for request metadata."""
+
+    def __init__(self, *, redact_sensitive_urls: bool = False) -> None:
+        super().__init__()
+        self._redact_sensitive_urls = redact_sensitive_urls
 
     def format(self, record: logging.LogRecord) -> str:  # noqa: D401 - standard override
         payload: dict[str, Any] = {
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S%z", time.gmtime(record.created)),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(),
+            "message": _redact_sensitive_text(
+                record.getMessage(),
+                redact=self._redact_sensitive_urls,
+            ),
         }
         if record.exc_info:
-            payload["exc_info"] = self.formatException(record.exc_info)
-        extras = _extract_extras(record)
+            payload["exc_info"] = _redact_sensitive_text(
+                self.formatException(record.exc_info),
+                redact=self._redact_sensitive_urls,
+            )
+        extras = _extract_extras(record, redact_sensitive_urls=self._redact_sensitive_urls)
         if extras:
             payload.update(extras)
         return json.dumps(payload, default=str)
@@ -33,10 +77,17 @@ class JsonFormatter(logging.Formatter):
 class PrettyFormatter(logging.Formatter):
     """Human-readable log formatter with key=value extras."""
 
+    def __init__(self, *, redact_sensitive_urls: bool = False) -> None:
+        super().__init__()
+        self._redact_sensitive_urls = redact_sensitive_urls
+
     def format(self, record: logging.LogRecord) -> str:  # noqa: D401 - standard override
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(record.created))
-        message = record.getMessage()
-        extras = _extract_extras(record)
+        message = _redact_sensitive_text(
+            record.getMessage(),
+            redact=self._redact_sensitive_urls,
+        )
+        extras = _extract_extras(record, redact_sensitive_urls=self._redact_sensitive_urls)
         path = extras.pop("path", None)
         method = extras.pop("method", None)
         source = extras.pop("source", None)
@@ -61,7 +112,11 @@ class PrettyFormatter(logging.Formatter):
         elif record.name == "uvicorn.access":
             base = f"{timestamp} {record.levelname:<5} {record.name} {_colorize_access(message)}"
         if record.exc_info:
-            base = f"{base}\n{self.formatException(record.exc_info)}"
+            formatted_exc = _redact_sensitive_text(
+                self.formatException(record.exc_info),
+                redact=self._redact_sensitive_urls,
+            )
+            base = f"{base}\n{formatted_exc}"
         tail_bits = []
         if request_id:
             tail_bits.append(f"request_id={request_id}")
@@ -74,7 +129,11 @@ class PrettyFormatter(logging.Formatter):
         return base
 
 
-def _extract_extras(record: logging.LogRecord) -> dict[str, Any]:
+def _extract_extras(
+    record: logging.LogRecord,
+    *,
+    redact_sensitive_urls: bool = False,
+) -> dict[str, Any]:
     reserved = {
         "args",
         "asctime",
@@ -109,9 +168,9 @@ def _extract_extras(record: logging.LogRecord) -> dict[str, Any]:
             for inner_key, inner_value in value.items():
                 if inner_value is None:
                     continue
-                extras[inner_key] = inner_value
+                extras[inner_key] = _sanitize_value(inner_value, redact=redact_sensitive_urls)
             continue
-        extras[key] = value
+        extras[key] = _sanitize_value(value, redact=redact_sensitive_urls)
     return extras
 
 
@@ -129,15 +188,20 @@ def _use_color() -> bool:
     return sys.stdout.isatty() and os.environ.get("LOG_COLOR", "1") != "0"
 
 
-def configure_logging(level: str = "INFO", log_format: str = "pretty") -> None:
+def configure_logging(
+    level: str = "INFO",
+    log_format: str = "pretty",
+    environment: str = "development",
+) -> None:
     """Configure root logging output."""
 
     handler = logging.StreamHandler(sys.stdout)
     formatter: logging.Formatter
+    redact_sensitive_urls = (environment or "").strip().lower() in {"production", "prod"}
     if (log_format or "").lower() == "json":
-        formatter = JsonFormatter()
+        formatter = JsonFormatter(redact_sensitive_urls=redact_sensitive_urls)
     else:
-        formatter = PrettyFormatter()
+        formatter = PrettyFormatter(redact_sensitive_urls=redact_sensitive_urls)
     handler.setFormatter(formatter)
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),

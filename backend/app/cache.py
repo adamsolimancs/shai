@@ -82,14 +82,29 @@ class UpstashRedisClient:
         self._client = http_client or httpx.AsyncClient(timeout=timeout)
         self._client.headers["Authorization"] = f"Bearer {token}"
 
+    @staticmethod
+    def _operation_label(command_name: str) -> str:
+        if command_name == "GET":
+            return "cache download"
+        if command_name == "SET":
+            return "cache upload"
+        if command_name == "PING":
+            return "cache ping"
+        return "cache operation"
+
     async def _execute(self, *command: str) -> Any:
-        response = await self._client.post(self._request_url, json=list(command))
-        response.raise_for_status()
-        payload = response.json()
+        command_name = str(command[0]).upper() if command else "UNKNOWN"
+        operation = self._operation_label(command_name)
+        try:
+            response = await self._client.post(self._request_url, json=list(command))
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            raise RuntimeError(f"{operation} failed") from exc
         if not isinstance(payload, dict):
-            raise RuntimeError("Unexpected Upstash response payload.")
+            raise RuntimeError(f"{operation} failed")
         if "error" in payload:
-            raise RuntimeError(str(payload["error"]))
+            raise RuntimeError(f"{operation} failed")
         return payload.get("result")
 
     async def ping(self) -> Any:
@@ -226,6 +241,6 @@ async def init_cache(settings: Settings) -> tuple[CacheBackend, Any | None]:
             await redis_client.ping()
             return RedisCacheBackend(redis_client, settings), redis_client
         except Exception:
-            logger.warning("upstash redis unavailable; falling back to in-memory cache")
+            logger.warning("cache unavailable; using in-memory cache")
             await redis_client.close()
     return InMemoryCacheBackend(settings), None

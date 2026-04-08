@@ -47,7 +47,7 @@ class RecordingClient:
 async def test_supabase_requires_settings(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("SUPABASE_URL", raising=False)
     monkeypatch.delenv("SUPABASE_KEY", raising=False)
-    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_SECRET_KEY", raising=False)
     settings = Settings(supabase_url=None, supabase_key=None, _env_file=None)
     with pytest.raises(ValueError):
         SupabaseClient(settings)
@@ -56,7 +56,7 @@ async def test_supabase_requires_settings(monkeypatch: pytest.MonkeyPatch):
 @pytest.mark.asyncio
 async def test_select_builds_request(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
-    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "service-key")
 
     def responder(_method, _params, _json):
         return DummyResponse([{"id": 1}])
@@ -97,7 +97,7 @@ async def test_select_builds_request(monkeypatch: pytest.MonkeyPatch):
 @pytest.mark.asyncio
 async def test_select_one_returns_first_row(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
-    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "service-key")
 
     def responder(_method, _params, _json):
         return DummyResponse([{"id": 1}, {"id": 2}])
@@ -115,7 +115,7 @@ async def test_select_one_returns_first_row(monkeypatch: pytest.MonkeyPatch):
 @pytest.mark.asyncio
 async def test_select_all_paginates(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
-    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "service-key")
 
     def responder(_method, params, _json):
         offset = int(params.get("offset", 0))
@@ -138,7 +138,7 @@ async def test_select_all_paginates(monkeypatch: pytest.MonkeyPatch):
 @pytest.mark.asyncio
 async def test_upsert_builds_request(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
-    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "service-key")
 
     def responder(_method, _params, _json):
         return DummyResponse([])
@@ -162,3 +162,28 @@ async def test_upsert_builds_request(monkeypatch: pytest.MonkeyPatch):
     assert request["json"] == [{"cache_key": "foo", "payload": '{"ok":true}'}]
     assert request["headers"]["Content-Profile"] == "analytics"
     assert request["headers"]["Prefer"] == "resolution=merge-duplicates"
+
+
+@pytest.mark.asyncio
+async def test_rpc_builds_request(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "service-key")
+
+    def responder(_method, _params, _json):
+        return DummyResponse({"ok": True})
+
+    fake_client = RecordingClient(responder)
+    monkeypatch.setattr("app.supabase.httpx.AsyncClient", lambda **_: fake_client)
+
+    settings = Settings(_env_file=None, supabase_schema="analytics")
+    client = SupabaseClient(settings)
+
+    payload = await client.rpc("publish_game_snapshot", {"p_game_id": "001"})
+
+    assert payload == {"ok": True}
+    request = fake_client.requests[0]
+    assert request["method"] == "POST"
+    assert request["url"].endswith("/rest/v1/rpc/publish_game_snapshot")
+    assert request["json"] == {"p_game_id": "001"}
+    assert request["headers"]["Accept-Profile"] == "analytics"
+    assert request["headers"]["Content-Profile"] == "analytics"
