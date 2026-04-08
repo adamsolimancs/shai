@@ -17,6 +17,7 @@
   --color-app-foreground-muted: rgba(10, 31, 68, 0.68);
   --color-app-primary: #0f3d91;
   --color-app-primary-rgb: 15 61 145;
+  --color-app-primary-foreground: #f4ead6;
   --color-app-primary-light: #3c63b8;
   --color-app-primary-light-rgb: 60 99 184;
   --color-app-primary-hover: #164fab;
@@ -77,6 +78,7 @@
   --color-app-foreground-muted: rgba(245, 237, 216, 0.75);
   --color-app-primary: #f5d7a4;
   --color-app-primary-rgb: 245 215 164;
+  --color-app-primary-foreground: #061432;
   --color-app-primary-light: #ffe1b5;
   --color-app-primary-light-rgb: 255 225 181;
   --color-app-primary-hover: #f0c783;

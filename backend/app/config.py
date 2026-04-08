@@ -95,7 +95,10 @@ class Settings(BaseSettings):
     supabase_url: str | None = Field(None, validation_alias=AliasChoices("SUPABASE_URL"))
     supabase_key: str | None = Field(
         None,
-        validation_alias=AliasChoices("SUPABASE_KEY", "SUPABASE_SERVICE_ROLE_KEY"),
+        validation_alias=AliasChoices(
+            "SUPABASE_KEY",
+            "SUPABASE_SECRET_KEY",
+        ),
     )
     supabase_schema: str = Field("public")
     hot_cache_keys: list[str] = Field(default_factory=list)

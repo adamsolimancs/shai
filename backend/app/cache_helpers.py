@@ -46,7 +46,7 @@ async def get_or_set_cache(
     if not nocache:
         cached = await cache.get(key)
         if cached is not None:
-            logger.info("cache hit", extra={"key": key})
+            logger.info("cache download", extra={"result": "hit"})
             return cached, CacheMeta(hit=True, stale=False)
 
     lock_key = f"{key}:lock"
@@ -55,7 +55,7 @@ async def get_or_set_cache(
         await asyncio.sleep(0.1)
         cached = await cache.get(key)
         if cached is not None:
-            logger.info("cache hit after wait", extra={"key": key})
+            logger.info("cache download", extra={"result": "hit_after_wait"})
             return cached, CacheMeta(hit=True, stale=False)
 
     try:
@@ -64,7 +64,7 @@ async def get_or_set_cache(
         if allow_stale and not nocache:
             stale = await cache.get_stale(key)
             if stale is not None:
-                logger.warning("cache stale fallback", extra={"key": key})
+                logger.warning("cache download", extra={"result": "stale"})
                 return stale, CacheMeta(hit=True, stale=True)
         raise
     finally:
@@ -74,5 +74,5 @@ async def get_or_set_cache(
     if not nocache:
         await cache.set(key, data, ttl)
     elapsed_ms = int((time.perf_counter() - start) * 1000)
-    logger.info("cache miss", extra={"key": key, "latency_ms": elapsed_ms})
+    logger.info("cache upload", extra={"result": "miss", "latency_ms": elapsed_ms})
     return data, CacheMeta(hit=False, stale=False)

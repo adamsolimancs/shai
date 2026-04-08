@@ -450,6 +450,20 @@ class MetaResponse(BaseModel):
     last_cache_refresh: dict[str, datetime | None]
 
 
+class UserAccount(BaseModel):
+    auth_user_id: str
+    email: str
+    name: str | None = None
+    username: str | None = None
+
+
+class UserAccountSyncRequest(BaseModel):
+    auth_user_id: str
+    email: str
+    name: str | None = None
+    username: str | None = None
+
+
 class TeamGameRow(BaseModel):
     game_id: str
     date: date

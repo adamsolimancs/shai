@@ -6,7 +6,9 @@ import logging
 import re
 from datetime import date, timedelta
 from typing import Annotated, Any, Literal
+from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from ..auth import require_api_key
@@ -46,6 +48,8 @@ from ..schemas import (
     TeamGameRow,
     TeamSeasonHistoryRow,
     TeamStatsRow,
+    UserAccount,
+    UserAccountSyncRequest,
 )
 from ..services.nba import NBAStatsClient
 from ..services.news import NewsService
@@ -65,7 +69,10 @@ from ..services.store import (
     fetch_team_details,
     fetch_team_history,
     fetch_teams,
+    fetch_user_account_by_auth_user_id,
+    fetch_user_account_by_username,
     store_api_snapshot,
+    upsert_user_account,
 )
 from ..serving_cache import (
     TTLS,
@@ -210,6 +217,78 @@ def _allow_nocache(request: Request, settings: Settings, nocache: bool) -> bool:
     return bool(settings.admin_api_key and admin_key == settings.admin_api_key)
 
 
+def _require_supabase_client(supabase: SupabaseClient | None) -> SupabaseClient:
+    if supabase is not None:
+        return supabase
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={
+            "code": "DB_UNAVAILABLE",
+            "message": "Account storage is unavailable right now.",
+            "retryable": True,
+        },
+    )
+
+
+def _first_non_empty_text(value: Any) -> str | None:
+    if isinstance(value, str):
+        trimmed = value.strip()
+        return trimmed or None
+    return None
+
+
+def _normalize_email(value: Any) -> str | None:
+    text = _first_non_empty_text(value)
+    return text.lower() if text else None
+
+
+def _is_uuid(value: Any) -> bool:
+    text = _first_non_empty_text(value)
+    if not text:
+        return False
+    try:
+        UUID(text)
+    except ValueError:
+        return False
+    return True
+
+
+async def _resolve_user_account_auth_user_id(
+    supabase: SupabaseClient,
+    payload: UserAccountSyncRequest,
+) -> str:
+    if _is_uuid(payload.auth_user_id):
+        return payload.auth_user_id.strip()
+
+    normalized_email = _normalize_email(payload.email)
+    if not normalized_email:
+        raise ValueError("email is required")
+
+    user_metadata = {
+        key: value
+        for key, value in {
+            "name": _first_non_empty_text(payload.name),
+            "username": _first_non_empty_text(payload.username),
+        }.items()
+        if value is not None
+    }
+    auth_user = await supabase.ensure_auth_user(
+        email=normalized_email,
+        user_metadata=user_metadata or None,
+    )
+    auth_user_id = _first_non_empty_text(auth_user.get("id"))
+    if not _is_uuid(auth_user_id):
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "code": "ACCOUNT_SYNC_FAILED",
+                "message": "We couldn't sync the account right now.",
+                "retryable": True,
+            },
+        )
+    return auth_user_id
+
+
 async def _read_snapshot_cache(
     *,
     request: Request,
@@ -352,6 +431,92 @@ async def meta(request: Request, client: NBAClientDep) -> Envelope[MetaResponse]
     payload = await client.get_meta()
     _log_data_source(request, "api")
     return success(request, payload)
+
+
+@router.get("/user-accounts/by-auth-user/{auth_user_id}", response_model=Envelope[UserAccount])
+async def user_account_by_auth_user(
+    request: Request,
+    auth_user_id: str,
+    supabase: SupabaseDep,
+) -> Envelope[UserAccount]:
+    client = _require_supabase_client(supabase)
+    account = await fetch_user_account_by_auth_user_id(client, auth_user_id=auth_user_id)
+    if account is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "NOT_FOUND",
+                "message": "Account not found.",
+                "retryable": False,
+            },
+        )
+    return success(request, UserAccount(**account))
+
+
+@router.get("/user-accounts/lookup", response_model=Envelope[UserAccount])
+async def user_account_lookup(
+    request: Request,
+    username: Annotated[str, Query(min_length=1)],
+    supabase: SupabaseDep,
+) -> Envelope[UserAccount]:
+    client = _require_supabase_client(supabase)
+    account = await fetch_user_account_by_username(client, username=username)
+    if account is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "NOT_FOUND",
+                "message": "Account not found.",
+                "retryable": False,
+            },
+        )
+    return success(request, UserAccount(**account))
+
+
+@router.post("/user-accounts/sync", response_model=Envelope[UserAccount])
+async def sync_user_account(
+    request: Request,
+    payload: UserAccountSyncRequest,
+    supabase: SupabaseDep,
+) -> Envelope[UserAccount]:
+    client = _require_supabase_client(supabase)
+    try:
+        auth_user_id = await _resolve_user_account_auth_user_id(client, payload)
+        account = await upsert_user_account(
+            client,
+            auth_user_id=auth_user_id,
+            email=payload.email,
+            name=payload.name,
+            username=payload.username,
+        )
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "INVALID_REQUEST",
+                "message": str(error),
+                "retryable": False,
+            },
+        ) from error
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code == status.HTTP_409_CONFLICT:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "CONFLICT",
+                    "message": "That username is already in use.",
+                    "retryable": False,
+                },
+            ) from error
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail={
+                "code": "ACCOUNT_SYNC_FAILED",
+                "message": "We couldn't sync the account right now.",
+                "retryable": True,
+            },
+        ) from error
+    return success(request, UserAccount(**account))
 
 
 @router.get("/news", response_model=Envelope[list[NewsArticle]])

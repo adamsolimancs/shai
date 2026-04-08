@@ -23,12 +23,47 @@ test("toText serializes non-strings", () => {
   assert.equal(worker.toText(null), null);
 });
 
+test("formatErrorForLog preserves nested fetch causes", () => {
+  const cause = Object.assign(new Error("connect ETIMEDOUT 23.201.187.245:443"), {
+    code: "ETIMEDOUT",
+    errno: -110,
+    address: "23.201.187.245",
+    port: 443,
+  });
+  const error = new TypeError("fetch failed", { cause });
+  const details = worker.formatErrorForLog(error);
+
+  assert.equal(details.error, "TypeError: fetch failed");
+  assert.equal(details.error_name, "TypeError");
+  assert.equal(details.error_message, "fetch failed");
+  assert.deepEqual(details.cause, {
+    error: "Error: connect ETIMEDOUT 23.201.187.245:443",
+    error_name: "Error",
+    error_message: "connect ETIMEDOUT 23.201.187.245:443",
+    error_code: "ETIMEDOUT",
+    error_errno: -110,
+    error_address: "23.201.187.245",
+    error_port: 443,
+  });
+});
+
+test("compactObject removes nullish values", () => {
+  assert.deepEqual(worker.compactObject({ keep: 1, skipNull: null, skipUndefined: undefined }), {
+    keep: 1,
+  });
+});
+
 test("seasonToYear handles formats", () => {
   assert.equal(worker.seasonToYear("2024-25"), 2024);
   assert.equal(worker.seasonToYear("2024"), 2024);
   assert.equal(worker.seasonToYear("22024"), 2024);
   assert.equal(worker.seasonToYear(2024.9), 2024);
   assert.equal(worker.seasonToYear(""), null);
+});
+
+test("toDateText and inferSeasonYear normalize game dates", () => {
+  assert.equal(worker.toDateText("2026-04-08T19:00:00.000Z"), "2026-04-08");
+  assert.equal(worker.inferSeasonYear("2026-04-08T19:00:00.000Z"), 2025);
 });
 
 test("normalizeBooleanText returns normalized strings", () => {
@@ -101,6 +136,16 @@ test("status helpers", () => {
   assert.equal(worker.isLiveStatus("Scheduled"), false);
 });
 
+test("missing RPC function errors are recognized", () => {
+  assert.equal(
+    worker.isMissingRpcFunctionError(
+      'Supabase rpc publish_game_snapshot failed: 404 {"code":"PGRST202"}'
+    ),
+    true
+  );
+  assert.equal(worker.isMissingRpcFunctionError("other error"), false);
+});
+
 test("season list helpers", () => {
   assert.deepEqual(worker.parseSeasonList("2022-23, 2023-24"), ["2022-23", "2023-24"]);
   assert.deepEqual(worker.normalizeSeasonList(["2023-24", "2022-23", "2023-24"]), [
@@ -119,6 +164,61 @@ test("buildSupportedSeasons uses configured year range", () => {
     }),
     ["2024-25", "2025-26", "2026-27"],
   );
+});
+
+test("fetchGames sources fresh game lists from stats.nba.com", { concurrency: false }, async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+
+  global.fetch = async (url) => {
+    requests.push(String(url));
+    return {
+      ok: true,
+      json: async () => ({
+        resultSets: [
+          {
+            name: "LeagueGameFinder",
+            headers: ["GAME_ID", "GAME_DATE", "TEAM_ID", "TEAM_NAME", "TEAM_ABBREVIATION", "MATCHUP", "PTS"],
+            rowSet: [
+              ["0022500001", "2026-04-08", 10, "Knicks", "NYK", "NYK vs. BOS", 110],
+              ["0022500001", "2026-04-08", 20, "Celtics", "BOS", "BOS @ NYK", 102],
+            ],
+          },
+        ],
+      }),
+      text: async () => "",
+      headers: {
+        get: () => null,
+      },
+    };
+  };
+
+  try {
+    const games = await worker.fetchGames("2025-26", {
+      dateFrom: "2026-04-08",
+      dateTo: "2026-04-08",
+    });
+
+    assert.equal(requests.length, 1);
+    assert.match(requests[0], /^https:\/\/stats\.nba\.com\/stats\/leaguegamefinder\?/);
+    assert.ok(!requests[0].includes("/v1/games"));
+    assert.deepEqual(games, [
+      {
+        game_id: "0022500001",
+        date: "2026-04-08",
+        start_time: null,
+        home_team_id: 10,
+        home_team_name: "Knicks",
+        home_team_score: 110,
+        away_team_id: 20,
+        away_team_name: "Celtics",
+        away_team_score: 102,
+        season: "2025-26",
+      },
+    ]);
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 test("normalizeActiveFlag handles nba roster statuses", () => {
@@ -153,6 +253,59 @@ test("row mappers normalize payloads", () => {
     away_team_score: null,
     season: 2024,
   });
+});
+
+test("buildGameSnapshotGameRow derives a scoreboard row from a boxscore", () => {
+  assert.deepEqual(
+    worker.buildGameSnapshotGameRow({
+      game_id: "001",
+      game_date: "2026-04-08T19:00:00.000Z",
+      start_time: "2026-04-08T19:00:00.000Z",
+      home_team: { team_id: 10, team_name: "Knicks", score: 110 },
+      away_team: { team_id: 20, team_name: "Celtics", score: 102 },
+    }),
+    {
+      game_id: "001",
+      date: "2026-04-08",
+      start_time: "2026-04-08T19:00:00.000Z",
+      home_team_id: 10,
+      home_team_name: "Knicks",
+      home_team_score: 110,
+      away_team_id: 20,
+      away_team_name: "Celtics",
+      away_team_score: 102,
+      season: 2025,
+    }
+  );
+});
+
+test("buildGameSnapshotPayload bundles the transactional write payload", () => {
+  const payload = worker.buildGameSnapshotPayload({
+    game_id: "001",
+    status: "Final",
+    game_date: "2026-04-08T19:00:00.000Z",
+    start_time: "2026-04-08T19:00:00.000Z",
+    home_team: { team_id: 10, team_name: "Knicks", score: 110, is_home: true, leaders: [] },
+    away_team: { team_id: 20, team_name: "Celtics", score: 102, is_home: false, leaders: [] },
+    line_score: [],
+    team_totals: [],
+    traditional_players: [
+      {
+        player_id: 1,
+        player_name: "Player One",
+        team_id: 10,
+        team_abbreviation: "NYK",
+        minutes: "30:00",
+        points: 30,
+      },
+    ],
+    advanced_players: [],
+  });
+
+  assert.equal(payload.p_game.game_id, "001");
+  assert.equal(payload.p_boxscore.game_id, "001");
+  assert.equal(payload.p_players[0].game_id, "001");
+  assert.equal(payload.p_players[0].player_id, "1");
 });
 
 test("normalizeLeagueStanding enriches rows with team directory data", () => {

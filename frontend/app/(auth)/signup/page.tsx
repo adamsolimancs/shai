@@ -1,6 +1,8 @@
 import Link from "next/link";
 
 import { auth, signIn, hasGoogleOAuthConfigured } from "@/auth";
+import { EmailSignUpForm } from "@/components/PasswordAuthForms";
+import { hasSupabasePasswordConfigured } from "@/lib/supabaseAuth";
 
 export default async function SignUpPage() {
   const session = await auth();
@@ -13,10 +15,12 @@ export default async function SignUpPage() {
   return (
     <div className="space-y-8 text-[var(--color-app-foreground)]">
       <div>
-        <p className="text-xs uppercase tracking-[0.5em] text-[var(--color-app-primary)]/80">ShAI Beta</p>
+        <p className="inline-flex items-center rounded-full bg-[color:var(--color-app-primary)] px-3 py-1 text-[0.72rem] font-semibold uppercase tracking-[0.28em] text-[color:var(--color-app-primary-foreground)] shadow-sm">
+          ShAI Beta
+        </p>
         <h1 className="mt-3 text-3xl font-semibold">Create your ShAI profile</h1>
         <p className="mt-2 text-sm text-[color:var(--color-app-foreground-muted)]">
-          Secure your spot for advanced scouting tools, alerting, and shared workspaces. Use Google to keep data synced between devices.
+          Secure your spot for advanced scouting tools, alerting, and shared workspaces. Sign up with Google or create an email/password account.
         </p>
       </div>
 
@@ -51,69 +55,7 @@ export default async function SignUpPage() {
               or
             </span>
           </div>
-          <form className="surface-card--soft space-y-4 rounded-2xl p-5">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <label htmlFor="firstName" className="text-xs uppercase tracking-[0.3em] text-[color:var(--color-app-foreground-muted)]">
-                  First name
-                </label>
-                <input
-                  id="firstName"
-                  name="firstName"
-                  type="text"
-                  placeholder="Austin"
-                  className="w-full rounded-xl border border-[color:var(--color-app-border)] bg-[var(--color-app-surface)] px-4 py-2.5 text-sm text-[var(--color-app-foreground)] placeholder:text-[color:var(--color-app-foreground-muted)] focus:border-[color:var(--color-app-primary)] focus:outline-none"
-                  autoComplete="given-name"
-                />
-              </div>
-              <div className="space-y-2">
-                <label htmlFor="lastName" className="text-xs uppercase tracking-[0.3em] text-[color:var(--color-app-foreground-muted)]">
-                  Last name
-                </label>
-                <input
-                  id="lastName"
-                  name="lastName"
-                  type="text"
-                  placeholder="Reaves"
-                  className="w-full rounded-xl border border-[color:var(--color-app-border)] bg-[var(--color-app-surface)] px-4 py-2.5 text-sm text-[var(--color-app-foreground)] placeholder:text-[color:var(--color-app-foreground-muted)] focus:border-[color:var(--color-app-primary)] focus:outline-none"
-                  autoComplete="family-name"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <label htmlFor="email" className="text-xs uppercase tracking-[0.3em] text-[color:var(--color-app-foreground-muted)]">
-                Email
-              </label>
-              <input
-                id="email"
-                name="email"
-                type="email"
-                placeholder="you@shai.app"
-                className="w-full rounded-xl border border-[color:var(--color-app-border)] bg-[var(--color-app-surface)] px-4 py-2.5 text-sm text-[var(--color-app-foreground)] placeholder:text-[color:var(--color-app-foreground-muted)] focus:border-[color:var(--color-app-primary)] focus:outline-none"
-                autoComplete="email"
-              />
-            </div>
-            <div className="space-y-2">
-              <label htmlFor="password" className="text-xs uppercase tracking-[0.3em] text-[color:var(--color-app-foreground-muted)]">
-                Password
-              </label>
-              <input
-                id="password"
-                name="password"
-                type="password"
-                placeholder="••••••••"
-                className="w-full rounded-xl border border-[color:var(--color-app-border)] bg-[var(--color-app-surface)] px-4 py-2.5 text-sm text-[var(--color-app-foreground)] placeholder:text-[color:var(--color-app-foreground-muted)] focus:border-[color:var(--color-app-primary)] focus:outline-none"
-                autoComplete="new-password"
-              />
-            </div>
-            <button
-              type="submit"
-              className="btn-primary w-full rounded-2xl px-4 py-2.5 text-sm font-semibold"
-            >
-              Create Account
-            </button>
-          </form>
+          <EmailSignUpForm enabled={hasSupabasePasswordConfigured} />
         </div>
       )}
 

@@ -20,7 +20,7 @@ def test_docs_origins_split():
 
 def test_supabase_aliases(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
-    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-key")
+    monkeypatch.setenv("SUPABASE_SECRET_KEY", "service-key")
     settings = Settings()
     assert settings.supabase_url == "https://example.supabase.co"
     assert settings.supabase_key == "service-key"

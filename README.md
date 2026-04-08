@@ -1,5 +1,7 @@
 # ShAI
 
+[![PR CI](https://github.com/adamsolimancs/shai/actions/workflows/ci.yml/badge.svg)](https://github.com/adamsolimancs/shai/actions/workflows/ci.yml)
+
 ShAI is a full-stack NBA data companion that serves player, team, and league views backed by a cached stats API.
 
 ## Architecture (read path)

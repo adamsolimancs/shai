@@ -53,10 +53,8 @@ jobs:
           PLAYERS_HISTORIC_MODE: once
           PLAYERS_HISTORIC_SEASONS_BACK: 2
           API_MIN_INTERVAL_MS: 1500
-          BACKEND_API_BASE_URL: ${{ secrets.BACKEND_API_BASE_URL }}
-          BACKEND_API_KEY: ${{ secrets.BACKEND_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
           SUPABASE_SCHEMA: public
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
