@@ -8,10 +8,19 @@ from app.schemas import NewsArticle
 from app.services.news import NewsService, ScrapedArticle
 
 
-def _service(settings: Settings | None = None):
+class DummySupabase:
+    def __init__(self, rows=None):
+        self.rows = rows or []
+
+    async def select(self, table, **kwargs):
+        assert table == "news_articles"
+        return list(self.rows)
+
+
+def _service(settings: Settings | None = None, supabase: DummySupabase | None = None):
     settings = settings or Settings()
     cache = InMemoryCacheBackend(settings)
-    return NewsService(settings, cache), cache
+    return NewsService(settings, cache, supabase), cache
 
 
 def test_normalize_espn_article():
@@ -139,6 +148,47 @@ async def test_get_latest_returns_stale_on_failure(monkeypatch: pytest.MonkeyPat
     assert meta.hit is True
     assert meta.stale is True
     assert articles[0].title == "Stale"
+
+
+@pytest.mark.asyncio
+async def test_get_latest_prefers_db_before_upstream(monkeypatch: pytest.MonkeyPatch):
+    rows = [
+        {
+            "id": "db-1",
+            "source": "CBS Sports",
+            "title": "From DB",
+            "summary": "Stored summary",
+            "url": "https://example.com/db-story",
+            "published_at": "2024-01-01T00:00:00+00:00",
+            "image_url": None,
+        }
+    ]
+    service, cache = _service(Settings(), DummySupabase(rows))
+
+    async def fail_scrape():
+        raise AssertionError("news scrape should not run when db data exists")
+
+    monkeypatch.setattr(service, "_scrape_sources", fail_scrape)
+
+    articles, meta = await service.get_latest()
+
+    assert meta.hit is False
+    assert meta.stale is False
+    assert articles[0].title == "From DB"
+    cached = await cache.get("news:latest")
+    assert cached[0]["title"] == "From DB"
+
+
+@pytest.mark.asyncio
+async def test_get_latest_returns_empty_in_production_without_cache_or_db():
+    settings = Settings(environment="production")
+    service, _ = _service(settings)
+
+    articles, meta = await service.get_latest()
+
+    assert articles == []
+    assert meta.hit is False
+    assert meta.stale is False
 
 
 @pytest.mark.asyncio

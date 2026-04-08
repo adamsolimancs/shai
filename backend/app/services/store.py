@@ -229,6 +229,63 @@ async def fetch_team_by_abbr(supabase: SupabaseClient, abbreviation: str) -> dic
     return await supabase.select_one("teams", filters={"abbreviation": f"eq.{abbr}"})
 
 
+async def fetch_api_snapshot(supabase: SupabaseClient, cache_key: str) -> Any | None:
+    row = await supabase.select_one("api_snapshots", filters={"cache_key": f"eq.{cache_key}"})
+    if not row:
+        return None
+    payload = row.get("payload")
+    if payload is None:
+        return None
+    if isinstance(payload, (dict, list)):
+        return payload
+    if isinstance(payload, str):
+        try:
+            return json.loads(payload)
+        except ValueError:
+            return None
+    return None
+
+
+async def fetch_news_articles(
+    supabase: SupabaseClient,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    rows = await supabase.select(
+        "news_articles",
+        order="published_at.desc",
+        limit=limit,
+    )
+    return [
+        {
+            "id": _first_non_empty_text(row.get("id")) or "",
+            "source": _first_non_empty_text(row.get("source")) or "Unknown",
+            "title": _first_non_empty_text(row.get("title")) or "Untitled",
+            "summary": _first_non_empty_text(row.get("summary")) or "",
+            "url": _first_non_empty_text(row.get("url")) or "",
+            "published_at": _first_non_empty_text(row.get("published_at"))
+            or datetime.utcnow().isoformat(),
+            "image_url": _first_non_empty_text(row.get("image_url")),
+        }
+        for row in rows
+        if _first_non_empty_text(row.get("id")) and _first_non_empty_text(row.get("url"))
+    ]
+
+
+async def store_api_snapshot(supabase: SupabaseClient, cache_key: str, payload: Any) -> None:
+    await supabase.upsert(
+        "api_snapshots",
+        [
+            {
+                "cache_key": cache_key,
+                "payload": json.dumps(payload, default=str),
+                "updated_at": datetime.utcnow().isoformat(),
+            }
+        ],
+        on_conflict="cache_key",
+    )
+
+
 def _split_name(full_name: str | None) -> tuple[str, str]:
     if not full_name:
         return "", ""
@@ -296,6 +353,53 @@ async def fetch_player_bio(
     }
 
 
+async def fetch_player_info(
+    supabase: SupabaseClient,
+    *,
+    player_id: int,
+) -> dict[str, Any] | None:
+    row = await supabase.select_one("player_info", filters={"player_id": f"eq.{player_id}"})
+    if not row:
+        return None
+    birthdate = None
+    raw_birthdate = _first_non_empty_text(row.get("birthdate"))
+    if raw_birthdate:
+        normalized_birthdate = raw_birthdate.split("T", maxsplit=1)[0]
+        try:
+            birthdate = date.fromisoformat(normalized_birthdate)
+        except ValueError:
+            birthdate = None
+    return {
+        "player_id": _coerce_int(row.get("player_id")),
+        "display_name": _first_non_empty_text(
+            row.get("display_name"),
+            " ".join(
+                part
+                for part in [
+                    _first_non_empty_text(row.get("first_name")),
+                    _first_non_empty_text(row.get("last_name")),
+                ]
+                if part
+            ).strip(),
+        )
+        or "Unknown",
+        "first_name": _first_non_empty_text(row.get("first_name")),
+        "last_name": _first_non_empty_text(row.get("last_name")),
+        "position": _first_non_empty_text(row.get("position")),
+        "jersey": _first_non_empty_text(row.get("jersey")),
+        "birthdate": birthdate,
+        "school": _first_non_empty_text(row.get("school")),
+        "country": _first_non_empty_text(row.get("country")),
+        "season_experience": _coerce_int(row.get("season_experience")),
+        "roster_status": _first_non_empty_text(row.get("roster_status")),
+        "from_year": _coerce_int(row.get("from_year")),
+        "to_year": _coerce_int(row.get("to_year")),
+        "team_id": _coerce_int(row.get("team_id")),
+        "team_name": _first_non_empty_text(row.get("team_name")),
+        "team_abbreviation": _first_non_empty_text(row.get("team_abbreviation")),
+    }
+
+
 async def fetch_player_awards(
     supabase: SupabaseClient,
     *,
@@ -324,6 +428,56 @@ async def fetch_player_awards(
             }
         )
     return results
+
+
+async def fetch_player_career(
+    supabase: SupabaseClient,
+    *,
+    player_id: int,
+    season_type: str,
+) -> list[dict[str, Any]]:
+    rows = await supabase.select_all(
+        "player_season_stats",
+        filters={
+            "player_id": f"eq.{player_id}",
+            "season_type": f"eq.{season_type}",
+        },
+        order="season.desc",
+    )
+    teams = await supabase.select_all("teams")
+    teams_by_id: dict[int, dict[str, Any]] = {}
+    for row in teams:
+        team_key = _coerce_int(row.get("team_id"))
+        if team_key is not None:
+            teams_by_id[team_key] = row
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        team_id = _coerce_int(row.get("team_id"))
+        team = teams_by_id.get(team_id) or {}
+        results.append(
+            {
+                "season_id": _first_non_empty_text(row.get("season")),
+                "team_id": team_id,
+                "team_abbreviation": _first_non_empty_text(
+                    team.get("abbreviation"),
+                    row.get("team_abbreviation"),
+                ),
+                "player_age": _coerce_float(row.get("player_age")),
+                "games_played": _coerce_int(row.get("games_played")) or 0,
+                "games_started": _coerce_int(row.get("games_started")) or 0,
+                "minutes": _coerce_float(row.get("minutes_pg")) or 0.0,
+                "points": _coerce_float(row.get("points_pg")) or 0.0,
+                "rebounds": _coerce_float(row.get("rebounds_pg")) or 0.0,
+                "assists": _coerce_float(row.get("assists_pg")) or 0.0,
+                "steals": _coerce_float(row.get("steals_pg")),
+                "blocks": _coerce_float(row.get("blocks_pg")),
+                "field_goal_pct": _coerce_float(row.get("field_goal_pct_pg")),
+                "three_point_pct": _coerce_float(row.get("three_point_pct_pg")),
+                "free_throw_pct": _coerce_float(row.get("free_throw_pct_pg")),
+                "true_shooting_pct": _coerce_float(row.get("true_shooting_pct_pg")),
+            }
+        )
+    return [row for row in results if row.get("season_id")]
 
 
 async def fetch_player_stats(
@@ -418,9 +572,6 @@ async def fetch_games(
     team_abbr: str | None,
     per_team: bool,
 ) -> list[dict[str, Any]]:
-    if per_team:
-        return []
-
     season_year = _season_year(season)
     filters: dict[str, str] = {}
     if season_year is not None:
@@ -454,6 +605,92 @@ async def fetch_games(
             if _coerce_int(row.get("home_team_id")) == team_id
             or _coerce_int(row.get("away_team_id")) == team_id
         ]
+    if per_team:
+        team_ids: set[int] = set()
+        for row in rows:
+            home_team_id = _coerce_int(row.get("home_team_id"))
+            away_team_id = _coerce_int(row.get("away_team_id"))
+            if home_team_id is not None:
+                team_ids.add(home_team_id)
+            if away_team_id is not None:
+                team_ids.add(away_team_id)
+        teams_by_id: dict[int, dict[str, Any]] = {}
+        if team_ids:
+            team_ids_filter = ",".join(str(team_key) for team_key in sorted(team_ids))
+            teams = await supabase.select(
+                "teams",
+                filters={"team_id": f"in.({team_ids_filter})"},
+            )
+            teams_by_id = {
+                team_key: row
+                for row in teams
+                if (team_key := _coerce_int(row.get("team_id"))) is not None
+            }
+        per_team_rows: list[dict[str, Any]] = []
+        for row in rows:
+            game_id = _first_non_empty_text(row.get("game_id"))
+            game_date = _parse_game_date(row.get("date") or row.get("game_date"))
+            home_team_id = _coerce_int(row.get("home_team_id"))
+            away_team_id = _coerce_int(row.get("away_team_id"))
+            home_team_name = _first_non_empty_text(row.get("home_team_name"))
+            away_team_name = _first_non_empty_text(row.get("away_team_name"))
+            home_team = teams_by_id.get(home_team_id) if home_team_id is not None else {}
+            away_team = teams_by_id.get(away_team_id) if away_team_id is not None else {}
+            home_team_abbr = _first_non_empty_text(
+                row.get("home_team_abbreviation"),
+                (home_team or {}).get("abbreviation"),
+            )
+            away_team_abbr = _first_non_empty_text(
+                row.get("away_team_abbreviation"),
+                (away_team or {}).get("abbreviation"),
+            )
+            home_score = _coerce_float(row.get("home_team_score"))
+            away_score = _coerce_float(row.get("away_team_score"))
+            if not game_id or game_date is None:
+                continue
+            home_label = home_team_abbr or home_team_name or str(home_team_id or "")
+            away_label = away_team_abbr or away_team_name or str(away_team_id or "")
+            home_result = (
+                "W"
+                if home_score is not None and away_score is not None and home_score > away_score
+                else "L"
+                if home_score is not None and away_score is not None and home_score < away_score
+                else None
+            )
+            away_result = (
+                "W"
+                if home_score is not None and away_score is not None and away_score > home_score
+                else "L"
+                if home_score is not None and away_score is not None and away_score < home_score
+                else None
+            )
+            if home_team_id is not None:
+                per_team_rows.append(
+                    {
+                        "game_id": game_id,
+                        "date": game_date,
+                        "team_id": home_team_id,
+                        "team_abbreviation": home_team_abbr or home_team_name or "",
+                        "opponent_team_id": away_team_id,
+                        "matchup": f"{home_label} vs. {away_label}",
+                        "result": home_result,
+                        "points": home_score or 0.0,
+                    }
+                )
+            if away_team_id is not None:
+                per_team_rows.append(
+                    {
+                        "game_id": game_id,
+                        "date": game_date,
+                        "team_id": away_team_id,
+                        "team_abbreviation": away_team_abbr or away_team_name or "",
+                        "opponent_team_id": home_team_id,
+                        "matchup": f"{away_label} @ {home_label}",
+                        "result": away_result,
+                        "points": away_score or 0.0,
+                    }
+                )
+        rows = per_team_rows
     for row in rows:
         row["season"] = season
     return rows
@@ -563,6 +800,88 @@ async def fetch_ingestion_state(
     return await supabase.select_one(
         "ingestion_state", filters={"source": f"eq.{source}", "entity": f"eq.{entity}"}
     )
+
+
+async def fetch_team_history(
+    supabase: SupabaseClient,
+    *,
+    team_id: int,
+    season_type: str,
+    per_mode: str,
+) -> list[dict[str, Any]]:
+    rows = await supabase.select_all(
+        "team_season_history",
+        filters={
+            "team_id": f"eq.{team_id}",
+            "season_type": f"eq.{season_type}",
+            "per_mode": f"eq.{per_mode}",
+        },
+        order="season.desc",
+    )
+    return [
+        {
+            "team_id": _coerce_int(row.get("team_id")),
+            "team_city": _first_non_empty_text(row.get("team_city")),
+            "team_name": _first_non_empty_text(row.get("team_name")),
+            "season": _first_non_empty_text(row.get("season")),
+            "games_played": _coerce_int(row.get("games_played")) or 0,
+            "wins": _coerce_int(row.get("wins")) or 0,
+            "losses": _coerce_int(row.get("losses")) or 0,
+            "win_pct": _coerce_float(row.get("win_pct")) or 0.0,
+            "conference_rank": _coerce_int(row.get("conference_rank")),
+            "division_rank": _coerce_int(row.get("division_rank")),
+            "playoff_wins": _coerce_int(row.get("playoff_wins")),
+            "playoff_losses": _coerce_int(row.get("playoff_losses")),
+            "finals_result": _first_non_empty_text(row.get("finals_result")),
+            "points": _coerce_float(row.get("points")),
+            "field_goal_pct": _coerce_float(row.get("field_goal_pct")),
+            "three_point_pct": _coerce_float(row.get("three_point_pct")),
+        }
+        for row in rows
+        if _first_non_empty_text(row.get("season"))
+    ]
+
+
+async def fetch_league_leaders(
+    supabase: SupabaseClient,
+    *,
+    season: str,
+    season_type: str,
+    per_mode: str,
+    stat_category: str,
+) -> list[dict[str, Any]]:
+    rows = await supabase.select_all(
+        "league_leader_rows",
+        filters={
+            "season": f"eq.{season}",
+            "season_type": f"eq.{season_type}",
+            "per_mode": f"eq.{per_mode}",
+            "stat_category": f"eq.{stat_category}",
+        },
+        order="rank.asc",
+    )
+    return [
+        {
+            "player_id": _coerce_int(row.get("player_id")),
+            "rank": _coerce_int(row.get("rank")) or 0,
+            "player_name": _first_non_empty_text(row.get("player_name")) or "Unknown",
+            "team_id": _coerce_int(row.get("team_id")),
+            "team_abbreviation": _first_non_empty_text(row.get("team_abbreviation")),
+            "games_played": _coerce_int(row.get("games_played")) or 0,
+            "minutes": _coerce_float(row.get("minutes")),
+            "points": _coerce_float(row.get("points")),
+            "rebounds": _coerce_float(row.get("rebounds")),
+            "assists": _coerce_float(row.get("assists")),
+            "steals": _coerce_float(row.get("steals")),
+            "blocks": _coerce_float(row.get("blocks")),
+            "turnovers": _coerce_float(row.get("turnovers")),
+            "efficiency": _coerce_float(row.get("efficiency")),
+            "stat_value": _coerce_float(row.get("stat_value")) or 0.0,
+            "stat_category": _first_non_empty_text(row.get("stat_category")) or stat_category,
+        }
+        for row in rows
+        if _coerce_int(row.get("player_id")) is not None
+    ]
 
 
 async def fetch_player_gamelog_from_boxscores(

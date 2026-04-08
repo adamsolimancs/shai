@@ -31,12 +31,6 @@ type EnhancedGame = {
   totalPoints: number;
 };
 
-type HighlightMetric = {
-  label: string;
-  value: string;
-  subtext: string;
-};
-
 const DATE_FORMATTER = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "short", day: "numeric" });
 const DATE_ONLY_FORMATTER = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
 const NBA_DATE_KEY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
@@ -97,55 +91,6 @@ function groupGamesByDate(games: EnhancedGame[]): { date: string; label: string;
     .sort((a, b) => (a.date < b.date ? 1 : -1));
 }
 
-function deriveHighlights(games: EnhancedGame[]): HighlightMetric[] {
-  if (!games.length) {
-    return [
-      { label: "Average points", value: "—", subtext: "No games available" },
-      { label: "Close finishes", value: "—", subtext: "Awaiting schedule" },
-      { label: "Largest margin", value: "—", subtext: "Awaiting schedule" },
-    ];
-  }
-
-  const aggregate = games.reduce(
-    (acc, game) => {
-      acc.totalPoints += game.totalPoints;
-      if (game.margin <= 5) acc.clutch += 1;
-      if (!acc.largest || game.margin > acc.largest.margin) acc.largest = game;
-      return acc;
-    },
-    { totalPoints: 0, clutch: 0, largest: games[0] } as {
-      totalPoints: number;
-      clutch: number;
-      largest: EnhancedGame;
-    },
-  );
-
-  const averagePoints = Math.round(aggregate.totalPoints / games.length);
-  const largest = aggregate.largest;
-
-  return [
-    {
-      label: "Average combined points",
-      value: `${averagePoints}`,
-      subtext: `${games.length} game sample across ${DEFAULT_SEASON}`,
-    },
-    {
-      label: "One-possession finishes",
-      value: `${aggregate.clutch}`,
-      subtext: "Decided by five or fewer points",
-    },
-    {
-      label: "Largest margin",
-      value: `${largest.margin} pts`,
-      subtext: `${largest.home.name} vs ${largest.away.name}`,
-    },
-  ];
-}
-
-function formatTrendLabel(trend: string) {
-  return trend.toUpperCase();
-}
-
 export default async function ScoresPage() {
   const nbaToday = getNbaDateKey();
   const [games, tonightGames] = await Promise.all([
@@ -163,14 +108,7 @@ export default async function ScoresPage() {
     .map(enhanceGame)
     .filter((game) => game.dateKey === nbaToday && !game.isFinal)
     .sort((a, b) => parseGameDate(a.timeValue).getTime() - parseGameDate(b.timeValue).getTime());
-  const highlights = deriveHighlights(enhanced);
   const grouped = groupGamesByDate(enhanced);
-  const statementGame =
-    enhanced.length > 0
-      ? enhanced.reduce((prev, game) => (game.totalPoints > prev.totalPoints ? game : prev))
-      : null;
-  const tightGames = enhanced.filter((game) => game.margin <= 3).slice(0, 4);
-  const blowouts = enhanced.filter((game) => game.margin >= 18).slice(0, 4);
 
   return (
     <div className="space-y-12">

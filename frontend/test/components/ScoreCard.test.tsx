@@ -5,11 +5,23 @@ import { render, screen } from "@testing-library/react";
 import ScoreCard from "@/components/ScoreCard";
 
 vi.mock("next/link", () => ({
-  default: ({ href, children, ...props }: { href: string; children: ReactNode }) => (
-    <a href={href} {...props}>
-      {children}
-    </a>
-  ),
+  default: ({
+    href,
+    children,
+    prefetch: _prefetch,
+    ...props
+  }: {
+    href: string;
+    children: ReactNode;
+    prefetch?: boolean;
+  }) => {
+    void _prefetch;
+    return (
+      <a href={href} {...props}>
+        {children}
+      </a>
+    );
+  },
 }));
 
 describe("ScoreCard", () => {

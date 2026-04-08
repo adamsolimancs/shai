@@ -20,7 +20,14 @@ class Settings(BaseSettings):
     )
     port: int = Field(8080, ge=1, le=65535)
     log_level: str = Field("INFO")
-    redis_url: str = Field("redis://redis:6379/0")
+    upstash_redis_rest_url: str | None = Field(
+        None,
+        validation_alias=AliasChoices("UPSTASH_REDIS_REST_URL"),
+    )
+    upstash_redis_rest_token: str | None = Field(
+        None,
+        validation_alias=AliasChoices("UPSTASH_REDIS_REST_TOKEN"),
+    )
     cache_default_ttl_seconds: int = Field(
         60 * 60 * 2,
         description="Fallback TTL when none is specified.",
@@ -41,7 +48,18 @@ class Settings(BaseSettings):
     pagination_default_page_size: int = Field(50, ge=1)
     pagination_max_page_size: int = Field(200, ge=1)
     cache_refresh_cron_hour_utc: int = Field(9, ge=0, le=23)
-    environment: str = Field("development")
+    enable_hot_cache_refresh: bool = Field(
+        False,
+        validation_alias=AliasChoices(
+            "ENABLE_HOT_CACHE_REFRESH",
+            "HOT_CACHE_REFRESH_ENABLED",
+        ),
+        description="Start the background hot-cache refresh loop on startup.",
+    )
+    environment: str = Field(
+        "development",
+        validation_alias=AliasChoices("environment", "BACKEND_ENV", "ENVIRONMENT"),
+    )
     allow_nba_api_in_production: bool = Field(
         False,
         validation_alias=AliasChoices(

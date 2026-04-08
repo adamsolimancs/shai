@@ -2,7 +2,13 @@ from datetime import date
 
 import pytest
 
-from app.services.store import fetch_games, fetch_player_stats
+from app.services.store import (
+    fetch_api_snapshot,
+    fetch_games,
+    fetch_player_career,
+    fetch_player_info,
+    fetch_player_stats,
+)
 
 
 class DummySupabase:
@@ -26,6 +32,24 @@ class DummySupabase:
     async def select(self, table: str, **_kwargs):
         raise AssertionError(f"Unexpected select table: {table}")
 
+    async def select_one(self, table: str, **kwargs):
+        if table == "player_info":
+            filters = kwargs.get("filters") or {}
+            player_id = str(filters.get("player_id", "")).removeprefix("eq.")
+            return next(
+                (row for row in self._player_info if str(row.get("player_id")) == player_id),
+                None,
+            )
+        if table == "api_snapshots":
+            filters = kwargs.get("filters") or {}
+            cache_key = str(filters.get("cache_key", "")).removeprefix("eq.")
+            snapshots = getattr(self, "_snapshots", [])
+            return next(
+                (row for row in snapshots if row.get("cache_key") == cache_key),
+                None,
+            )
+        raise AssertionError(f"Unexpected select_one table: {table}")
+
 
 class DummySupabaseGames:
     def __init__(self, *, games, teams=None):
@@ -37,6 +61,8 @@ class DummySupabaseGames:
         if table == "games":
             self.last_games_filters = kwargs.get("filters") or {}
             return [dict(row) for row in self._games]
+        if table == "teams":
+            return list(self._teams.values())
         raise AssertionError(f"Unexpected select table: {table}")
 
     async def select_one(self, table: str, **kwargs):
@@ -191,3 +217,138 @@ async def test_fetch_games_team_filter_handles_string_team_ids():
     )
 
     assert [row["game_id"] for row in rows] == ["game_1"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_games_per_team_expands_each_game():
+    supabase = DummySupabaseGames(
+        games=[
+            {
+                "game_id": "game_1",
+                "date": "2026-02-11",
+                "home_team_id": "1610612737",
+                "away_team_id": "1610612738",
+                "home_team_name": "Hawks",
+                "away_team_name": "Celtics",
+                "home_team_score": 110,
+                "away_team_score": 101,
+            }
+        ],
+        teams={
+            "ATL": {"team_id": "1610612737", "abbreviation": "ATL"},
+            "BOS": {"team_id": "1610612738", "abbreviation": "BOS"},
+        },
+    )
+
+    rows = await fetch_games(
+        supabase,
+        season="2025-26",
+        date_from=None,
+        date_to=None,
+        team_id=None,
+        team_abbr=None,
+        per_team=True,
+    )
+
+    assert len(rows) == 2
+    assert rows[0]["team_abbreviation"] == "ATL"
+    assert rows[0]["matchup"] == "ATL vs. BOS"
+    assert rows[0]["result"] == "W"
+    assert rows[1]["team_abbreviation"] == "BOS"
+    assert rows[1]["matchup"] == "BOS @ ATL"
+    assert rows[1]["result"] == "L"
+
+
+@pytest.mark.asyncio
+async def test_fetch_player_info_uses_player_info_table():
+    supabase = DummySupabase(
+        player_stats=[],
+        players=[],
+        player_info=[
+            {
+                "player_id": "2544",
+                "display_name": "LeBron James",
+                "first_name": "LeBron",
+                "last_name": "James",
+                "position": "F",
+                "jersey": "23",
+                "birthdate": "1984-12-30T00:00:00",
+                "school": "St. Vincent-St. Mary HS",
+                "country": "USA",
+                "season_experience": "21",
+                "roster_status": "Active",
+                "from_year": "2003",
+                "to_year": "2026",
+                "team_id": "1610612747",
+                "team_name": "Lakers",
+                "team_abbreviation": "LAL",
+            }
+        ],
+        teams=[],
+    )
+
+    row = await fetch_player_info(supabase, player_id=2544)
+
+    assert row["display_name"] == "LeBron James"
+    assert row["birthdate"].isoformat() == "1984-12-30"
+    assert row["team_abbreviation"] == "LAL"
+
+
+@pytest.mark.asyncio
+async def test_fetch_player_career_uses_player_season_stats():
+    supabase = DummySupabase(
+        player_stats=[
+            {
+                "player_id": "2544",
+                "season": "2024-25",
+                "season_type": "Regular Season",
+                "team_id": "1610612747",
+                "games_played": "70",
+                "games_started": "70",
+                "minutes_pg": "34.9",
+                "points_pg": "25.7",
+                "rebounds_pg": "7.3",
+                "assists_pg": "8.3",
+                "steals_pg": "1.2",
+                "blocks_pg": "0.6",
+                "field_goal_pct_pg": "0.52",
+                "three_point_pct_pg": "0.39",
+                "free_throw_pct_pg": "0.77",
+                "true_shooting_pct_pg": "0.63",
+            }
+        ],
+        players=[],
+        player_info=[],
+        teams=[{"team_id": "1610612747", "abbreviation": "LAL"}],
+    )
+
+    rows = await fetch_player_career(
+        supabase,
+        player_id=2544,
+        season_type="Regular Season",
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["season_id"] == "2024-25"
+    assert rows[0]["team_abbreviation"] == "LAL"
+    assert rows[0]["points"] == pytest.approx(25.7)
+
+
+@pytest.mark.asyncio
+async def test_fetch_api_snapshot_parses_json_payload():
+    supabase = DummySupabase(
+        player_stats=[],
+        players=[],
+        player_info=[],
+        teams=[],
+    )
+    supabase._snapshots = [
+        {
+            "cache_key": "snapshot:key",
+            "payload": '[{"player_id": 1, "player_name": "Sample"}]',
+        }
+    ]
+
+    payload = await fetch_api_snapshot(supabase, "snapshot:key")
+
+    assert payload == [{"player_id": 1, "player_name": "Sample"}]

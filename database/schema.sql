@@ -63,6 +63,9 @@
   away_team_name text,
   away_team_score smallint,
   season integer\n);\n                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| CREATE TABLE public.api_snapshots (\n  cache_key text NOT NULL,
+  payload text,
+  updated_at text\n);\n                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | CREATE TABLE public.ingestion_state (\n  id text,
   source text NOT NULL,
   entity text NOT NULL,
@@ -223,6 +226,7 @@
 | ALTER TABLE public.boxscores ADD CONSTRAINT boxscores_game_id_fkey FOREIGN KEY (game_id) REFERENCES games(game_id) ON UPDATE CASCADE ON DELETE RESTRICT;\n                              |
 | ALTER TABLE public.boxscores ADD CONSTRAINT boxscores_pkey PRIMARY KEY (game_id);\n                                                                                                     |
 | ALTER TABLE public.games ADD CONSTRAINT games_pkey PRIMARY KEY (game_id);\n                                                                                                             |
+| ALTER TABLE public.api_snapshots ADD CONSTRAINT api_snapshots_pkey PRIMARY KEY (cache_key);\n                                                                                           |
 | ALTER TABLE public.ingestion_state ADD CONSTRAINT ingestion_state_pkey PRIMARY KEY (source, entity);\n                                                                                  |
 | ALTER TABLE public.league_standings ADD CONSTRAINT league_standings_pkey PRIMARY KEY (season, team_id);\n                                                                               |
 | ALTER TABLE public.league_standings ADD CONSTRAINT league_standings_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams(team_id) ON UPDATE RESTRICT ON DELETE RESTRICT;\n               |

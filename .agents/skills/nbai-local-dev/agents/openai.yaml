@@ -1,0 +1,7 @@
+interface:
+  display_name: "NBAI Local Dev"
+  short_description: "Run, debug, and validate this repo locally"
+  default_prompt: "Use $nbai-local-dev to run or debug the NBAI repo locally."
+
+policy:
+  allow_implicit_invocation: true

@@ -56,8 +56,7 @@ export function HeaderSearchBar() {
   const segments = useMemo(() => pathname.split("/").filter(Boolean), [pathname]);
   const isPlayerProfile = segments[0] === "players" && segments.length >= 2;
   const queryParam = searchParams?.get("q") ?? "";
-  const showSearch =
-    pathname !== "/" && pathname !== "/players" && pathname !== "/signin" && pathname !== "/signup";
+  const showSearch = pathname !== "/" && pathname !== "/signin" && pathname !== "/signup";
   const derivedQuery = useMemo(() => {
     if (!showSearch) {
       return "";

@@ -11,8 +11,14 @@ node_modules/
 frontend/.next/
 
 # Env
-*.env
+.env
+.env.local
+*.local.env
 backend/.env
+backend/.env.local
+frontend/.env
+frontend/.env.local
+workers/worker.env
 
 # Data outputs
 *.csv
