@@ -77,13 +77,42 @@ function toNumber(value) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
+function toInteger(value) {
+  const numeric = toNumber(value);
+  return numeric === null ? null : Math.trunc(numeric);
+}
+
+function cleanText(value) {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  if (!text) return null;
+  const lowered = text.toLowerCase();
+  if (["nan", "none", "n/a", "null"].includes(lowered)) {
+    return null;
+  }
+  return text;
+}
+
+function buildSupportedSeasons({
+  startYear = CONFIG.supportedSeasonStartYear,
+  date = new Date(),
+} = {}) {
+  const currentYear = date.getUTCFullYear();
+  const seasons = [];
+  for (let year = startYear; year <= currentYear; year += 1) {
+    seasons.push(`${year}-${String((year + 1) % 100).padStart(2, "0")}`);
+  }
+  return seasons;
+}
+
 const CONFIG = {
   workerMode: process.env.WORKER_MODE || "cron",
-  apiBaseUrl: normalizeBaseUrl(process.env.NBA_API_BASE_URL || "http://localhost:8080"),
-  apiKey: process.env.NBA_API_KEY,
+  apiBaseUrl: normalizeBaseUrl(process.env.BACKEND_API_BASE_URL || "http://localhost:8080"),
+  apiKey: process.env.BACKEND_API_KEY,
   supabaseUrl: process.env.SUPABASE_URL,
   supabaseKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
   supabaseSchema: process.env.SUPABASE_SCHEMA || "public",
+  supportedSeasonStartYear: Number(process.env.SUPPORTED_SEASON_START_YEAR || 1996),
   seasonOverride: process.env.NBA_SEASON,
   historicSeasons: process.env.HISTORIC_SEASONS || "",
   historicSeasonsBack: Number(process.env.HISTORIC_SEASONS_BACK || 0),
@@ -130,6 +159,8 @@ const CONFIG = {
   apiMinIntervalMs: Number(process.env.API_MIN_INTERVAL_MS || 250),
   apiRetryMax: Number(process.env.API_RETRY_MAX || 4),
   apiRetryBaseDelayMs: Number(process.env.API_RETRY_BASE_DELAY_MS || 750),
+  statsRetryMax: Number(process.env.STATS_RETRY_MAX || process.env.API_RETRY_MAX || 4),
+  statsTimeoutMs: Number(process.env.STATS_TIMEOUT_MS || 30000),
   apiCircuitBreakerMaxFailures: Number(process.env.API_CIRCUIT_BREAKER_MAX_FAILURES || 5),
   apiCircuitBreakerCooldownMs: Number(
     process.env.API_CIRCUIT_BREAKER_COOLDOWN_MS || 5 * 60 * 1000
@@ -160,13 +191,15 @@ const CONFIG = {
     process.env.CACHE_TTL_BOXSCORE_FINAL_SEC || 60 * 60 * 12
   ),
   cacheTtlStandingsSec: Number(process.env.CACHE_TTL_STANDINGS_SEC || 60 * 15),
+  cacheTtlPlayerStatsSec: Number(process.env.CACHE_TTL_PLAYER_STATS_SEC || 60 * 15),
+  cacheTtlTeamStatsSec: Number(process.env.CACHE_TTL_TEAM_STATS_SEC || 60 * 60),
   cacheTtlTeamsSec: Number(process.env.CACHE_TTL_TEAMS_SEC || 60 * 60 * 24),
+  cacheTtlTeamDetailsSec: Number(process.env.CACHE_TTL_TEAM_DETAILS_SEC || 60 * 60 * 24),
+  cacheTtlPlayerAwardsSec: Number(process.env.CACHE_TTL_PLAYER_AWARDS_SEC || 60 * 60 * 24),
+  cacheStaleTtlSec: Number(process.env.CACHE_STALE_TTL_SEC || 60 * 60 * 24 * 7),
 };
 
 function validateConfig() {
-  if (!CONFIG.apiKey) {
-    throw new Error("NBA_API_KEY is required.");
-  }
   if (!CONFIG.supabaseUrl || !CONFIG.supabaseKey) {
     throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required.");
   }
@@ -184,6 +217,20 @@ const NBA_STATS_HEADERS = {
   "x-nba-stats-origin": "stats",
   "x-nba-stats-token": "true",
 };
+
+const LEAGUE_LEADER_STAT_CATEGORIES = [
+  "PTS",
+  "REB",
+  "AST",
+  "STL",
+  "BLK",
+  "TOV",
+  "EFF",
+  "MIN",
+  "FG_PCT",
+  "FG3_PCT",
+  "FT_PCT",
+];
 
 const activeGameIds = new Set();
 const statusCache = new Map();
@@ -302,6 +349,28 @@ const CacheKeys = {
   standings: (season, leagueId = "00", seasonType = "Regular Season") =>
     cacheKey("standings", season, leagueId, seasonType),
   teams: (season) => cacheKey("teams", season),
+  teamDetails: (teamId) => cacheKey("team_details", teamId),
+  teamHistory: (teamId, seasonType = "Regular Season", perMode = "Totals") =>
+    cacheKey("team_history", teamId, seasonType, perMode),
+  playerAwards: (playerId) => cacheKey("player_awards", playerId),
+  playerInfo: (playerId) => cacheKey("player_info", playerId),
+  playerStats: (
+    season,
+    seasonType = "Regular Season",
+    measure = "Base",
+    perMode = "PerGame"
+  ) => cacheKey("player_stats", season, seasonType, measure, perMode, "all"),
+};
+
+const CachePatterns = {
+  players: (season) => cacheKey("players", season, "*"),
+  playerBio: (season) => cacheKey("player_bio", "*", season),
+  playerStats: (season) => cacheKey("player_stats", season, "*"),
+};
+
+const InternalCacheKeys = {
+  teamStats: (season, measure = "Base", perMode = "PerGame") =>
+    `team_stats:${season}:${measure}:${perMode}`,
 };
 
 function recordCacheWrite(ok) {
@@ -323,11 +392,44 @@ function recordCacheWrite(ok) {
 async function writeCache(key, payload, ttlSeconds) {
   if (!cache) return;
   try {
-    await cache.set(key, payload, { ex: ttlSeconds });
+    const staleTtl = Math.max(ttlSeconds, CONFIG.cacheStaleTtlSec);
+    await Promise.all([
+      cache.set(key, payload, { ex: ttlSeconds }),
+      cache.set(`${key}:stale`, payload, { ex: staleTtl }),
+    ]);
     recordCacheWrite(true);
   } catch (error) {
     recordCacheWrite(false);
     log("Redis cache write failed", { key, error: String(error) });
+  }
+}
+
+async function deleteCacheKey(key) {
+  if (!cache) return;
+  try {
+    await cache.del(key, `${key}:stale`);
+  } catch (error) {
+    log("Redis cache delete failed", { key, error: String(error) });
+  }
+}
+
+async function invalidateCachePattern(pattern) {
+  if (!cache) return;
+  const match = pattern.replace(/:+$/, "");
+  try {
+    let cursor = "0";
+    do {
+      const [nextCursor, keys] = await cache.scan(cursor, {
+        match: `${match}*`,
+        count: 200,
+      });
+      cursor = String(nextCursor);
+      if (Array.isArray(keys) && keys.length > 0) {
+        await cache.del(...keys);
+      }
+    } while (cursor !== "0");
+  } catch (error) {
+    log("Redis cache invalidation failed", { pattern: match, error: String(error) });
   }
 }
 
@@ -525,29 +627,44 @@ function seasonsMatch(a, b) {
   return left.every((season, index) => season === right[index]);
 }
 
+function normalizeActiveFlag(value) {
+  const text = cleanText(value);
+  if (!text) return null;
+  const lowered = text.toLowerCase();
+  if (["1", "true", "yes", "y", "on", "active"].includes(lowered)) {
+    return "true";
+  }
+  if (["0", "false", "no", "n", "off", "inactive"].includes(lowered)) {
+    return "false";
+  }
+  return normalizeBooleanText(text);
+}
+
 function mapTeamRow(team) {
   if (!team) return null;
-  const teamId = team.team_id ?? team.id ?? null;
+  const teamId = team.team_id ?? team.id ?? team.TEAM_ID ?? team.teamId ?? null;
   if (teamId === null || teamId === undefined) return null;
   return {
     team_id: teamId,
-    abbreviation: team.abbreviation ?? null,
-    city: team.city ?? null,
-    name: team.name ?? null,
-    conference: team.conference ?? null,
-    division: team.division ?? null,
+    abbreviation: cleanText(team.abbreviation ?? team.ABBREVIATION ?? team.TEAM_ABBREVIATION),
+    city: cleanText(team.city ?? team.CITY ?? team.TEAM_CITY),
+    name: cleanText(team.name ?? team.NICKNAME ?? team.TEAM_NAME),
+    conference: cleanText(team.conference ?? team.CONFERENCE),
+    division: cleanText(team.division ?? team.DIVISION),
   };
 }
 
 function mapPlayerRow(player) {
   if (!player) return null;
-  const playerId = toPlayerId(player.player_id ?? player.id);
+  const playerId = toPlayerId(player.player_id ?? player.id ?? player.PERSON_ID);
   if (!playerId) return null;
   return {
     player_id: playerId,
-    full_name: player.full_name ?? null,
-    current_team_id: player.current_team_id ?? player.team_id ?? null,
-    is_active: normalizeBooleanText(player.is_active),
+    full_name: cleanText(
+      player.full_name ?? player.DISPLAY_FIRST_LAST ?? player.PLAYER_NAME ?? player.name
+    ),
+    current_team_id: player.current_team_id ?? player.team_id ?? player.TEAM_ID ?? null,
+    is_active: normalizeActiveFlag(player.is_active ?? player.ROSTERSTATUS),
   };
 }
 
@@ -628,14 +745,22 @@ function mapTeamDetailRow(detail, teamId) {
 function mapPlayerAwardRow(row, playerId) {
   if (!row) return null;
   const resolvedPlayerId = toPlayerId(playerId);
-  if (!resolvedPlayerId || !row.season || !row.description) return null;
+  const season = cleanText(row.season ?? row.SEASON);
+  const description = cleanText(row.description ?? row.DESCRIPTION);
+  if (!resolvedPlayerId || !season || !description) return null;
   return {
     player_id: resolvedPlayerId,
-    season: row.season,
-    description: row.description,
-    subtype1: row.subtype1 ?? null,
-    month: row.month ?? null,
-    all_nba_team_number: row.all_nba_team_number ?? null,
+    season,
+    description,
+    team: cleanText(row.team ?? row.TEAM),
+    conference: cleanText(row.conference ?? row.CONFERENCE),
+    award_type: cleanText(row.award_type ?? row.TYPE),
+    subtype1: cleanText(row.subtype1 ?? row.SUBTYPE1),
+    subtype2: cleanText(row.subtype2 ?? row.SUBTYPE2),
+    subtype3: cleanText(row.subtype3 ?? row.SUBTYPE3),
+    month: cleanText(row.month ?? row.MONTH),
+    week: cleanText(row.week ?? row.WEEK),
+    all_nba_team_number: toInteger(row.all_nba_team_number ?? row.ALL_NBA_TEAM_NUMBER),
   };
 }
 
@@ -668,6 +793,249 @@ function mapPlayerSeasonStatsRow(row, season, seasonType) {
       row.true_shooting_pct_pg ?? row.TS_PCT ?? row.true_shooting_pct
     ),
     season_type: resolvedSeasonType,
+  };
+}
+
+function normalizeLeagueStanding(row, teamsById = new Map()) {
+  if (!row) return null;
+  const teamId = toInteger(row.team_id ?? row.TeamID ?? row.teamId);
+  if (teamId === null) return null;
+  const team = teamsById.get(teamId) || null;
+  const teamCity = cleanText(row.team_city ?? row.TeamCity) ?? team?.city ?? null;
+  const teamName = cleanText(row.team_name ?? row.TeamName) ?? team?.name ?? null;
+  const teamSlug = cleanText(row.team_slug ?? row.TeamSlug);
+  const teamAbbreviation =
+    cleanText(row.team_abbreviation ?? row.TeamAbbreviation) ??
+    team?.abbreviation ??
+    (teamSlug ? teamSlug.toUpperCase() : null);
+
+  return {
+    team_id: teamId,
+    team_name: teamName,
+    team_city: teamCity,
+    team_slug: teamSlug,
+    team_abbreviation: teamAbbreviation,
+    conference: cleanText(row.conference ?? row.Conference),
+    conference_rank: toInteger(row.conference_rank ?? row.PlayoffRank ?? row.LeagueRank),
+    division: cleanText(row.division ?? row.Division),
+    division_rank: toInteger(row.division_rank ?? row.DivisionRank),
+    wins: toInteger(row.wins ?? row.WINS),
+    losses: toInteger(row.losses ?? row.LOSSES),
+    win_pct: toNumber(row.win_pct ?? row.WinPCT),
+    games_back: toNumber(row.games_back ?? row.ConferenceGamesBack),
+    division_games_back: toNumber(row.division_games_back ?? row.DivisionGamesBack),
+    record: cleanText(row.record ?? row.Record),
+    home_record: cleanText(row.home_record ?? row.HOME),
+    road_record: cleanText(row.road_record ?? row.ROAD),
+    last_ten: cleanText(row.last_ten ?? row.L10),
+    streak: cleanText(row.streak ?? row.strCurrentStreak ?? row.CurrentStreak),
+  };
+}
+
+function normalizeServingTeamStatsRow(row, teamsById = new Map()) {
+  if (!row) return null;
+  const teamId = toInteger(row.team_id ?? row.TEAM_ID);
+  if (teamId === null) return null;
+  const team = teamsById.get(teamId) || null;
+  return {
+    team_id: teamId,
+    team_abbreviation:
+      cleanText(row.team_abbreviation ?? row.TEAM_ABBREVIATION) ?? team?.abbreviation ?? "UNK",
+    team_name: cleanText(row.team_name ?? row.TEAM_NAME) ?? team?.name ?? "Unknown",
+    games_played: toInteger(row.games_played ?? row.GP) ?? 0,
+    wins: toInteger(row.wins ?? row.W) ?? 0,
+    losses: toInteger(row.losses ?? row.L) ?? 0,
+    win_pct: toNumber(row.win_pct ?? row.W_PCT) ?? 0,
+    points: toNumber(row.points ?? row.PTS) ?? 0,
+    field_goal_pct: toNumber(row.field_goal_pct ?? row.FG_PCT) ?? 0,
+    rebounds: toNumber(row.rebounds ?? row.REB) ?? 0,
+    assists: toNumber(row.assists ?? row.AST) ?? 0,
+    steals: toNumber(row.steals ?? row.STL),
+    blocks: toNumber(row.blocks ?? row.BLK),
+    turnovers: toNumber(row.turnovers ?? row.TOV ?? row.TO),
+    plus_minus: toNumber(row.plus_minus ?? row.PLUS_MINUS),
+  };
+}
+
+function normalizePlayerInfoRow(row) {
+  if (!row) return null;
+  const playerId = toPlayerId(row.PERSON_ID ?? row.player_id);
+  if (!playerId) return null;
+  const firstName = cleanText(row.FIRST_NAME ?? row.first_name);
+  const lastName = cleanText(row.LAST_NAME ?? row.last_name);
+  const displayName =
+    cleanText(row.DISPLAY_FIRST_LAST ?? row.display_name) ||
+    [firstName, lastName].filter(Boolean).join(" ").trim() ||
+    null;
+  const birthdateRaw = cleanText(row.BIRTHDATE ?? row.birthdate);
+  const birthdate = birthdateRaw ? birthdateRaw.split("T")[0] : null;
+  return {
+    player_id: playerId,
+    first_name: firstName,
+    last_name: lastName,
+    display_name: displayName,
+    position: cleanText(row.POSITION ?? row.position),
+    jersey: cleanText(row.JERSEY ?? row.jersey),
+    birthdate,
+    school: cleanText(row.SCHOOL ?? row.school),
+    country: cleanText(row.COUNTRY ?? row.country),
+    season_experience: toInteger(row.SEASON_EXP ?? row.season_experience),
+    roster_status: cleanText(row.ROSTERSTATUS ?? row.roster_status),
+    from_year: toInteger(row.FROM_YEAR ?? row.from_year),
+    to_year: toInteger(row.TO_YEAR ?? row.to_year),
+    team_id: toInteger(row.TEAM_ID ?? row.team_id),
+    team_name: cleanText(row.TEAM_NAME ?? row.team_name),
+    team_abbreviation: cleanText(row.TEAM_ABBREVIATION ?? row.team_abbreviation),
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function normalizePlayerStatsSnapshotRow(row) {
+  if (!row) return null;
+  const playerId = toInteger(row.PLAYER_ID ?? row.player_id ?? row.personId);
+  if (playerId === null) return null;
+  const playerName =
+    cleanText(
+      row.PLAYER_NAME ?? row.player_name ?? row.PLAYER ?? row.playerName ?? row.name ?? row.nameI
+    ) || `Player ${playerId}`;
+  return {
+    player_id: playerId,
+    player_name: playerName,
+    team_id: toInteger(row.TEAM_ID ?? row.team_id ?? row.teamId),
+    team_abbreviation: cleanText(
+      row.TEAM_ABBREVIATION ?? row.TEAM ?? row.team_abbreviation ?? row.teamTricode
+    ),
+    points: toNumber(row.PTS ?? row.points) ?? 0,
+    rebounds: toNumber(row.REB ?? row.rebounds) ?? 0,
+    assists: toNumber(row.AST ?? row.assists) ?? 0,
+    minutes: toNumber(row.MIN ?? row.minutes),
+  };
+}
+
+function mapTeamHistoryRow(row, seasonType, perMode) {
+  if (!row) return null;
+  const teamId = toInteger(row.TEAM_ID ?? row.team_id);
+  const season = cleanText(row.YEAR ?? row.season);
+  if (teamId === null || !season) return null;
+  const finalsResult = cleanText(row.NBA_FINALS_APPEARANCE ?? row.finals_result);
+  return {
+    season,
+    team_id: teamId,
+    season_type: seasonType,
+    per_mode: perMode,
+    team_city: cleanText(row.TEAM_CITY ?? row.team_city),
+    team_name: cleanText(row.TEAM_NAME ?? row.team_name),
+    games_played: toInteger(row.GP ?? row.games_played),
+    wins: toInteger(row.WINS ?? row.wins),
+    losses: toInteger(row.LOSSES ?? row.losses),
+    win_pct: toNumber(row.WIN_PCT ?? row.win_pct),
+    conference_rank: toInteger(row.CONF_RANK ?? row.conference_rank),
+    division_rank: toInteger(row.DIV_RANK ?? row.division_rank),
+    playoff_wins: toInteger(row.PO_WINS ?? row.playoff_wins),
+    playoff_losses: toInteger(row.PO_LOSSES ?? row.playoff_losses),
+    finals_result: finalsResult && finalsResult.toLowerCase() !== "n/a" ? finalsResult : null,
+    points: toNumber(row.PTS ?? row.points),
+    field_goal_pct: toNumber(row.FG_PCT ?? row.field_goal_pct),
+    three_point_pct: toNumber(row.FG3_PCT ?? row.three_point_pct),
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function mapLeagueLeaderRow(row, season, seasonType, perMode, statCategory) {
+  if (!row) return null;
+  const playerId = toPlayerId(row.PLAYER_ID ?? row.player_id);
+  const rank = toInteger(row.RANK ?? row.rank);
+  if (!playerId || rank === null) return null;
+  const statValue =
+    toNumber(
+      row[statCategory] ??
+        row.stat_value ??
+        row.PTS ??
+        row.REB ??
+        row.AST ??
+        row.STL ??
+        row.BLK ??
+        row.TOV ??
+        row.EFF ??
+        row.MIN ??
+        row.FG_PCT ??
+        row.FG3_PCT ??
+        row.FT_PCT
+    ) ?? 0;
+  return {
+    season,
+    season_type: seasonType,
+    per_mode: perMode,
+    stat_category: statCategory,
+    rank,
+    player_id: playerId,
+    player_name: cleanText(row.PLAYER ?? row.player_name),
+    team_id: toInteger(row.TEAM_ID ?? row.team_id),
+    team_abbreviation: cleanText(row.TEAM ?? row.team_abbreviation),
+    games_played: toInteger(row.GP ?? row.games_played),
+    minutes: toNumber(row.MIN ?? row.minutes),
+    points: toNumber(row.PTS ?? row.points),
+    rebounds: toNumber(row.REB ?? row.rebounds),
+    assists: toNumber(row.AST ?? row.assists),
+    steals: toNumber(row.STL ?? row.steals),
+    blocks: toNumber(row.BLK ?? row.blocks),
+    turnovers: toNumber(row.TOV ?? row.turnovers),
+    efficiency: toNumber(row.EFF ?? row.efficiency),
+    stat_value: statValue,
+    updated_at: new Date().toISOString(),
+  };
+}
+
+function formatAwardHistory(rows) {
+  return (rows || [])
+    .map((row) => {
+      const year = cleanText(row.YEARAWARDED ?? row.YEAR);
+      const opponent = cleanText(row.OPPOSITETEAM);
+      if (!year) return null;
+      return opponent ? `${year} vs ${opponent}` : year;
+    })
+    .filter(Boolean);
+}
+
+function normalizeTeamDetailsPayload(payload, teamId) {
+  const background = extractResultSetRows(payload, "TeamBackground");
+  const championships = extractResultSetRows(payload, "TeamAwardsChampionships");
+  const conferenceTitles = extractResultSetRows(payload, "TeamAwardsConf");
+  const divisionTitles = extractResultSetRows(payload, "TeamAwardsDiv");
+  const hallOfFamers = extractResultSetRows(payload, "TeamHof");
+  const retired = extractResultSetRows(payload, "TeamRetired");
+  const social = extractResultSetRows(payload, "TeamSocialSites");
+  const info = background[0] || {};
+
+  return {
+    team_id: toInteger(info.TEAM_ID) ?? teamId,
+    abbreviation: cleanText(info.ABBREVIATION),
+    nickname: cleanText(info.NICKNAME),
+    city: cleanText(info.CITY),
+    year_founded: toInteger(info.YEARFOUNDED),
+    arena: cleanText(info.ARENA),
+    arena_capacity: toInteger(info.ARENACAPACITY),
+    owner: cleanText(info.OWNER),
+    general_manager: cleanText(info.GENERALMANAGER),
+    head_coach: cleanText(info.HEADCOACH),
+    dleague_affiliation: cleanText(info.DLEAGUEAFFILIATION),
+    championships: formatAwardHistory(championships),
+    conference_titles: formatAwardHistory(conferenceTitles),
+    division_titles: formatAwardHistory(divisionTitles),
+    hall_of_famers: hallOfFamers.map((row) => cleanText(row.PLAYER)).filter(Boolean),
+    retired_numbers: retired
+      .map((row) => {
+        const player = cleanText(row.PLAYER);
+        const jersey = cleanText(row.JERSEY);
+        if (!player) return null;
+        return jersey ? `${player} #${jersey}` : player;
+      })
+      .filter(Boolean),
+    social_sites: Object.fromEntries(
+      social
+        .map((row) => [cleanText(row.ACCOUNTTYPE)?.toLowerCase(), cleanText(row.WEBSITE_LINK)])
+        .filter(([accountType, url]) => accountType && url)
+    ),
   };
 }
 
@@ -831,21 +1199,29 @@ async function requestWithRetry(url) {
 async function statsRequestWithRetry(url) {
   let attempt = 0;
   let delay = CONFIG.apiRetryBaseDelayMs;
-  while (attempt <= CONFIG.apiRetryMax) {
+  const maxAttempts = Number.isFinite(CONFIG.statsRetryMax)
+    ? CONFIG.statsRetryMax
+    : CONFIG.apiRetryMax;
+  while (attempt <= maxAttempts) {
     throwIfCronBudgetExceeded("stats_request");
     let response;
     try {
       response = await fetch(url, {
         headers: NBA_STATS_HEADERS,
+        signal:
+          typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
+            ? AbortSignal.timeout(CONFIG.statsTimeoutMs)
+            : undefined,
       });
     } catch (error) {
-      if (attempt >= CONFIG.apiRetryMax) {
-        throw new Error(`NBA stats request failed: ${String(error)}`);
+      if (attempt >= maxAttempts) {
+        throw new Error(`NBA stats request failed (${url}): ${String(error)}`);
       }
       const waitMs = computeRetryWaitMs(delay);
       log("NBA stats request failed; backing off", {
         error: String(error),
         wait_ms: waitMs,
+        url,
       });
       await sleep(waitMs);
       delay *= 2;
@@ -858,16 +1234,17 @@ async function statsRequestWithRetry(url) {
     const body = await response.text();
     const retryable = response.status === 429 || response.status >= 500;
     if (!retryable) {
-      throw new Error(`NBA stats ${response.status}: ${body}`);
+      throw new Error(`NBA stats ${response.status} (${url}): ${body}`);
     }
-    if (attempt >= CONFIG.apiRetryMax) {
-      throw new Error(`NBA stats ${response.status}: ${body}`);
+    if (attempt >= maxAttempts) {
+      throw new Error(`NBA stats ${response.status} (${url}): ${body}`);
     }
     const retryAfter = Number(response.headers.get("retry-after"));
     const waitMs = computeRetryWaitMs(delay, retryAfter);
     log("NBA stats request throttled; backing off", {
       status: response.status,
       wait_ms: waitMs,
+      url,
     });
     await sleep(waitMs);
     delay *= 2;
@@ -1071,6 +1448,21 @@ async function supabaseUpsert(table, rows, onConflict, options = {}) {
     }
     throw error;
   }
+}
+
+async function writeApiSnapshot(cacheKeyValue, payload) {
+  await supabaseUpsert(
+    "api_snapshots",
+    [
+      {
+        cache_key: cacheKeyValue,
+        payload: JSON.stringify(payload),
+        updated_at: new Date().toISOString(),
+      },
+    ],
+    "cache_key",
+    { recordState: false }
+  );
 }
 
 async function supabaseSelect(table, query) {
@@ -1353,8 +1745,7 @@ async function getSupportedSeasons() {
   if (cachedSupportedSeasons && now - cachedSupportedSeasonsAt < 6 * 60 * 60 * 1000) {
     return cachedSupportedSeasons;
   }
-  const payload = await apiRequest("/v1/meta");
-  const seasons = payload.data?.supported_seasons || [];
+  const seasons = buildSupportedSeasons();
   if (!seasons.length) {
     throw new Error("Unable to determine supported seasons");
   }
@@ -1402,9 +1793,128 @@ async function getSeasonsToSyncWithOptions(options = {}) {
   return combined;
 }
 
+async function fetchCommonTeamYears() {
+  const url = new URL("https://stats.nba.com/stats/commonteamyears");
+  url.searchParams.set("LeagueID", "00");
+  const payload = await statsRequest(url.toString());
+  return extractResultSetRows(payload, "TeamYears");
+}
+
+async function fetchFranchiseHistory() {
+  const url = new URL("https://stats.nba.com/stats/franchisehistory");
+  url.searchParams.set("LeagueID", "00");
+  const payload = await statsRequest(url.toString());
+  return extractResultSetRows(payload, "FranchiseHistory");
+}
+
+async function fetchCommonAllPlayers(season) {
+  const url = new URL("https://stats.nba.com/stats/commonallplayers");
+  url.searchParams.set("IsOnlyCurrentSeason", "0");
+  url.searchParams.set("LeagueID", "00");
+  url.searchParams.set("Season", season);
+  const payload = await statsRequest(url.toString());
+  return extractResultSetRows(payload, "CommonAllPlayers");
+}
+
+async function fetchLeagueStandingsRows(season, seasonType = "Regular Season") {
+  const url = new URL("https://stats.nba.com/stats/leaguestandingsv3");
+  url.searchParams.set("LeagueID", "00");
+  url.searchParams.set("Season", season);
+  url.searchParams.set("SeasonType", seasonType);
+  const payload = await statsRequest(url.toString());
+  return extractResultSetRows(payload, "Standings");
+}
+
+async function fetchTeamDetailsPayload(teamId) {
+  const url = new URL("https://stats.nba.com/stats/teamdetails");
+  url.searchParams.set("TeamID", String(teamId));
+  return statsRequest(url.toString());
+}
+
+async function fetchPlayerAwardsRows(playerId) {
+  const url = new URL("https://stats.nba.com/stats/playerawards");
+  url.searchParams.set("PlayerID", String(playerId));
+  const payload = await statsRequest(url.toString());
+  return extractResultSetRows(payload, "PlayerAwards");
+}
+
+async function fetchCommonPlayerInfoRows(playerId) {
+  const url = new URL("https://stats.nba.com/stats/commonplayerinfo");
+  url.searchParams.set("PlayerID", String(playerId));
+  const payload = await statsRequest(url.toString());
+  return extractResultSetRows(payload, "CommonPlayerInfo");
+}
+
+async function fetchTeamYearByYearStatsRows(
+  teamId,
+  seasonType = "Regular Season",
+  perMode = "Totals"
+) {
+  const url = new URL("https://stats.nba.com/stats/teamyearbyyearstats");
+  url.searchParams.set("TeamID", String(teamId));
+  url.searchParams.set("LeagueID", "00");
+  url.searchParams.set("SeasonType", seasonType);
+  url.searchParams.set("PerMode", perMode);
+  const payload = await statsRequest(url.toString());
+  return extractResultSetRows(payload, "TeamStats");
+}
+
+async function fetchLeagueLeadersRows(
+  season,
+  seasonType = "Regular Season",
+  perMode = "PerGame",
+  statCategory = "PTS"
+) {
+  const url = new URL("https://stats.nba.com/stats/leagueleaders");
+  url.searchParams.set("LeagueID", "00");
+  url.searchParams.set("Season", season);
+  url.searchParams.set("SeasonType", seasonType);
+  url.searchParams.set("PerMode", perMode);
+  url.searchParams.set("StatCategory", statCategory);
+  const payload = await statsRequest(url.toString());
+  return extractResultSetRows(payload, "LeagueLeaders");
+}
+
 async function fetchTeamsForSeason(season) {
-  const payload = await apiRequest(`/v1/teams?season=${season}`);
-  return payload.data || [];
+  const seasonYear = seasonToYear(season);
+  const [teamYears, historyRows] = await Promise.all([
+    fetchCommonTeamYears(),
+    fetchFranchiseHistory(),
+  ]);
+  const historyByTeamId = new Map();
+  for (const row of historyRows) {
+    const teamId = toInteger(row.TEAM_ID);
+    if (teamId === null) continue;
+    const existing = historyByTeamId.get(teamId);
+    const nextEndYear = toInteger(row.END_YEAR) ?? -1;
+    const existingEndYear = existing ? toInteger(existing.END_YEAR) ?? -1 : -1;
+    if (!existing || nextEndYear >= existingEndYear) {
+      historyByTeamId.set(teamId, row);
+    }
+  }
+
+  return teamYears
+    .filter((row) => {
+      if (seasonYear === null) return true;
+      const minYear = toInteger(row.MIN_YEAR);
+      const maxYear = toInteger(row.MAX_YEAR);
+      return (minYear === null || seasonYear >= minYear) && (maxYear === null || seasonYear <= maxYear);
+    })
+    .map((row) => {
+      const teamId = toInteger(row.TEAM_ID);
+      if (teamId === null) return null;
+      const history = historyByTeamId.get(teamId) || {};
+      return {
+        id: teamId,
+        team_id: teamId,
+        abbreviation: cleanText(row.ABBREVIATION),
+        city: cleanText(history.TEAM_CITY),
+        name: cleanText(history.TEAM_NAME),
+        conference: null,
+        division: null,
+      };
+    })
+    .filter(Boolean);
 }
 
 function normalizeGameFinderRows(rows, season) {
@@ -1560,13 +2070,92 @@ async function fetchBoxscoreAdvancedTeamStats(gameId) {
   return extractResultSetRows(payload, "TeamStats");
 }
 
-async function fetchLeagueDashPlayerStats(season, seasonType) {
+function normalizeAdvancedBoxscorePlayerRow(row) {
+  if (!row || typeof row !== "object") return null;
+  const pick = (...keys) => {
+    for (const key of keys) {
+      if (row[key] !== undefined && row[key] !== null) {
+        return row[key];
+      }
+    }
+    return null;
+  };
+  const playerId = toPlayerId(pick("PLAYER_ID", "personId", "player_id"));
+  if (!playerId) return null;
+  const firstName = toText(pick("firstName", "FIRST_NAME"));
+  const familyName = toText(pick("familyName", "LAST_NAME"));
+  const fallbackName = [firstName, familyName].filter(Boolean).join(" ").trim();
+  return {
+    player_id: playerId,
+    player_name: toText(pick("PLAYER_NAME", "playerName", "nameI")) || fallbackName || null,
+    team_id: toNumber(pick("TEAM_ID", "teamId")),
+    team_abbreviation: toText(pick("TEAM_ABBREVIATION", "teamTricode", "teamAbbreviation")),
+    minutes: toText(pick("MIN", "minutes")),
+    offensive_rating: toNumber(
+      pick("OFF_RATING", "E_OFF_RATING", "offensiveRating", "estimatedOffensiveRating")
+    ),
+    defensive_rating: toNumber(
+      pick("DEF_RATING", "E_DEF_RATING", "defensiveRating", "estimatedDefensiveRating")
+    ),
+    net_rating: toNumber(pick("NET_RATING", "E_NET_RATING", "netRating", "estimatedNetRating")),
+    usage_pct: toNumber(
+      pick("USG_PCT", "E_USG_PCT", "usagePercentage", "estimatedUsagePercentage")
+    ),
+    true_shooting_pct: toNumber(pick("TS_PCT", "trueShootingPercentage")),
+    effective_fg_pct: toNumber(pick("EFG_PCT", "effectiveFieldGoalPercentage")),
+    assist_pct: toNumber(pick("AST_PCT", "assistPercentage")),
+    assist_to_turnover: toNumber(pick("AST_TOV", "assistToTurnover")),
+    rebound_pct: toNumber(pick("REB_PCT", "reboundPercentage")),
+    offensive_rebound_pct: toNumber(pick("OREB_PCT", "offensiveReboundPercentage")),
+    defensive_rebound_pct: toNumber(pick("DREB_PCT", "defensiveReboundPercentage")),
+    pace: toNumber(pick("PACE", "E_PACE", "pace", "estimatedPace")),
+    pace_per40: toNumber(pick("PACE_PER40", "pacePer40")),
+    possessions: toNumber(pick("POSS", "possessions")),
+    pie: toNumber(pick("PIE", "pie")),
+  };
+}
+
+async function fetchBoxscoreAdvancedPlayers(gameId) {
+  const loadRows = async (endpoint, includeLeagueId) => {
+    const url = new URL(`https://stats.nba.com/stats/${endpoint}`);
+    url.searchParams.set("GameID", gameId);
+    url.searchParams.set("StartPeriod", "0");
+    url.searchParams.set("EndPeriod", "0");
+    url.searchParams.set("StartRange", "0");
+    url.searchParams.set("EndRange", "0");
+    url.searchParams.set("RangeType", "0");
+    if (includeLeagueId) {
+      url.searchParams.set("LeagueID", "00");
+    }
+    const payload = await statsRequest(url.toString());
+    return extractResultSetRows(payload, "PlayerStats");
+  };
+
+  let rows = await loadRows("boxscoreadvancedv2", true);
+  if (!rows.length) {
+    rows = await loadRows("boxscoreadvancedv3", false);
+  }
+  const byPlayer = new Map();
+  for (const row of rows) {
+    const normalized = normalizeAdvancedBoxscorePlayerRow(row);
+    if (!normalized || !normalized.player_id) continue;
+    byPlayer.set(normalized.player_id, normalized);
+  }
+  return Array.from(byPlayer.values());
+}
+
+async function fetchLeagueDashPlayerStats(
+  season,
+  seasonType = "Regular Season",
+  measureType = "Base",
+  perMode = "PerGame"
+) {
   const url = new URL("https://stats.nba.com/stats/leaguedashplayerstats");
   const params = {
     Season: season,
     SeasonType: seasonType,
-    PerMode: "PerGame",
-    MeasureType: "Base",
+    PerMode: perMode,
+    MeasureType: measureType,
     LeagueID: "00",
     PlusMinus: "N",
     PaceAdjust: "N",
@@ -1641,6 +2230,39 @@ async function fetchLeagueDashPlayerBioStats(season, seasonType) {
   return extractResultSetRows(payload, "LeagueDashPlayerBioStats");
 }
 
+async function fetchLeagueDashTeamStats(season, measureType, perMode = "PerGame") {
+  const url = new URL("https://stats.nba.com/stats/leaguedashteamstats");
+  const params = {
+    Season: season,
+    SeasonType: "Regular Season",
+    PerMode: perMode,
+    MeasureType: measureType,
+    LeagueID: "00",
+    PlusMinus: "N",
+    PaceAdjust: "N",
+    Rank: "N",
+    Outcome: "",
+    Location: "",
+    Month: "0",
+    SeasonSegment: "",
+    DateFrom: "",
+    DateTo: "",
+    OpponentTeamID: "0",
+    VsConference: "",
+    VsDivision: "",
+    GameSegment: "",
+    Period: "0",
+    LastNGames: "0",
+    ShotClockRange: "",
+    DistanceRange: "",
+  };
+  Object.entries(params).forEach(([key, value]) => {
+    url.searchParams.set(key, String(value));
+  });
+  const payload = await statsRequest(url.toString());
+  return extractResultSetRows(payload, "LeagueDashTeamStats");
+}
+
 function mapPlayerBioRow(row) {
   if (!row) return null;
   const playerId = toPlayerId(row.PLAYER_ID ?? row.player_id ?? row.PERSON_ID ?? row.id);
@@ -1657,27 +2279,19 @@ function mapPlayerBioRow(row) {
 }
 
 async function fetchPlayerIds(season, { activeOnly = false, maxPlayers = 0 } = {}) {
-  let page = 1;
-  const pageSize = 200;
+  throwIfCronBudgetExceeded("players_page");
+  const rows = await fetchCommonAllPlayers(season);
   const players = [];
-  const activeParam = activeOnly ? "&active=true" : "";
-  while (true) {
-    throwIfCronBudgetExceeded("players_page");
-    const payload = await apiRequest(
-      `/v1/players?season=${season}&page=${page}&page_size=${pageSize}${activeParam}`
-    );
-    const rows = payload.data || [];
-    for (const row of rows) {
-      if (row && row.id) {
-        players.push(row.id);
-      }
-      if (maxPlayers && players.length >= maxPlayers) {
-        return players;
-      }
+  for (const row of rows) {
+    const playerId = toPlayerId(row.PERSON_ID ?? row.player_id ?? row.id);
+    if (!playerId) continue;
+    if (activeOnly && normalizeActiveFlag(row.ROSTERSTATUS) !== "true") {
+      continue;
     }
-    const nextPage = payload.meta?.pagination?.next;
-    if (!nextPage) break;
-    page = nextPage;
+    players.push(playerId);
+    if (maxPlayers && players.length >= maxPlayers) {
+      break;
+    }
   }
   return players;
 }
@@ -1685,10 +2299,10 @@ async function fetchPlayerIds(season, { activeOnly = false, maxPlayers = 0 } = {
 async function refreshTeams() {
   const season = await getSeason();
   await withIngestionState("teams", async () => {
-    const payload = await apiRequest(`/v1/teams?season=${season}`);
-    const rows = (payload.data || []).map(mapTeamRow).filter(Boolean);
+    const teams = await fetchTeamsForSeason(season);
+    const rows = teams.map(mapTeamRow).filter(Boolean);
     await supabaseUpsert("teams", rows, "team_id");
-    await writeCache(CacheKeys.teams(season), payload.data, CONFIG.cacheTtlTeamsSec);
+    await writeCache(CacheKeys.teams(season), teams, CONFIG.cacheTtlTeamsSec);
     logUpsert("teams", rows.length, { season });
   }, { season });
 }
@@ -1711,35 +2325,14 @@ async function refreshGames() {
 }
 
 async function refreshPlayersForSeason(season) {
-  let page = 1;
-  const pageSize = 200;
-  let total = 0;
-  while (true) {
-    throwIfCronBudgetExceeded("players_page");
-    const payload = await apiRequest(
-      `/v1/players?season=${season}&page=${page}&page_size=${pageSize}`
-    );
-    const rows = (payload.data || []).map(mapPlayerRow).filter(Boolean);
-    if (rows.length) {
-      await supabaseUpsert("players", rows, "player_id");
-      total += rows.length;
-    }
-    const nextPage = payload.meta?.pagination?.next;
-    if (!nextPage) break;
-    page = nextPage;
+  throwIfCronBudgetExceeded("players_page");
+  const players = await fetchCommonAllPlayers(season);
+  const rows = players.map(mapPlayerRow).filter(Boolean);
+  if (rows.length) {
+    await supabaseUpsert("players", rows, "player_id");
   }
-  logUpsert("players", total, { season });
-
-  try {
-    const bioRows = await fetchLeagueDashPlayerBioStats(season, "Regular Season");
-    const updates = (bioRows || []).map(mapPlayerBioRow).filter(Boolean);
-    if (updates.length) {
-      await supabaseUpsert("players", updates, "player_id");
-      logUpsert("players_bio", updates.length, { season });
-    }
-  } catch (error) {
-    log("Failed to refresh player bio stats", { season, error: String(error) });
-  }
+  await invalidateCachePattern(CachePatterns.players(season));
+  logUpsert("players", rows.length, { season });
 }
 
 async function refreshPlayers() {
@@ -1792,22 +2385,88 @@ async function refreshPlayers() {
   }, cursor);
 }
 
+async function refreshPlayerBioStatsForSeason(season) {
+  const seasonType = "Regular Season";
+  const bioRows = await fetchLeagueDashPlayerBioStats(season, seasonType);
+  const updates = (bioRows || []).map(mapPlayerBioRow).filter(Boolean);
+  if (updates.length) {
+    await supabaseUpsert("players", updates, "player_id");
+  }
+  await invalidateCachePattern(CachePatterns.playerBio(season));
+  logUpsert("players_bio", updates.length, { season });
+}
+
+async function refreshPlayerBioStats() {
+  const seasons = await getSeasonsToSync();
+  await withIngestionState("players_bio", async () => {
+    const errors = [];
+    for (const season of seasons) {
+      throwIfCronBudgetExceeded("players_bio_season");
+      try {
+        await refreshPlayerBioStatsForSeason(season);
+      } catch (error) {
+        errors.push({ season, error: String(error) });
+        log("players_bio season failed", { season, error: String(error) });
+      }
+    }
+    if (errors.length) {
+      throw new Error(`players_bio failed for ${errors.length} season(s)`);
+    }
+  }, { seasons });
+}
+
+async function refreshPlayerInfo() {
+  const season = await getSeason();
+  const playerIds = await fetchPlayerIds(season, { activeOnly: false });
+  await withIngestionState("player_info", async () => {
+    await runWithConcurrency(playerIds, CONFIG.boxscoreConcurrency, async (playerId) => {
+      throwIfCronBudgetExceeded("player_info_player");
+      const rows = await fetchCommonPlayerInfoRows(playerId);
+      const info = normalizePlayerInfoRow(rows[0]);
+      if (!info) return;
+      await supabaseUpsert("player_info", [info], "player_id");
+      await writeCache(
+        CacheKeys.playerInfo(playerId),
+        info,
+        CONFIG.cacheTtlTeamDetailsSec
+      );
+    });
+    logUpsert("player_info", playerIds.length, { season, player_count: playerIds.length });
+  }, { season });
+}
+
 async function refreshStandings() {
   const seasons = await getSeasonsToSync();
+  const seasonTypes = ["Regular Season", "Playoffs"];
   await withIngestionState("league_standings", async () => {
     for (const season of seasons) {
-      throwIfCronBudgetExceeded("standings_season");
-      const payload = await apiRequest(`/v1/league_standings?season=${season}`);
-      const rows = (payload.data || [])
-        .map((row) => mapLeagueStandingRow(row, season))
-        .filter(Boolean);
-      await supabaseUpsert("league_standings", rows, "season,team_id");
-      await writeCache(
-        CacheKeys.standings(season),
-        payload.data || [],
-        CONFIG.cacheTtlStandingsSec
+      const teams = await fetchTeamsForSeason(season);
+      const teamsById = new Map(
+        teams
+          .map((team) => mapTeamRow(team))
+          .filter(Boolean)
+          .map((team) => [team.team_id, team])
       );
-      logUpsert("league_standings", rows.length, { season });
+      let total = 0;
+      for (const seasonType of seasonTypes) {
+        throwIfCronBudgetExceeded("standings_season");
+        const standings = (await fetchLeagueStandingsRows(season, seasonType))
+          .map((row) => normalizeLeagueStanding(row, teamsById))
+          .filter(Boolean);
+        const cacheKeyValue = CacheKeys.standings(season, "00", seasonType);
+        await writeCache(cacheKeyValue, standings, CONFIG.cacheTtlStandingsSec);
+        if (seasonType === "Regular Season") {
+          const rows = standings
+            .map((row) => mapLeagueStandingRow(row, season))
+            .filter(Boolean);
+          await supabaseUpsert("league_standings", rows, "season,team_id");
+          total += rows.length;
+        } else {
+          await writeApiSnapshot(cacheKeyValue, standings);
+          total += standings.length;
+        }
+      }
+      logUpsert("league_standings", total, { season, season_types: seasonTypes });
     }
   }, { seasons });
 }
@@ -1815,118 +2474,62 @@ async function refreshStandings() {
 async function refreshTeamStats() {
   const seasons = await getSeasonsToSync();
   await withIngestionState("team_advanced_stats", async () => {
+    const snapshotCombos = [
+      ["Base", "PerGame"],
+      ["Base", "Totals"],
+      ["Advanced", "PerGame"],
+      ["Advanced", "Totals"],
+      ["FourFactors", "PerGame"],
+      ["FourFactors", "Totals"],
+    ];
     for (const season of seasons) {
       throwIfCronBudgetExceeded("team_stats_season");
-      const games = await loadGamesForSeason(season);
-      const aggregates = new Map();
-
-      const ensureEntry = (teamId) => {
-        if (!aggregates.has(teamId)) {
-          aggregates.set(teamId, {
-            team_id: teamId,
-            games_played: 0,
-            points_for: 0,
-            points_against: 0,
-            ortg_sum: 0,
-            ortg_count: 0,
-            drtg_sum: 0,
-            drtg_count: 0,
-            netrtg_sum: 0,
-            netrtg_count: 0,
-            assists_sum: 0,
-            assists_count: 0,
-            turnovers_sum: 0,
-            turnovers_count: 0,
-          });
-        }
-        return aggregates.get(teamId);
-      };
-
-      let gameIndex = 0;
-      for (const game of games) {
-        if (gameIndex % 50 === 0) {
-          throwIfCronBudgetExceeded("team_stats_games");
-        }
-        gameIndex += 1;
-        const homeId = toNumber(game.home_team_id ?? game.HOME_TEAM_ID);
-        const awayId = toNumber(game.away_team_id ?? game.AWAY_TEAM_ID);
-        const homeScore = toNumber(game.home_team_score ?? game.HOME_TEAM_SCORE);
-        const awayScore = toNumber(game.away_team_score ?? game.AWAY_TEAM_SCORE);
-        if (homeId !== null && homeScore !== null) {
-          const entry = ensureEntry(homeId);
-          entry.games_played += 1;
-          entry.points_for += homeScore;
-          if (awayScore !== null) {
-            entry.points_against += awayScore;
-          }
-        }
-        if (awayId !== null && awayScore !== null) {
-          const entry = ensureEntry(awayId);
-          entry.games_played += 1;
-          entry.points_for += awayScore;
-          if (homeScore !== null) {
-            entry.points_against += homeScore;
-          }
-        }
+      const teams = await fetchTeamsForSeason(season);
+      const teamsById = new Map(
+        teams
+          .map((team) => mapTeamRow(team))
+          .filter(Boolean)
+          .map((team) => [team.team_id, team])
+      );
+      const baseRows = await fetchLeagueDashTeamStats(season, "Base");
+      const advancedRows = await fetchLeagueDashTeamStats(season, "Advanced");
+      const baseByTeam = new Map();
+      const advancedByTeam = new Map();
+      for (const row of baseRows) {
+        const teamId = toNumber(row.TEAM_ID ?? row.team_id);
+        if (teamId === null) continue;
+        baseByTeam.set(teamId, row);
+      }
+      for (const row of advancedRows) {
+        const teamId = toNumber(row.TEAM_ID ?? row.team_id);
+        if (teamId === null) continue;
+        advancedByTeam.set(teamId, row);
       }
 
-      const gameIds = games
-        .filter((game) => {
-          const homeScore = toNumber(game.home_team_score ?? game.HOME_TEAM_SCORE);
-          const awayScore = toNumber(game.away_team_score ?? game.AWAY_TEAM_SCORE);
-          return Boolean(game.game_id) && homeScore !== null && awayScore !== null;
-        })
-        .map((game) => game.game_id);
-
-      await runWithConcurrency(gameIds, CONFIG.boxscoreConcurrency, async (gameId) => {
-        const teamRows = await fetchBoxscoreAdvancedTeamStats(gameId);
-        for (const row of teamRows) {
-          const teamId = toNumber(row.TEAM_ID);
-          if (teamId === null) continue;
-          const entry = ensureEntry(teamId);
-          const ortg = toNumber(row.OFF_RATING ?? row.OFF_RTG ?? row.E_OFF_RATING);
-          if (ortg !== null) {
-            entry.ortg_sum += ortg;
-            entry.ortg_count += 1;
-          }
-          const drtg = toNumber(row.DEF_RATING ?? row.DEF_RTG ?? row.E_DEF_RATING);
-          if (drtg !== null) {
-            entry.drtg_sum += drtg;
-            entry.drtg_count += 1;
-          }
-          const netrtg = toNumber(row.NET_RATING ?? row.NET_RTG ?? row.NETRTG);
-          if (netrtg !== null) {
-            entry.netrtg_sum += netrtg;
-            entry.netrtg_count += 1;
-          }
-          const assists = toNumber(row.AST);
-          if (assists !== null) {
-            entry.assists_sum += assists;
-            entry.assists_count += 1;
-          }
-          const turnovers = toNumber(row.TOV ?? row.TO);
-          if (turnovers !== null) {
-            entry.turnovers_sum += turnovers;
-            entry.turnovers_count += 1;
-          }
-        }
-      });
-
+      const teamIds = new Set([...baseByTeam.keys(), ...advancedByTeam.keys()]);
       const rows = [];
-      for (const entry of aggregates.values()) {
-        const gamesPlayed = entry.games_played || 0;
+      for (const teamId of teamIds) {
+        const base = baseByTeam.get(teamId) || {};
+        const advanced = advancedByTeam.get(teamId) || {};
+        const ppg = toNumber(base.PTS ?? base.PTS_PG ?? base.PPG);
+        const ppgAllowed = toNumber(base.OPP_PTS ?? base.OPP_PTS_PG ?? base.OPP_PPG);
+        const apg = toNumber(base.AST ?? base.AST_PG);
+        const topg = toNumber(base.TOV ?? base.TO ?? base.TOV_PG);
+        const ortg = toNumber(advanced.OFF_RATING ?? advanced.OFF_RTG ?? advanced.E_OFF_RATING);
+        const drtg = toNumber(advanced.DEF_RATING ?? advanced.DEF_RTG ?? advanced.E_DEF_RATING);
+        const netrtg = toNumber(advanced.NET_RATING ?? advanced.NET_RTG ?? advanced.NETRTG);
         rows.push({
           season,
-          team_id: entry.team_id,
-          ppg: gamesPlayed ? entry.points_for / gamesPlayed : null,
-          ppg_allowed: gamesPlayed ? entry.points_against / gamesPlayed : null,
-          ortg: entry.ortg_count ? entry.ortg_sum / entry.ortg_count : null,
+          team_id: teamId,
+          ppg: ppg ?? null,
+          ppg_allowed: ppgAllowed ?? null,
+          ortg: ortg ?? null,
           ortg_rank: null,
-          drtg: entry.drtg_count ? entry.drtg_sum / entry.drtg_count : null,
+          drtg: drtg ?? null,
           drtg_rank: null,
-          apg: entry.assists_count ? entry.assists_sum / entry.assists_count : null,
-          topg: entry.turnovers_count ? entry.turnovers_sum / entry.turnovers_count : null,
-          netrtg: entry.netrtg_count ? entry.netrtg_sum / entry.netrtg_count : null,
+          apg: apg ?? null,
+          topg: topg ?? null,
+          netrtg: netrtg ?? null,
         });
       }
 
@@ -1935,6 +2538,31 @@ async function refreshTeamStats() {
 
       if (rows.length) {
         await supabaseUpsert("team_advanced_stats", rows, "season,team_id");
+      }
+      const servingRows = baseRows
+        .map((row) => normalizeServingTeamStatsRow(row, teamsById))
+        .filter(Boolean);
+      await writeCache(
+        InternalCacheKeys.teamStats(season, "Base", "PerGame"),
+        servingRows,
+        CONFIG.cacheTtlTeamStatsSec
+      );
+      await writeApiSnapshot(
+        InternalCacheKeys.teamStats(season, "Base", "PerGame"),
+        servingRows
+      );
+      for (const [measure, perMode] of snapshotCombos) {
+        if (measure === "Base" && perMode === "PerGame") {
+          continue;
+        }
+        const comboRows = await fetchLeagueDashTeamStats(season, measure, perMode);
+        const normalizedRows = comboRows
+          .map((row) => normalizeServingTeamStatsRow(row, teamsById))
+          .filter(Boolean);
+        await writeApiSnapshot(
+          InternalCacheKeys.teamStats(season, measure, perMode),
+          normalizedRows
+        );
       }
       logUpsert("team_advanced_stats", rows.length, { season });
     }
@@ -1947,15 +2575,89 @@ async function refreshTeamDetails() {
     throwIfCronBudgetExceeded("team_details");
     const teams = await fetchTeamsForSeason(season);
     await runWithConcurrency(teams, CONFIG.boxscoreConcurrency, async (team) => {
-      const payload = await apiRequest(`/v1/teams/${team.id}/details`);
-      const detail = payload.data || {};
+      const payload = await fetchTeamDetailsPayload(team.id);
+      const detail = normalizeTeamDetailsPayload(payload, team.id);
       const row = mapTeamDetailRow(detail, team.id);
       if (row && row.team_id) {
         await supabaseUpsert("team_details", [row], "team_id");
+        await writeCache(
+          CacheKeys.teamDetails(team.id),
+          detail,
+          CONFIG.cacheTtlTeamDetailsSec
+        );
       }
     });
     logUpsert("team_details", teams.length, { season });
   }, { season });
+}
+
+async function refreshTeamHistory() {
+  const season = await getSeason();
+  const teams = await fetchTeamsForSeason(season);
+  const combos = [
+    ["Regular Season", "Totals"],
+    ["Regular Season", "PerGame"],
+    ["Playoffs", "Totals"],
+    ["Playoffs", "PerGame"],
+  ];
+  await withIngestionState("team_season_history", async () => {
+    let total = 0;
+    for (const [seasonType, perMode] of combos) {
+      await runWithConcurrency(teams, CONFIG.boxscoreConcurrency, async (team) => {
+        throwIfCronBudgetExceeded("team_history_team");
+        const rows = (await fetchTeamYearByYearStatsRows(team.id, seasonType, perMode))
+          .map((row) => mapTeamHistoryRow(row, seasonType, perMode))
+          .filter(Boolean);
+        if (!rows.length) return;
+        total += rows.length;
+        await supabaseUpsert(
+          "team_season_history",
+          rows,
+          "season,team_id,season_type,per_mode"
+        );
+        await writeCache(
+          CacheKeys.teamHistory(team.id, seasonType, perMode),
+          rows,
+          CONFIG.cacheTtlTeamDetailsSec
+        );
+      });
+    }
+    logUpsert("team_season_history", total, { team_count: teams.length });
+  }, { season });
+}
+
+async function refreshLeagueLeaders() {
+  const seasons = await getSeasonsToSync();
+  const seasonTypes = ["Regular Season", "Playoffs"];
+  const perModes = ["PerGame", "Totals"];
+  await withIngestionState("league_leader_rows", async () => {
+    let total = 0;
+    for (const season of seasons) {
+      for (const seasonType of seasonTypes) {
+        for (const perMode of perModes) {
+          for (const statCategory of LEAGUE_LEADER_STAT_CATEGORIES) {
+            throwIfCronBudgetExceeded("league_leaders_combo");
+            const rows = (await fetchLeagueLeadersRows(
+              season,
+              seasonType,
+              perMode,
+              statCategory
+            ))
+              .map((row) => mapLeagueLeaderRow(row, season, seasonType, perMode, statCategory))
+              .filter(Boolean);
+            if (!rows.length) continue;
+            total += rows.length;
+            await supabaseUpsert(
+              "league_leader_rows",
+              rows,
+              "season,season_type,per_mode,stat_category,rank,player_id"
+            );
+          }
+        }
+      }
+    }
+    logUpsert("league_leader_rows", total, { seasons });
+  }, { seasons });
 }
 
 async function refreshPlayerAwards() {
@@ -1967,44 +2669,484 @@ async function refreshPlayerAwards() {
   await withIngestionState("player_awards", async () => {
     let total = 0;
     await runWithConcurrency(playerIds, CONFIG.boxscoreConcurrency, async (playerId) => {
-      const payload = await apiRequest(`/v1/players/${playerId}/awards`);
-      const rows = (payload.data || [])
+      const rows = (await fetchPlayerAwardsRows(playerId))
         .map((row) => mapPlayerAwardRow(row, playerId))
         .filter(Boolean);
       if (rows.length) {
         await supabaseUpsert("player_awards", rows, "player_id,season,description");
-        total += rows.length;
       }
+      await writeCache(
+        CacheKeys.playerAwards(playerId),
+        rows,
+        CONFIG.cacheTtlPlayerAwardsSec
+      );
+      total += rows.length;
     });
     logUpsert("player_awards", total, { season, player_count: playerIds.length });
   }, { season, player_count: playerIds.length });
 }
 
 async function refreshPlayerSeasonStatsForSeason(season) {
-  const seasonType = "Regular Season";
-  const payloadRows = await fetchLeagueDashPlayerStats(season, seasonType);
-  const rows = payloadRows
-    .map((row) => mapPlayerSeasonStatsRow(row, season, seasonType))
-    .filter(Boolean);
-  if (rows.length) {
-    await supabaseUpsert("player_season_stats", rows, "season,player_id,season_type");
+  await invalidateCachePattern(CachePatterns.playerStats(season));
+  const seasonTypes = ["Regular Season", "Playoffs"];
+  const measures = ["Base", "Advanced", "Misc", "Scoring", "Usage"];
+  const perModes = ["PerGame", "Totals"];
+  let totalStructuredRows = 0;
+  let totalSnapshotRows = 0;
+  for (const seasonType of seasonTypes) {
+    throwIfCronBudgetExceeded("player_season_stats_combo");
+    const baseRows = await fetchLeagueDashPlayerStats(season, seasonType, "Base", "PerGame");
+    const structuredRows = baseRows
+      .map((row) => mapPlayerSeasonStatsRow(row, season, seasonType))
+      .filter(Boolean);
+    if (structuredRows.length) {
+      await supabaseUpsert(
+        "player_season_stats",
+        structuredRows,
+        "season,player_id,season_type"
+      );
+      totalStructuredRows += structuredRows.length;
+    }
+
+    for (const measure of measures) {
+      for (const perMode of perModes) {
+        throwIfCronBudgetExceeded("player_stats_snapshot_combo");
+        const comboRows =
+          measure === "Base" && perMode === "PerGame"
+            ? baseRows
+            : await fetchLeagueDashPlayerStats(season, seasonType, measure, perMode);
+        const snapshotRows = comboRows
+          .map((row) => normalizePlayerStatsSnapshotRow(row))
+          .filter(Boolean);
+        const cacheKeyValue = CacheKeys.playerStats(season, seasonType, measure, perMode);
+        await writeCache(cacheKeyValue, snapshotRows, CONFIG.cacheTtlPlayerStatsSec);
+        await writeApiSnapshot(cacheKeyValue, snapshotRows);
+        totalSnapshotRows += snapshotRows.length;
+      }
+    }
   }
-  logUpsert("player_season_stats", rows.length, { season });
+  logUpsert("player_season_stats", totalStructuredRows, { season });
+  logUpsert("player_stats_snapshots", totalSnapshotRows, { season });
 }
 
 async function refreshPlayerSeasonStats() {
   const seasons = await getSeasonsToSync();
   await withIngestionState("player_season_stats", async () => {
+    const errors = [];
     for (const season of seasons) {
       throwIfCronBudgetExceeded("player_season_stats_season");
-      await refreshPlayerSeasonStatsForSeason(season);
+      try {
+        await refreshPlayerSeasonStatsForSeason(season);
+      } catch (error) {
+        errors.push({ season, error: String(error) });
+        log("player_season_stats season failed", { season, error: String(error) });
+      }
+    }
+    if (errors.length) {
+      throw new Error(`player_season_stats failed for ${errors.length} season(s)`);
     }
   }, { seasons });
 }
 
+function parseDateTime(value) {
+  const text = cleanText(value);
+  if (!text) return null;
+  const normalized = text.replace("Z", "+00:00");
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+function normalizeTraditionalBoxscorePlayer(row) {
+  const playerId = toInteger(row.PLAYER_ID);
+  const teamId = toInteger(row.TEAM_ID);
+  if (playerId === null || teamId === null) return null;
+  return {
+    player_id: playerId,
+    player_name: cleanText(row.PLAYER_NAME) || "Unknown player",
+    team_id: teamId,
+    team_abbreviation: cleanText(row.TEAM_ABBREVIATION) || "UNK",
+    team_city: cleanText(row.TEAM_CITY),
+    start_position: cleanText(row.START_POSITION),
+    comment: cleanText(row.COMMENT),
+    minutes: cleanText(row.MIN),
+    field_goals_made: toNumber(row.FGM),
+    field_goals_attempted: toNumber(row.FGA),
+    field_goal_pct: toNumber(row.FG_PCT),
+    three_point_made: toNumber(row.FG3M),
+    three_point_attempted: toNumber(row.FG3A),
+    three_point_pct: toNumber(row.FG3_PCT),
+    free_throws_made: toNumber(row.FTM),
+    free_throws_attempted: toNumber(row.FTA),
+    free_throw_pct: toNumber(row.FT_PCT),
+    offensive_rebounds: toNumber(row.OREB),
+    defensive_rebounds: toNumber(row.DREB),
+    rebounds: toNumber(row.REB),
+    assists: toNumber(row.AST),
+    steals: toNumber(row.STL),
+    blocks: toNumber(row.BLK),
+    turnovers: toNumber(row.TO),
+    fouls: toNumber(row.PF),
+    points: toNumber(row.PTS),
+    plus_minus: toNumber(row.PLUS_MINUS),
+  };
+}
+
+function normalizeBoxscoreTeamTotals(row) {
+  const teamId = toInteger(row.TEAM_ID);
+  if (teamId === null) return null;
+  return {
+    team_id: teamId,
+    team_name: cleanText(row.TEAM_NAME),
+    team_abbreviation: cleanText(row.TEAM_ABBREVIATION),
+    minutes: cleanText(row.MIN),
+    field_goals_made: toNumber(row.FGM),
+    field_goals_attempted: toNumber(row.FGA),
+    field_goal_pct: toNumber(row.FG_PCT),
+    three_point_made: toNumber(row.FG3M),
+    three_point_attempted: toNumber(row.FG3A),
+    three_point_pct: toNumber(row.FG3_PCT),
+    free_throws_made: toNumber(row.FTM),
+    free_throws_attempted: toNumber(row.FTA),
+    free_throw_pct: toNumber(row.FT_PCT),
+    offensive_rebounds: toNumber(row.OREB),
+    defensive_rebounds: toNumber(row.DREB),
+    rebounds: toNumber(row.REB),
+    assists: toNumber(row.AST),
+    steals: toNumber(row.STL),
+    blocks: toNumber(row.BLK),
+    turnovers: toNumber(row.TO),
+    fouls: toNumber(row.PF),
+    points: toNumber(row.PTS),
+    plus_minus: toNumber(row.PLUS_MINUS),
+  };
+}
+
+function normalizeStarterBenchRow(row) {
+  const teamId = toInteger(row.TEAM_ID);
+  if (teamId === null) return null;
+  return {
+    team_id: teamId,
+    team_name: cleanText(row.TEAM_NAME),
+    team_abbreviation: cleanText(row.TEAM_ABBREVIATION),
+    label: cleanText(row.STARTERS_BENCH) || "",
+    minutes: cleanText(row.MIN),
+    field_goals_made: toNumber(row.FGM),
+    field_goals_attempted: toNumber(row.FGA),
+    field_goal_pct: toNumber(row.FG_PCT),
+    three_point_made: toNumber(row.FG3M),
+    three_point_attempted: toNumber(row.FG3A),
+    three_point_pct: toNumber(row.FG3_PCT),
+    free_throws_made: toNumber(row.FTM),
+    free_throws_attempted: toNumber(row.FTA),
+    free_throw_pct: toNumber(row.FT_PCT),
+    offensive_rebounds: toNumber(row.OREB),
+    defensive_rebounds: toNumber(row.DREB),
+    rebounds: toNumber(row.REB),
+    assists: toNumber(row.AST),
+    steals: toNumber(row.STL),
+    blocks: toNumber(row.BLK),
+    turnovers: toNumber(row.TO),
+    fouls: toNumber(row.PF),
+    points: toNumber(row.PTS),
+  };
+}
+
+function formatLeaderLine(row) {
+  const parts = [];
+  if (row.points !== null && row.points !== undefined) parts.push(`${Math.trunc(row.points)} PTS`);
+  if (row.rebounds !== null && row.rebounds !== undefined) {
+    parts.push(`${Math.trunc(row.rebounds)} REB`);
+  }
+  if (row.assists !== null && row.assists !== undefined) {
+    parts.push(`${Math.trunc(row.assists)} AST`);
+  }
+  return parts.join(" • ");
+}
+
+function buildTeamLeaders(players, teamId) {
+  return (players || [])
+    .filter((row) => row.team_id === teamId && !row.comment)
+    .sort((left, right) => (right.points ?? 0) - (left.points ?? 0))
+    .slice(0, 3)
+    .map((row) => ({
+      player_id: row.player_id,
+      player_name: row.player_name,
+      points: row.points,
+      rebounds: row.rebounds,
+      assists: row.assists,
+      stat_line: formatLeaderLine(row),
+    }));
+}
+
+function buildLineScore(rows, homeTeamId, awayTeamId) {
+  const byTeamId = new Map(
+    (rows || [])
+      .map((row) => [toInteger(row.TEAM_ID), row])
+      .filter(([teamId]) => teamId !== null)
+  );
+  const homeRow = byTeamId.get(homeTeamId) || {};
+  const awayRow = byTeamId.get(awayTeamId) || {};
+  const periods = [];
+  for (let period = 1; period <= 4; period += 1) {
+    periods.push({
+      label: `Q${period}`,
+      home: toInteger(homeRow[`PTS_QTR${period}`]) ?? 0,
+      away: toInteger(awayRow[`PTS_QTR${period}`]) ?? 0,
+    });
+  }
+  for (let overtime = 1; overtime <= 10; overtime += 1) {
+    const home = toInteger(homeRow[`PTS_OT${overtime}`]) ?? 0;
+    const away = toInteger(awayRow[`PTS_OT${overtime}`]) ?? 0;
+    if (home === 0 && away === 0) continue;
+    periods.push({
+      label: overtime === 1 ? "OT" : `OT${overtime}`,
+      home,
+      away,
+    });
+  }
+  return periods;
+}
+
+function buildBoxscoreTeamCard(teamId, isHome, lineScoreRows, players) {
+  const row = (lineScoreRows || []).find((item) => toInteger(item.TEAM_ID) === teamId) || {};
+  return {
+    team_id: teamId,
+    team_name: cleanText(row.TEAM_NICKNAME ?? row.TEAM_NAME),
+    team_city: cleanText(row.TEAM_CITY_NAME ?? row.TEAM_CITY),
+    team_abbreviation: cleanText(row.TEAM_ABBREVIATION),
+    score: toInteger(row.PTS) ?? 0,
+    record: cleanText(row.TEAM_WINS_LOSSES),
+    is_home: isHome,
+    leaders: buildTeamLeaders(players, teamId),
+  };
+}
+
+async function fetchBoxscoreFromStats(gameId) {
+  const traditionalUrl = new URL("https://stats.nba.com/stats/boxscoretraditionalv2");
+  traditionalUrl.searchParams.set("GameID", gameId);
+  traditionalUrl.searchParams.set("StartPeriod", "0");
+  traditionalUrl.searchParams.set("EndPeriod", "0");
+  traditionalUrl.searchParams.set("StartRange", "0");
+  traditionalUrl.searchParams.set("EndRange", "0");
+  traditionalUrl.searchParams.set("RangeType", "0");
+  const summaryUrl = new URL("https://stats.nba.com/stats/boxscoresummaryv2");
+  summaryUrl.searchParams.set("GameID", gameId);
+
+  const [traditionalPayload, summaryPayload] = await Promise.all([
+    statsRequest(traditionalUrl.toString()),
+    statsRequest(summaryUrl.toString()),
+  ]);
+
+  const traditionalPlayers = extractResultSetRows(traditionalPayload, "PlayerStats")
+    .map(normalizeTraditionalBoxscorePlayer)
+    .filter(Boolean);
+  const teamTotals = extractResultSetRows(traditionalPayload, "TeamStats")
+    .map(normalizeBoxscoreTeamTotals)
+    .filter(Boolean);
+  const starterBench = extractResultSetRows(traditionalPayload, "TeamStarterBenchStats")
+    .map(normalizeStarterBenchRow)
+    .filter(Boolean);
+  const gameSummary = extractResultSetRows(summaryPayload, "GameSummary")[0] || null;
+  if (!gameSummary) {
+    throw new Error(`Missing boxscore summary for game ${gameId}`);
+  }
+  const homeTeamId = toInteger(gameSummary.HOME_TEAM_ID);
+  const awayTeamId = toInteger(gameSummary.VISITOR_TEAM_ID);
+  if (homeTeamId === null || awayTeamId === null) {
+    throw new Error(`Missing boxscore teams for game ${gameId}`);
+  }
+
+  const lineScoreRows = extractResultSetRows(summaryPayload, "LineScore");
+  const gameInfo = extractResultSetRows(summaryPayload, "GameInfo")[0] || {};
+  const officials = extractResultSetRows(summaryPayload, "Officials")
+    .map((row) =>
+      [cleanText(row.FIRST_NAME), cleanText(row.LAST_NAME)].filter(Boolean).join(" ").trim()
+    )
+    .filter(Boolean);
+
+  let advancedPlayers = [];
+  try {
+    advancedPlayers = await fetchBoxscoreAdvancedPlayers(gameId);
+  } catch (error) {
+    log("Failed to refresh boxscore advanced players from stats.nba.com", {
+      game_id: gameId,
+      error: String(error),
+    });
+  }
+
+  return {
+    game_id: gameId,
+    status: cleanText(gameSummary.GAME_STATUS_TEXT),
+    game_date: parseDateTime(gameSummary.GAME_DATE_EST),
+    start_time: parseDateTime(gameSummary.GAME_DATE_EST),
+    arena: cleanText(gameInfo.ARENA),
+    attendance: toInteger(gameInfo.ATTENDANCE),
+    summary: null,
+    officials,
+    home_team: buildBoxscoreTeamCard(homeTeamId, true, lineScoreRows, traditionalPlayers),
+    away_team: buildBoxscoreTeamCard(awayTeamId, false, lineScoreRows, traditionalPlayers),
+    line_score: buildLineScore(lineScoreRows, homeTeamId, awayTeamId),
+    team_totals: teamTotals,
+    starter_bench: starterBench,
+    traditional_players: traditionalPlayers,
+    advanced_players: advancedPlayers,
+  };
+}
+
+function parseIsoMinutes(value) {
+  const text = cleanText(value);
+  if (!text) return null;
+  const match = text.match(/^PT(?:(\d+)M)?(?:(\d+)(?:\.\d+)?S)?$/);
+  if (!match) return text;
+  const minutes = Number(match[1] || 0);
+  const seconds = Number(match[2] || 0);
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function buildCdnPlayers(team) {
+  const teamId = toInteger(team.teamId);
+  return (team.players || []).map((player) => {
+    const stats = player.statistics || {};
+    return {
+      player_id: toInteger(player.personId),
+      player_name: cleanText(player.name) || "Unknown player",
+      team_id: teamId,
+      team_abbreviation: cleanText(team.teamTricode) || "UNK",
+      team_city: cleanText(team.teamCity),
+      start_position: cleanText(player.position),
+      comment: null,
+      minutes: parseIsoMinutes(stats.minutesCalculated ?? stats.minutes),
+      field_goals_made: toNumber(stats.fieldGoalsMade),
+      field_goals_attempted: toNumber(stats.fieldGoalsAttempted),
+      field_goal_pct: toNumber(stats.fieldGoalsPercentage),
+      three_point_made: toNumber(stats.threePointersMade),
+      three_point_attempted: toNumber(stats.threePointersAttempted),
+      three_point_pct: toNumber(stats.threePointersPercentage),
+      free_throws_made: toNumber(stats.freeThrowsMade),
+      free_throws_attempted: toNumber(stats.freeThrowsAttempted),
+      free_throw_pct: toNumber(stats.freeThrowsPercentage),
+      offensive_rebounds: toNumber(stats.reboundsOffensive),
+      defensive_rebounds: toNumber(stats.reboundsDefensive),
+      rebounds: toNumber(stats.reboundsTotal),
+      assists: toNumber(stats.assists),
+      steals: toNumber(stats.steals),
+      blocks: toNumber(stats.blocks),
+      turnovers: toNumber(stats.turnovers),
+      fouls: toNumber(stats.foulsPersonal),
+      points: toNumber(stats.points),
+      plus_minus: toNumber(stats.plusMinusPoints),
+    };
+  });
+}
+
+function buildCdnTeamTotals(team) {
+  const stats = team.statistics || {};
+  return {
+    team_id: toInteger(team.teamId),
+    team_name: cleanText(team.teamName),
+    team_abbreviation: cleanText(team.teamTricode),
+    minutes: parseIsoMinutes(stats.minutesCalculated ?? stats.minutes),
+    field_goals_made: toNumber(stats.fieldGoalsMade),
+    field_goals_attempted: toNumber(stats.fieldGoalsAttempted),
+    field_goal_pct: toNumber(stats.fieldGoalsPercentage),
+    three_point_made: toNumber(stats.threePointersMade),
+    three_point_attempted: toNumber(stats.threePointersAttempted),
+    three_point_pct: toNumber(stats.threePointersPercentage),
+    free_throws_made: toNumber(stats.freeThrowsMade),
+    free_throws_attempted: toNumber(stats.freeThrowsAttempted),
+    free_throw_pct: toNumber(stats.freeThrowsPercentage),
+    offensive_rebounds: toNumber(stats.reboundsOffensive),
+    defensive_rebounds: toNumber(stats.reboundsDefensive),
+    rebounds: toNumber(stats.reboundsTotal),
+    assists: toNumber(stats.assists),
+    steals: toNumber(stats.steals),
+    blocks: toNumber(stats.blocks),
+    turnovers: toNumber(stats.turnoversTotal ?? stats.turnovers),
+    fouls: toNumber(stats.foulsPersonal),
+    points: toNumber(stats.points),
+    plus_minus: toNumber(stats.plusMinusPoints),
+  };
+}
+
+function buildCdnLineScore(homeTeam, awayTeam) {
+  const homePeriods = homeTeam.periods || [];
+  const awayPeriods = awayTeam.periods || [];
+  const totalPeriods = Math.max(homePeriods.length, awayPeriods.length);
+  const rows = [];
+  for (let index = 0; index < totalPeriods; index += 1) {
+    rows.push({
+      label: index < 4 ? `Q${index + 1}` : index === 4 ? "OT" : `OT${index - 3}`,
+      home: toInteger(homePeriods[index]?.score) ?? 0,
+      away: toInteger(awayPeriods[index]?.score) ?? 0,
+    });
+  }
+  return rows;
+}
+
+function buildCdnTeamCard(team, isHome, players) {
+  const teamId = toInteger(team.teamId);
+  return {
+    team_id: teamId,
+    team_name: cleanText(team.teamName),
+    team_city: cleanText(team.teamCity),
+    team_abbreviation: cleanText(team.teamTricode),
+    score: toInteger(team.score) ?? 0,
+    record: null,
+    is_home: isHome,
+    leaders: buildTeamLeaders(players, teamId),
+  };
+}
+
+async function fetchBoxscoreFromCdn(gameId) {
+  const response = await fetch(
+    `https://cdn.nba.com/static/json/liveData/boxscore/boxscore_${gameId}.json`
+  );
+  if (!response.ok) {
+    throw new Error(`NBA boxscore CDN unavailable for ${gameId}`);
+  }
+  const payload = await response.json();
+  const game = payload.game || {};
+  const homeTeam = game.homeTeam || {};
+  const awayTeam = game.awayTeam || {};
+  const traditionalPlayers = [...buildCdnPlayers(homeTeam), ...buildCdnPlayers(awayTeam)].filter(
+    (row) => row.player_id !== null && row.team_id !== null
+  );
+
+  return {
+    game_id: cleanText(game.gameId) || gameId,
+    status: cleanText(game.gameStatusText),
+    game_date: parseDateTime(game.gameTimeUTC),
+    start_time: parseDateTime(game.gameTimeUTC),
+    arena: cleanText(game.arena?.arenaName ?? game.arena?.arenaCity),
+    attendance: toInteger(game.attendance),
+    summary: null,
+    officials: (game.officials || [])
+      .map((row) =>
+        [cleanText(row.firstName), cleanText(row.familyName)].filter(Boolean).join(" ").trim()
+      )
+      .filter(Boolean),
+    home_team: buildCdnTeamCard(homeTeam, true, traditionalPlayers),
+    away_team: buildCdnTeamCard(awayTeam, false, traditionalPlayers),
+    line_score: buildCdnLineScore(homeTeam, awayTeam),
+    team_totals: [buildCdnTeamTotals(homeTeam), buildCdnTeamTotals(awayTeam)].filter(
+      (row) => row.team_id !== null
+    ),
+    starter_bench: [],
+    traditional_players: traditionalPlayers,
+    advanced_players: [],
+  };
+}
+
 async function fetchBoxscore(gameId) {
-  const payload = await apiRequest(`/v1/boxscores/${gameId}`);
-  return payload.data;
+  try {
+    return await fetchBoxscoreFromStats(gameId);
+  } catch (error) {
+    log("Stats boxscore fetch failed; falling back to CDN", {
+      game_id: gameId,
+      error: String(error),
+    });
+    return fetchBoxscoreFromCdn(gameId);
+  }
 }
 
 function toBoxscoreRow(boxscore) {
@@ -2039,6 +3181,15 @@ function toBoxscorePlayers(boxscore) {
         row.usage_pct === undefined || row.usage_pct === null ? null : String(row.usage_pct),
       true_shooting_pct: row.true_shooting_pct ?? null,
       effective_fg_pct: row.effective_fg_pct ?? null,
+      assist_pct: row.assist_pct ?? null,
+      assist_to_turnover: row.assist_to_turnover ?? null,
+      rebound_pct: row.rebound_pct ?? null,
+      offensive_rebound_pct: row.offensive_rebound_pct ?? null,
+      defensive_rebound_pct: row.defensive_rebound_pct ?? null,
+      pace: row.pace ?? null,
+      pace_per40: row.pace_per40 ?? null,
+      possessions: row.possessions ?? null,
+      pie: row.pie ?? null,
     });
   }
 
@@ -2099,6 +3250,15 @@ function toBoxscorePlayers(boxscore) {
         row.usage_pct === undefined || row.usage_pct === null ? null : String(row.usage_pct),
       true_shooting_pct: row.true_shooting_pct ?? null,
       effective_fg_pct: row.effective_fg_pct ?? null,
+      assist_pct: row.assist_pct ?? null,
+      assist_to_turnover: row.assist_to_turnover ?? null,
+      rebound_pct: row.rebound_pct ?? null,
+      offensive_rebound_pct: row.offensive_rebound_pct ?? null,
+      defensive_rebound_pct: row.defensive_rebound_pct ?? null,
+      pace: row.pace ?? null,
+      pace_per40: row.pace_per40 ?? null,
+      possessions: row.possessions ?? null,
+      pie: row.pie ?? null,
     });
   }
 
@@ -2213,24 +3373,9 @@ async function refreshRecentBoxscores({ lookbackDays, entity = "boxscores" } = {
   const dateFrom = formatDateInTZ(CONFIG.timeZone, startDate);
   const dateTo = formatDateInTZ(CONFIG.timeZone, endDate);
   await withIngestionState(entity, async () => {
-    let page = 1;
-    const pageSize = 200;
-    const gameIds = [];
-    while (true) {
-      throwIfCronBudgetExceeded("boxscores_page");
-      const payload = await apiRequest(
-        `/v1/games?season=${season}&date_from=${dateFrom}&date_to=${dateTo}&page=${page}&page_size=${pageSize}`
-      );
-      const rows = payload.data || [];
-      for (const row of rows) {
-        if (row && row.game_id) {
-          gameIds.push(row.game_id);
-        }
-      }
-      const nextPage = payload.meta?.pagination?.next;
-      if (!nextPage) break;
-      page = nextPage;
-    }
+    throwIfCronBudgetExceeded("boxscores_page");
+    const games = await fetchGamesFromStats(season, { dateFrom, dateTo });
+    const gameIds = [...new Set(games.map((row) => row.game_id).filter(Boolean))];
     let totalPlayers = 0;
     throwIfCronBudgetExceeded("boxscores_updates");
     await runWithConcurrency(gameIds, CONFIG.boxscoreConcurrency, async (gameId) => {
@@ -2433,14 +3578,26 @@ async function runCron() {
     if (shouldRunMaintenanceTask("players")) {
       await runCronTask("players", CONFIG.playersIntervalMs, refreshPlayers);
     }
+    if (shouldRunMaintenanceTask("players_bio")) {
+      await runCronTask("players_bio", CONFIG.playersIntervalMs, refreshPlayerBioStats);
+    }
+    if (shouldRunMaintenanceTask("player_info")) {
+      await runCronTask("player_info", CONFIG.playersIntervalMs, refreshPlayerInfo);
+    }
     if (shouldRunMaintenanceTask("player_season_stats")) {
       await runCronTask("player_season_stats", CONFIG.playerStatsIntervalMs, refreshPlayerSeasonStats);
     }
     if (shouldRunMaintenanceTask("player_awards")) {
       await runCronTask("player_awards", CONFIG.playerAwardsIntervalMs, refreshPlayerAwards);
     }
+    if (shouldRunMaintenanceTask("league_leader_rows")) {
+      await runCronTask("league_leader_rows", CONFIG.teamStatsIntervalMs, refreshLeagueLeaders);
+    }
     if (shouldRunMaintenanceTask("team_details")) {
       await runCronTask("team_details", CONFIG.teamDetailsIntervalMs, refreshTeamDetails);
+    }
+    if (shouldRunMaintenanceTask("team_season_history")) {
+      await runCronTask("team_season_history", CONFIG.teamDetailsIntervalMs, refreshTeamHistory);
     }
     if (shouldRunMaintenanceTask("team_advanced_stats")) {
       await runCronTask("team_advanced_stats", CONFIG.teamStatsIntervalMs, refreshTeamStats);
@@ -2468,11 +3625,15 @@ async function runLive() {
   scheduleTask("live-games", CONFIG.livePollIntervalMs, refreshActiveGames, true);
   scheduleTask("teams", CONFIG.teamsIntervalMs, refreshTeams, true);
   scheduleTask("players", CONFIG.playersIntervalMs, refreshPlayers, true);
+  scheduleTask("players-bio", CONFIG.playersIntervalMs, refreshPlayerBioStats, true);
+  scheduleTask("player-info", CONFIG.playersIntervalMs, refreshPlayerInfo, true);
   scheduleTask("standings", CONFIG.standingsIntervalMs, refreshStandings, true);
   scheduleTask("player-awards", CONFIG.playerAwardsIntervalMs, refreshPlayerAwards, true);
   scheduleTask("player-season-stats", CONFIG.playerStatsIntervalMs, refreshPlayerSeasonStats, true);
+  scheduleTask("league-leaders", CONFIG.teamStatsIntervalMs, refreshLeagueLeaders, true);
   scheduleTask("team-advanced-stats", CONFIG.teamStatsIntervalMs, refreshTeamStats, true);
   scheduleTask("team-details", CONFIG.teamDetailsIntervalMs, refreshTeamDetails, true);
+  scheduleTask("team-history", CONFIG.teamDetailsIntervalMs, refreshTeamHistory, true);
   scheduleTask("boxscores-backfill", CONFIG.boxscoreBackfillIntervalMs, refreshRecentBoxscores, true);
 }
 
@@ -2500,7 +3661,9 @@ module.exports = {
   parseBoolean,
   toText,
   seasonToYear,
+  buildSupportedSeasons,
   normalizeBooleanText,
+  normalizeActiveFlag,
   toPlayerId,
   toNumber,
   cacheKey,
@@ -2518,6 +3681,13 @@ module.exports = {
   mapTeamRow,
   mapPlayerRow,
   mapGameRow,
+  normalizePlayerInfoRow,
+  normalizePlayerStatsSnapshotRow,
+  normalizeLeagueStanding,
+  normalizeServingTeamStatsRow,
+  normalizeTeamDetailsPayload,
+  mapTeamHistoryRow,
+  mapLeagueLeaderRow,
   applyRanks,
   computeRetryWaitMs,
   dedupeRowsForConflict,

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useMemo } from "react";
 
 type LocalGameTimeProps = {
   value?: string | null;
@@ -45,7 +45,7 @@ function formatLabel(value: string, showTime: boolean, tbdLabel: string): string
     return dateLabel;
   }
   if (!hasTime) {
-    return dateLabel;
+    return `${dateLabel} · ${tbdLabel}`;
   }
   return `${dateLabel} · ${TIME_ONLY_FORMATTER.format(date)}`;
 }
@@ -57,14 +57,11 @@ export default function LocalGameTime({
   showTime = true,
   tbdLabel = "TBD",
 }: LocalGameTimeProps) {
-  const [label, setLabel] = useState<string | null>(null);
-
-  useEffect(() => {
+  const label = useMemo(() => {
     if (!value) {
-      setLabel(null);
-      return;
+      return null;
     }
-    setLabel(formatLabel(value, showTime, tbdLabel));
+    return formatLabel(value, showTime, tbdLabel);
   }, [value, showTime, tbdLabel]);
 
   if (!value) {

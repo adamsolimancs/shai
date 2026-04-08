@@ -1,18 +1,7 @@
 /* eslint-disable @next/next/no-img-element */
 import Link from "next/link";
 
-import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
-
-type Game = {
-  game_id: string;
-  date: string;
-  start_time?: string | null;
-  home_team_name: string;
-  home_team_score: number;
-  away_team_name: string;
-  away_team_score: number;
-  status?: string | null;
-};
+import { nbaFetch } from "@/lib/nbaApi";
 
 type StoryAccent = "highlight" | "neutral" | "alert";
 
@@ -28,12 +17,6 @@ type NewsArticle = {
 
 type NewsStory = NewsArticle & {
   accent: StoryAccent;
-};
-
-type PulseMetric = {
-  label: string;
-  value: string;
-  detail: string;
 };
 
 const STORY_DATE = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
@@ -58,10 +41,7 @@ function accentClasses() {
 }
 
 export default async function NewsPage() {
-  const [news, games] = await Promise.all([
-    nbaFetch<NewsArticle[]>("/v1/news", { next: { revalidate: 300 } }),
-    nbaFetch<Game[]>(`/v1/games?season=${DEFAULT_SEASON}&page_size=24`),
-  ]);
+  const news = await nbaFetch<NewsArticle[]>("/v1/news", { next: { revalidate: 300 } });
 
   const stories: NewsStory[] = news
     .map((article) => ({
@@ -70,43 +50,6 @@ export default async function NewsPage() {
     }))
     .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())
     .slice(0, 12);
-
-  const pulseAggregate = games.slice(0, 12).reduce(
-    (acc, game) => {
-      const total = game.home_team_score + game.away_team_score;
-      const margin = Math.abs(game.home_team_score - game.away_team_score);
-      acc.totals += total;
-      acc.count += 1;
-      acc.dates.add(game.date);
-      if (margin <= 5) acc.clutch += 1;
-      if (margin > acc.largestMargin) {
-        acc.largestMargin = margin;
-        acc.largestLabel = `${game.home_team_name} vs ${game.away_team_name}`;
-      }
-      return acc;
-    },
-    {
-      totals: 0,
-      count: 0,
-      clutch: 0,
-      largestMargin: 0,
-      largestLabel: "",
-      dates: new Set<string>(),
-    },
-  );
-
-  const averageTotal = pulseAggregate.count ? `${Math.round(pulseAggregate.totals / pulseAggregate.count)}` : "—";
-  const clutchRate = pulseAggregate.count ? `${Math.round((pulseAggregate.clutch / pulseAggregate.count) * 100)}%` : "—";
-  const biggestSwing = pulseAggregate.largestMargin ? `${pulseAggregate.largestMargin} pts` : "—";
-  const pulseMetrics: PulseMetric[] = [
-    { label: "Avg total score", value: averageTotal, detail: `Across ${pulseAggregate.count} recent games` },
-    { label: "Close finish rate", value: clutchRate, detail: "≤5 point margins" },
-    {
-      label: "Biggest rout",
-      value: biggestSwing,
-      detail: pulseAggregate.largestLabel || "Awaiting results",
-    },
-  ];
 
   return (
     <div className="space-y-12">

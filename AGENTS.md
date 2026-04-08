@@ -18,6 +18,7 @@ Client  Backend API  Redis (hot)  DB (warm fallback)  NBA API (very rare; us
 - Production-ready by default.
 - If data is missing, fail quietly and intentionally.
 - Match existing patterns before inventing new ones.
+- For OpenAI or Codex questions, prefer the OpenAI developer documentation MCP server when available.
 
 ## Tests
 - Run tests after significant changes to files.

@@ -31,14 +31,18 @@ type EnhancedGame = {
   totalPoints: number;
 };
 
-type HighlightMetric = {
-  label: string;
-  value: string;
-  subtext: string;
-};
-
 const DATE_FORMATTER = new Intl.DateTimeFormat("en-US", { weekday: "long", month: "short", day: "numeric" });
 const DATE_ONLY_FORMATTER = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
+const NBA_DATE_KEY_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "America/New_York",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+
+function getNbaDateKey(value = new Date()): string {
+  return NBA_DATE_KEY_FORMATTER.format(value);
+}
 
 function enhanceGame(game: Game): EnhancedGame {
   const date = parseGameDate(game.date);
@@ -87,66 +91,24 @@ function groupGamesByDate(games: EnhancedGame[]): { date: string; label: string;
     .sort((a, b) => (a.date < b.date ? 1 : -1));
 }
 
-function deriveHighlights(games: EnhancedGame[]): HighlightMetric[] {
-  if (!games.length) {
-    return [
-      { label: "Average points", value: "—", subtext: "No games available" },
-      { label: "Close finishes", value: "—", subtext: "Awaiting schedule" },
-      { label: "Largest margin", value: "—", subtext: "Awaiting schedule" },
-    ];
-  }
-
-  const aggregate = games.reduce(
-    (acc, game) => {
-      acc.totalPoints += game.totalPoints;
-      if (game.margin <= 5) acc.clutch += 1;
-      if (!acc.largest || game.margin > acc.largest.margin) acc.largest = game;
-      return acc;
-    },
-    { totalPoints: 0, clutch: 0, largest: games[0] } as {
-      totalPoints: number;
-      clutch: number;
-      largest: EnhancedGame;
-    },
-  );
-
-  const averagePoints = Math.round(aggregate.totalPoints / games.length);
-  const largest = aggregate.largest;
-
-  return [
-    {
-      label: "Average combined points",
-      value: `${averagePoints}`,
-      subtext: `${games.length} game sample across ${DEFAULT_SEASON}`,
-    },
-    {
-      label: "One-possession finishes",
-      value: `${aggregate.clutch}`,
-      subtext: "Decided by five or fewer points",
-    },
-    {
-      label: "Largest margin",
-      value: `${largest.margin} pts`,
-      subtext: `${largest.home.name} vs ${largest.away.name}`,
-    },
-  ];
-}
-
-function formatTrendLabel(trend: string) {
-  return trend.toUpperCase();
-}
-
 export default async function ScoresPage() {
-  const games = await nbaFetch<Game[]>(`/v1/games?season=${DEFAULT_SEASON}&page_size=36`);
+  const nbaToday = getNbaDateKey();
+  const [games, tonightGames] = await Promise.all([
+    nbaFetch<Game[]>(
+      `/v1/games?season=${DEFAULT_SEASON}&page_size=36`,
+      { next: { revalidate: 120 } },
+    ).catch(() => []),
+    nbaFetch<Game[]>(
+      `/v1/games?season=${DEFAULT_SEASON}&date_from=${nbaToday}&date_to=${nbaToday}&page_size=24`,
+      { next: { revalidate: 120 } },
+    ).catch(() => []),
+  ]);
   const enhanced = games.map(enhanceGame);
-  const highlights = deriveHighlights(enhanced);
+  const tonightSlate = tonightGames
+    .map(enhanceGame)
+    .filter((game) => game.dateKey === nbaToday && !game.isFinal)
+    .sort((a, b) => parseGameDate(a.timeValue).getTime() - parseGameDate(b.timeValue).getTime());
   const grouped = groupGamesByDate(enhanced);
-  const statementGame =
-    enhanced.length > 0
-      ? enhanced.reduce((prev, game) => (game.totalPoints > prev.totalPoints ? game : prev))
-      : null;
-  const tightGames = enhanced.filter((game) => game.margin <= 3).slice(0, 4);
-  const blowouts = enhanced.filter((game) => game.margin >= 18).slice(0, 4);
 
   return (
     <div className="space-y-12">
@@ -156,6 +118,35 @@ export default async function ScoresPage() {
           <h1 className="mt-3 text-4xl font-semibold text-white">Catch up on the latest NBA slate</h1>
         </div>
       </header>
+      <section className="space-y-6">
+        <div className="flex items-center justify-between">
+          <h2 className="text-2xl font-semibold text-white">Tonight&apos;s slate</h2>
+          {tonightSlate.length > 0 ? <span className="text-xs uppercase tracking-[0.3em] text-white/60">{tonightSlate.length} games</span> : null}
+        </div>
+        {tonightSlate.length === 0 ? (
+          <div className="rounded-3xl border border-white/10 bg-slate-950/40 p-8 text-sm text-white/70">
+            No games on tonight&apos;s slate yet.
+          </div>
+        ) : (
+          <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3 xl:mx-auto xl:max-w-6xl xl:justify-items-center">
+            {tonightSlate.map((game) => {
+              const hasScore = game.home.score > 0 || game.away.score > 0;
+              return (
+                <ScoreCard
+                  key={`tonight-${game.id}`}
+                  className="w-full max-w-[360px]"
+                  timeLabel={<LocalGameTime value={game.timeValue} fallback={game.timeFallback} showTime={true} />}
+                  status={game.status}
+                  isFinal={game.isFinal}
+                  home={{ name: game.home.name, score: hasScore ? game.home.score : undefined }}
+                  away={{ name: game.away.name, score: hasScore ? game.away.score : undefined }}
+                  winner={game.winner}
+                />
+              );
+            })}
+          </div>
+        )}
+      </section>
       <section className="space-y-6">
         <div>
           <h2 className="text-2xl font-semibold text-white">Latest results</h2>
@@ -177,6 +168,7 @@ export default async function ScoresPage() {
                     <ScoreCard
                       key={game.id}
                       href={`/boxscore/${game.id}`}
+                      prefetch={false}
                       className="w-full max-w-[360px]"
                       timeLabel={<LocalGameTime value={game.timeValue} fallback={game.timeFallback} showTime={game.showTime} />}
                       status={game.status}

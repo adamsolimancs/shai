@@ -16,12 +16,13 @@ Next.js App Router UI for ShAI. It consumes the backend API and supports optiona
 ```bash
 cd frontend
 npm install
+cp .env.example .env
 ```
 
-Create `frontend/.env` and set at least:
+Create `frontend/.env` from `frontend/.env.example` and set at least:
 ```
-NBA_API_BASE_URL=http://localhost:8080
-NBA_API_KEY=dev-secret-key
+BACKEND_API_BASE_URL=http://localhost:8080
+BACKEND_API_KEY=dev-secret-key
 NBA_DEFAULT_SEASON=2025-26
 AUTH_SECRET=replace-me
 ```

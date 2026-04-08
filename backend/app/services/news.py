@@ -18,6 +18,8 @@ from fastapi import HTTPException, status
 from ..cache import CacheBackend
 from ..config import Settings
 from ..schemas import CacheMeta, NewsArticle
+from ..services.store import fetch_news_articles
+from ..supabase import SupabaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +65,15 @@ class NewsService:
     SPORTSCENTER_RSS_URL = "https://www.espn.com/espn/rss/news"
     CBS_RSS_URL = "https://www.cbssports.com/rss/headlines/nba/"
 
-    def __init__(self, settings: Settings, cache: CacheBackend):
+    def __init__(
+        self,
+        settings: Settings,
+        cache: CacheBackend,
+        supabase: SupabaseClient | None = None,
+    ):
         self.settings = settings
         self.cache = cache
+        self.supabase = supabase
         self._cache_key = "news:latest"
         self._client = httpx.AsyncClient(
             timeout=self.settings.news_http_timeout_seconds,
@@ -83,6 +91,15 @@ class NewsService:
             except Exception:  # pragma: no cover - cache corruption guard
                 logger.warning("news cache payload invalid; refetching.")
 
+        db_articles = await self._read_db_articles()
+        if db_articles:
+            serialized = [article.model_dump(mode="json") for article in db_articles]
+            await self.cache.set(self._cache_key, serialized, self.settings.news_cache_ttl_seconds)
+            return db_articles, CacheMeta(hit=False, stale=False)
+
+        if not self.settings.nba_api_calls_allowed:
+            return [], CacheMeta(hit=False, stale=False)
+
         try:
             articles = await self._scrape_sources()
         except Exception as exc:
@@ -92,9 +109,25 @@ class NewsService:
                 return [NewsArticle(**item) for item in stale], CacheMeta(hit=True, stale=True)
             raise NewsUpstreamError("Unable to reach ESPN / SportsCenter / CBS feeds.") from exc
 
-        serialized = [article.model_dump() for article in articles]
+        serialized = [article.model_dump(mode="json") for article in articles]
         await self.cache.set(self._cache_key, serialized, self.settings.news_cache_ttl_seconds)
         return articles, CacheMeta(hit=False, stale=False)
+
+    async def _read_db_articles(self) -> list[NewsArticle]:
+        if not self.supabase:
+            return []
+        try:
+            rows = await fetch_news_articles(self.supabase, limit=self.settings.news_max_articles)
+        except Exception:
+            logger.exception("news db fetch failed; falling back to upstream")
+            return []
+        articles: list[NewsArticle] = []
+        for row in rows:
+            try:
+                articles.append(NewsArticle(**row))
+            except Exception:
+                continue
+        return articles
 
     async def _scrape_sources(self) -> list[NewsArticle]:
         tasks = [

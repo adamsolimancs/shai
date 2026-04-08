@@ -27,16 +27,16 @@ describe("nbaFetch", () => {
   });
 
   it("throws when API key is missing", async () => {
-    delete process.env.NBA_API_KEY;
+    delete process.env.BACKEND_API_KEY;
     const { nbaFetch } = await import("@/lib/nbaApi");
 
     await expect(nbaFetch("/players")).rejects.toThrow(
-      /NBA_API_KEY .* must be set/i,
+      /BACKEND_API_KEY must be set to call the backend/i,
     );
   });
 
   it("returns data for ok responses", async () => {
-    process.env.NBA_API_KEY = "test-key";
+    process.env.BACKEND_API_KEY = "test-key";
     const fetchSpy = vi.fn(async () => makeResponse({ ok: true, data: { id: 1 }, meta: {} }));
     vi.stubGlobal("fetch", fetchSpy);
 
@@ -48,7 +48,7 @@ describe("nbaFetch", () => {
   });
 
   it("throws with backend error message", async () => {
-    process.env.NBA_API_KEY = "test-key";
+    process.env.BACKEND_API_KEY = "test-key";
     const fetchSpy = vi.fn(async () =>
       makeResponse({
         ok: false,
@@ -63,7 +63,7 @@ describe("nbaFetch", () => {
   });
 
   it("throws when HTTP response is not ok", async () => {
-    process.env.NBA_API_KEY = "test-key";
+    process.env.BACKEND_API_KEY = "test-key";
     const fetchSpy = vi.fn(async () =>
       makeResponse({
         error: { message: "Not found" },

@@ -8,16 +8,14 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from redis import asyncio as redis_asyncio
-
-from .cache import CacheBackend
+from .cache import CacheBackend, RedisClientProtocol
 from .schemas import CacheMeta
 
 logger = logging.getLogger(__name__)
 
 
 async def _acquire_lock(
-    redis_client: redis_asyncio.Redis | None,
+    redis_client: RedisClientProtocol | None,
     key: str,
     ttl_ms: int,
 ) -> bool:
@@ -27,7 +25,7 @@ async def _acquire_lock(
     return bool(result)
 
 
-async def _release_lock(redis_client: redis_asyncio.Redis | None, key: str) -> None:
+async def _release_lock(redis_client: RedisClientProtocol | None, key: str) -> None:
     if not redis_client:
         return
     await redis_client.delete(key)
@@ -36,7 +34,7 @@ async def _release_lock(redis_client: redis_asyncio.Redis | None, key: str) -> N
 async def get_or_set_cache(
     *,
     cache: CacheBackend,
-    redis_client: redis_asyncio.Redis | None,
+    redis_client: RedisClientProtocol | None,
     key: str,
     ttl: int,
     fetcher: Callable[[], Awaitable[Any]],

@@ -5,7 +5,7 @@ FastAPI service that normalizes NBA data and serves it to the frontend with cach
 ## Stack
 - Python 3.11, FastAPI, Pydantic Settings
 - nba_api + httpx/beautifulsoup4
-- Redis cache (optional) and optional database/Supabase store
+- Upstash Redis REST cache (optional) and optional database/Supabase store
 - Tooling: ruff, black, mypy, pytest
 
 ## Architecture (read path)
@@ -16,12 +16,14 @@ Client -> API -> Redis (hot) -> DB (warm fallback) -> NBA API (rare; mostly deve
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"  # or: pip install -r requirements.txt
+cp .env.example .env
 ```
 
-Create `backend/.env` (loaded automatically) and set at least:
+Create `backend/.env` from `backend/.env.example` (loaded automatically) and set at least:
 ```
 API_KEY=dev-secret-key
-REDIS_URL=redis://localhost:6379/0
+UPSTASH_REDIS_REST_URL=https://<your-db>.upstash.io
+UPSTASH_REDIS_REST_TOKEN=<your-token>
 ```
 Optional (for persistence):
 ```

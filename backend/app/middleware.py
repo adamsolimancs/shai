@@ -31,6 +31,9 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
 
         process_time_ms = (time.perf_counter() - start_time) * 1000
         response.headers[self.settings.request_id_header] = request_id
+        data_source = getattr(request.state, "data_source", None)
+        cache_hit = getattr(request.state, "cache_hit", None)
+        cache_stale = getattr(request.state, "cache_stale", None)
 
         logger.info(
             f"{request.method} {request.url.path}",
@@ -39,6 +42,9 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                 "client_host": request.client.host if request.client else None,
                 "method": request.method,
                 "path": request.url.path,
+                "source": data_source,
+                "cache_hit": cache_hit,
+                "cache_stale": cache_stale,
                 "status_code": response.status_code,
                 "duration_ms": round(process_time_ms, 2),
             },

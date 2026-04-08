@@ -22,6 +22,12 @@ class CacheTTLs:
     player_bio: int = 60 * 60 * 24
     player_awards: int = 60 * 60 * 24
     player_stats: int = 60 * 15
+    player_info: int = 60 * 60 * 24
+    player_career: int = 60 * 60 * 24
+    team_history: int = 60 * 60 * 24
+    league_leaders: int = 60 * 15
+    team_stats: int = 60 * 15
+    player_shots: int = 60 * 60 * 6
 
 
 TTLS = CacheTTLs()
@@ -75,6 +81,61 @@ def player_bio_key(settings: Settings, player_id: int, season: str) -> str:
 
 def player_awards_key(settings: Settings, player_id: int) -> str:
     return cache_key(settings, "player_awards", str(player_id))
+
+
+def player_info_key(settings: Settings, player_id: int) -> str:
+    return cache_key(settings, "player_info", str(player_id))
+
+
+def player_career_key(settings: Settings, player_id: int, season_type: str) -> str:
+    return cache_key(settings, "player_career", str(player_id), (season_type or "Regular Season"))
+
+
+def player_shots_key(
+    settings: Settings,
+    player_id: int,
+    season: str,
+    team_id: int | None,
+    date_from: str | None,
+    date_to: str | None,
+) -> str:
+    team_part = "all" if team_id is None else str(team_id)
+    return cache_key(
+        settings,
+        "player_shots",
+        str(player_id),
+        season,
+        team_part,
+        date_from or "all",
+        date_to or "all",
+    )
+
+
+def team_history_key(settings: Settings, team_id: int, season_type: str, per_mode: str) -> str:
+    return cache_key(settings, "team_history", str(team_id), season_type, per_mode)
+
+
+def league_leaders_key(
+    settings: Settings,
+    season: str,
+    season_type: str,
+    per_mode: str,
+    stat_category: str,
+    limit: int,
+) -> str:
+    return cache_key(
+        settings,
+        "league_leaders",
+        season,
+        season_type,
+        per_mode,
+        stat_category,
+        str(limit),
+    )
+
+
+def team_stats_key(season: str, measure: str, per_mode: str) -> str:
+    return f"team_stats:{season}:{measure}:{per_mode}"
 
 
 def player_stats_key(

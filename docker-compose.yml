@@ -6,7 +6,8 @@ services:
     env_file:
       - backend/.env.example
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      - UPSTASH_REDIS_REST_URL=${UPSTASH_REDIS_REST_URL:-}
+      - UPSTASH_REDIS_REST_TOKEN=${UPSTASH_REDIS_REST_TOKEN:-}
     ports:
       - "8080:8080"
     depends_on:

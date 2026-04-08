@@ -7,10 +7,7 @@ import time
 
 from fastapi import HTTPException, status
 
-try:
-    from redis import asyncio as redis_asyncio
-except Exception:  # pragma: no cover
-    redis_asyncio = None  # type: ignore
+from .cache import RedisClientProtocol
 
 
 class RateLimitExceeded(HTTPException):
@@ -31,7 +28,7 @@ class RateLimitExceeded(HTTPException):
 class RateLimiter:
     """Performs per-API-key rate limiting using Redis when available."""
 
-    def __init__(self, requests_per_minute: int, redis_client: redis_asyncio.Redis | None = None):
+    def __init__(self, requests_per_minute: int, redis_client: RedisClientProtocol | None = None):
         self.requests_per_minute = requests_per_minute
         self.redis = redis_client
         self._hits: dict[str, tuple[int, float]] = {}

@@ -35,10 +35,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     supabase = None
     if settings.supabase_url and settings.supabase_key:
         supabase = SupabaseClient(settings)
-    resolver = NameResolver(cache, supabase)
+    resolver = NameResolver(cache, supabase, allow_upstream=settings.nba_api_calls_allowed)
     await resolver.initialize()
     nba_client = NBAStatsClient(settings, cache, resolver)
-    news_client = NewsService(settings, cache)
+    news_client = NewsService(settings, cache, supabase)
     rate_limiter = RateLimiter(settings.rate_limit_requests_per_minute, redis_client)
 
     app.state.settings = settings
@@ -50,8 +50,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.news_client = news_client
     app.state.rate_limiter = rate_limiter
 
-    refresh_task = asyncio.create_task(_refresh_loop(nba_client))
-    app.state.background_tasks = [refresh_task]
+    app.state.background_tasks = []
+    if settings.enable_hot_cache_refresh and settings.nba_api_calls_allowed:
+        refresh_task = asyncio.create_task(_refresh_loop(nba_client))
+        app.state.background_tasks.append(refresh_task)
     try:
         yield
     finally:
