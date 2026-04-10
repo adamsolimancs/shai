@@ -27,11 +27,11 @@ type SearchParams = {
 
 const LEADER_LIMIT = 5;
 const LEADERBOARDS: Array<Omit<Leaderboard, "rows">> = [
-  { id: "points", label: "Scoring leaders", metric: "PTS", category: "PTS" },
-  { id: "rebounds", label: "Glass cleaners", metric: "REB", category: "REB" },
-  { id: "assists", label: "Assist leaders", metric: "AST", category: "AST" },
-  { id: "steals", label: "Pickpockets", metric: "STL", category: "STL" },
-  { id: "blocks", label: "Rim protectors", metric: "BLK", category: "BLK" },
+  { id: "points", label: "Points Leaders", metric: "PTS", category: "PTS" },
+  { id: "rebounds", label: "Rebounds Leaders", metric: "REB", category: "REB" },
+  { id: "assists", label: "Assists Leaders", metric: "AST", category: "AST" },
+  { id: "steals", label: "Steals Leaders", metric: "STL", category: "STL" },
+  { id: "blocks", label: "Blocks Leaders", metric: "BLK", category: "BLK" },
 ];
 
 function extractParam(params: SearchParams, key: string): string {

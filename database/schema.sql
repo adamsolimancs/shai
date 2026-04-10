@@ -126,6 +126,7 @@
   position text,
   jersey text,
   birthdate text,
+  age smallint,
   school text,
   country text,
   season_experience smallint,

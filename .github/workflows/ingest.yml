@@ -27,9 +27,16 @@ jobs:
         if: steps.schedule.outputs.run_worker == 'true'
         with:
           node-version: 24
+      - uses: actions/setup-python@v6
+        if: steps.schedule.outputs.run_worker == 'true'
+        with:
+          python-version: '3.11'
       - name: Install worker deps
         if: steps.schedule.outputs.run_worker == 'true'
         run: npm ci --prefix workers
+      - name: Install nba_api bridge deps
+        if: steps.schedule.outputs.run_worker == 'true'
+        run: python -m pip install nba_api==1.11.4
       - name: Run worker
         if: steps.schedule.outputs.run_worker == 'true'
         env:
@@ -53,6 +60,7 @@ jobs:
           PLAYERS_HISTORIC_MODE: once
           PLAYERS_HISTORIC_SEASONS_BACK: 2
           API_MIN_INTERVAL_MS: 1500
+          STATS_TRANSPORT: nba_api
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
           SUPABASE_SCHEMA: public

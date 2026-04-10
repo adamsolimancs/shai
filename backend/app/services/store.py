@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any
 
 from ..supabase import SupabaseClient
@@ -78,6 +78,16 @@ def _parse_game_date(value: Any) -> date | None:
         except ValueError:
             return None
     return None
+
+
+def _derive_age_from_birthdate(birthdate: date | None) -> int | None:
+    if birthdate is None:
+        return None
+    today = datetime.now(UTC).date()
+    years = today.year - birthdate.year
+    if (today.month, today.day) < (birthdate.month, birthdate.day):
+        years -= 1
+    return years if years >= 0 else None
 
 
 def _coerce_float(value: Any) -> float | None:
@@ -457,6 +467,9 @@ async def fetch_player_info(
             birthdate = date.fromisoformat(normalized_birthdate)
         except ValueError:
             birthdate = None
+    age = _coerce_int(row.get("age"))
+    if age is None:
+        age = _derive_age_from_birthdate(birthdate)
     return {
         "player_id": _coerce_int(row.get("player_id")),
         "display_name": _first_non_empty_text(
@@ -476,6 +489,7 @@ async def fetch_player_info(
         "position": _first_non_empty_text(row.get("position")),
         "jersey": _first_non_empty_text(row.get("jersey")),
         "birthdate": birthdate,
+        "age": age,
         "school": _first_non_empty_text(row.get("school")),
         "country": _first_non_empty_text(row.get("country")),
         "season_experience": _coerce_int(row.get("season_experience")),

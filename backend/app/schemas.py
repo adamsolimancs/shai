@@ -95,6 +95,7 @@ class PlayerInfo(BaseModel):
     position: str | None = None
     jersey: str | None = None
     birthdate: date | None = None
+    age: int | None = None
     school: str | None = None
     country: str | None = None
     season_experience: int | None = None

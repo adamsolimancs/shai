@@ -273,6 +273,7 @@ async def test_fetch_player_info_uses_player_info_table():
                 "position": "F",
                 "jersey": "23",
                 "birthdate": "1984-12-30T00:00:00",
+                "age": "40",
                 "school": "St. Vincent-St. Mary HS",
                 "country": "USA",
                 "season_experience": "21",
@@ -291,6 +292,7 @@ async def test_fetch_player_info_uses_player_info_table():
 
     assert row["display_name"] == "LeBron James"
     assert row["birthdate"].isoformat() == "1984-12-30"
+    assert row["age"] == 40
     assert row["team_abbreviation"] == "LAL"
 
 

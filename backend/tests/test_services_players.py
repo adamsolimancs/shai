@@ -133,6 +133,7 @@ async def test_get_player_info(monkeypatch):
             "LAST_NAME": "James",
             "DISPLAY_FIRST_LAST": "LeBron James",
             "BIRTHDATE": "1984-12-30T00:00:00",
+            "AGE": 40,
             "SCHOOL": "St. Vincent-St. Mary HS (OH)",
             "COUNTRY": "USA",
             "SEASON_EXP": 22,
@@ -157,4 +158,5 @@ async def test_get_player_info(monkeypatch):
     assert result.data.display_name == "LeBron James"
     assert result.data.position == "Forward"
     assert result.data.jersey == "23"
+    assert result.data.age == 40
     assert result.data.team_abbreviation == "LAL"
