@@ -143,3 +143,94 @@ def test_parse_scoreboard_tipoff_parses_eastern_clock():
     assert parsed is not None
     assert parsed.hour == 19
     assert parsed.minute == 30
+
+
+def test_build_boxscore_details_live_uses_nba_api_boxscore(monkeypatch):
+    client = _client()
+
+    class FakeBoxScore:
+        def __init__(self, game_id, headers=None, timeout=30, **_kwargs):
+            assert game_id == "001"
+            assert headers is not None
+            assert timeout == client._stats_timeout
+
+        def get_dict(self):
+            return {
+                "meta": {},
+                "game": {
+                    "gameId": "001",
+                    "gameStatusText": "Final",
+                    "gameTimeUTC": "2026-02-11T00:30:00Z",
+                    "attendance": "18997",
+                    "arena": {
+                        "arenaName": "Crypto.com Arena",
+                        "arenaCity": "Los Angeles",
+                    },
+                    "officials": [
+                        {"firstName": "James", "familyName": "Capers"},
+                    ],
+                    "homeTeam": {
+                        "teamId": "1610612747",
+                        "teamName": "Lakers",
+                        "teamCity": "Los Angeles",
+                        "teamTricode": "LAL",
+                        "score": "110",
+                        "periods": [{"score": "28"}],
+                        "statistics": {
+                            "minutes": "PT240M00.00S",
+                            "points": "110",
+                            "pointsAgainst": "102",
+                        },
+                        "players": [
+                            {
+                                "personId": "2544",
+                                "name": "LeBron James",
+                                "position": "F",
+                                "statistics": {
+                                    "minutes": "PT35M12.00S",
+                                    "points": "28",
+                                    "reboundsTotal": "8",
+                                    "assists": "9",
+                                },
+                            }
+                        ],
+                    },
+                    "awayTeam": {
+                        "teamId": "1610612738",
+                        "teamName": "Celtics",
+                        "teamCity": "Boston",
+                        "teamTricode": "BOS",
+                        "score": "102",
+                        "periods": [{"score": "24"}],
+                        "statistics": {
+                            "minutes": "PT240M00.00S",
+                            "points": "102",
+                            "pointsAgainst": "110",
+                        },
+                        "players": [
+                            {
+                                "personId": "1628369",
+                                "name": "Jayson Tatum",
+                                "position": "F",
+                                "statistics": {
+                                    "minutes": "PT36M05.00S",
+                                    "points": "31",
+                                    "reboundsTotal": "7",
+                                    "assists": "5",
+                                },
+                            }
+                        ],
+                    },
+                },
+            }
+
+    monkeypatch.setattr("app.services.nba.live_boxscore.BoxScore", FakeBoxScore)
+
+    result = client._build_boxscore_details_live("001")
+
+    assert result["game_id"] == "001"
+    assert result["arena"] == "Crypto.com Arena"
+    assert result["attendance"] == 18997
+    assert result["home_team"]["team_abbreviation"] == "LAL"
+    assert result["away_team"]["team_abbreviation"] == "BOS"
+    assert result["traditional_players"][0]["player_name"] == "LeBron James"

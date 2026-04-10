@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 process.env.CACHE_KEY_PREFIX = "nba:serve:";
+process.env.STATS_TRANSPORT = "fetch";
 
 const worker = require("../worker-live");
 
@@ -163,6 +164,22 @@ test("buildSupportedSeasons uses configured year range", () => {
       date: new Date("2026-04-08T00:00:00Z"),
     }),
     ["2024-25", "2025-26", "2026-27"],
+  );
+});
+
+test("parseStatsEndpointUrl preserves endpoint and blank params", () => {
+  assert.deepEqual(
+    worker.parseStatsEndpointUrl(
+      "https://stats.nba.com/stats/leaguegamefinder?LeagueID=00&DateFrom=&DateTo=04%2F09%2F2026"
+    ),
+    {
+      endpoint: "leaguegamefinder",
+      parameters: {
+        LeagueID: "00",
+        DateFrom: "",
+        DateTo: "04/09/2026",
+      },
+    },
   );
 });
 

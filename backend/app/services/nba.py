@@ -12,8 +12,8 @@ from datetime import UTC, date, datetime
 from typing import Any, TypeVar, cast
 from zoneinfo import ZoneInfo
 
-import requests
 from fastapi import HTTPException, status
+from nba_api.live.nba.endpoints import boxscore as live_boxscore
 from nba_api.stats.endpoints import (
     boxscoreadvancedv2,
     boxscoreadvancedv3,
@@ -67,7 +67,7 @@ from ..utils import paginate, validate_season
 
 logger = logging.getLogger(__name__)
 
-# Explicit headers for stats.nba.com to avoid CDN blocks.
+# Headers passed through nba_api stats endpoints to avoid CDN blocks.
 NBA_STATS_HEADERS = {
     "Accept": "application/json, text/plain, */*",
     "Accept-Language": "en-US,en;q=0.9",
@@ -1233,11 +1233,11 @@ class NBAStatsClient:
             return self._build_boxscore_details_stats(game_id)
         except Exception:
             logger.warning(
-                "stats.nba.com boxscore failed; attempting CDN fallback",
+                "nba_api stats boxscore failed; attempting nba_api live fallback",
                 exc_info=True,
                 extra={"game_id": game_id},
             )
-            return self._build_boxscore_details_cdn(game_id)
+            return self._build_boxscore_details_live(game_id)
 
     def _build_boxscore_details_stats(self, game_id: str) -> dict[str, Any]:
         traditional = boxscoretraditionalv2.BoxScoreTraditionalV2(
@@ -1323,15 +1323,15 @@ class NBAStatsClient:
             "advanced_players": advanced_players,
         }
 
-    def _build_boxscore_details_cdn(self, game_id: str) -> dict[str, Any]:
-        url = f"https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{game_id}.json"
+    def _build_boxscore_details_live(self, game_id: str) -> dict[str, Any]:
         try:
-            response = requests.get(url, timeout=self._stats_timeout)
-            response.raise_for_status()
+            payload = live_boxscore.BoxScore(
+                game_id=game_id,
+                headers=NBA_STATS_HEADERS,
+                timeout=self._stats_timeout,
+            ).get_dict()
         except Exception as exc:
-            raise UpstreamError("NBA boxscore CDN unavailable") from exc
-
-        payload = response.json()
+            raise UpstreamError("NBA live boxscore unavailable") from exc
         game = payload.get("game") or {}
         home_team_raw = game.get("homeTeam") or {}
         away_team_raw = game.get("awayTeam") or {}
@@ -1811,6 +1811,15 @@ class NBAStatsClient:
             except ValueError:
                 return None
 
+    def _derive_age_from_birthdate(self, birthdate: date | None) -> int | None:
+        if birthdate is None:
+            return None
+        today = datetime.now(UTC).date()
+        years = today.year - birthdate.year
+        if (today.month, today.day) < (birthdate.month, birthdate.day):
+            years -= 1
+        return years if years >= 0 else None
+
     def _parse_scoreboard_tipoff(self, game_date: date, status_text: str | None) -> datetime | None:
         if not status_text:
             return None
@@ -2034,6 +2043,9 @@ class NBAStatsClient:
         last_name = self._clean_text_value(row.get("LAST_NAME"))
         if not display_name:
             display_name = " ".join(part for part in [first_name, last_name] if part).strip()
+        age = self._coerce_int(row.get("AGE"))
+        if age is None:
+            age = self._derive_age_from_birthdate(birthdate)
 
         return {
             "player_id": self._safe_int(row.get("PERSON_ID")),
@@ -2043,6 +2055,7 @@ class NBAStatsClient:
             "position": self._clean_text_value(row.get("POSITION")),
             "jersey": self._clean_text_value(row.get("JERSEY")),
             "birthdate": birthdate,
+            "age": age,
             "school": self._clean_text_value(row.get("SCHOOL")),
             "country": self._clean_text_value(row.get("COUNTRY")),
             "season_experience": self._coerce_int(row.get("SEASON_EXP")),

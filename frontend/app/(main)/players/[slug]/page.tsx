@@ -130,6 +130,7 @@ type PlayerInfo = {
   position?: string | null;
   jersey?: string | null;
   birthdate?: string | null;
+  age?: number | null;
   school?: string | null;
   country?: string | null;
   season_experience?: number | null;
@@ -150,7 +151,7 @@ type PlayerProfile = {
   headshot: string;
   rating: number;
   scoutingReport: string;
-  age?: number | null;
+  age: number | null;
   experience: string;
   currentSeason?: {
     seasonId: string;
@@ -631,6 +632,7 @@ function collapseCareerRows(rows: PlayerCareerStatsRow[]): PlayerCareerStatsRow[
 }
 
 const noStore = { cache: "no-store" as const };
+const OPTIONAL_PROFILE_TIMEOUT_MS = 3_500;
 
 const fetchPlayerProfile = cache(async (slug: string | undefined): Promise<PlayerProfile | null> => {
   if (!slug) {
@@ -660,17 +662,38 @@ const fetchPlayerProfile = cache(async (slug: string | undefined): Promise<Playe
         `/v1/players/${playerId}/career?season_type=Regular%20Season`,
         noStore,
       ),
-      nbaFetch<PlayerCareerStatsRow[]>(
-        `/v1/players/${playerId}/career?season_type=Playoffs`,
-        noStore,
-      ),
-      nbaFetch<PlayerGameLog[]>(
-        `/v1/players/${playerId}/gamelog?season=${DEFAULT_SEASON}`,
-        noStore,
-      ),
       (async () => {
         try {
-          return await nbaFetch<PlayerAward[]>(`/v1/players/${playerId}/awards`, noStore);
+          return await nbaFetch<PlayerCareerStatsRow[]>(
+            `/v1/players/${playerId}/career?season_type=Playoffs`,
+            { ...noStore, timeoutMs: OPTIONAL_PROFILE_TIMEOUT_MS },
+          );
+        } catch (playoffsCareerError) {
+          if (process.env.NODE_ENV !== "production") {
+            console.error("Failed to load playoff career stats", playoffsCareerError);
+          }
+          return [] as PlayerCareerStatsRow[];
+        }
+      })(),
+      (async () => {
+        try {
+          return await nbaFetch<PlayerGameLog[]>(
+            `/v1/players/${playerId}/gamelog?season=${DEFAULT_SEASON}`,
+            { ...noStore, timeoutMs: OPTIONAL_PROFILE_TIMEOUT_MS },
+          );
+        } catch (gamelogError) {
+          if (process.env.NODE_ENV !== "production") {
+            console.error("Failed to load player gamelog", gamelogError);
+          }
+          return [] as PlayerGameLog[];
+        }
+      })(),
+      (async () => {
+        try {
+          return await nbaFetch<PlayerAward[]>(
+            `/v1/players/${playerId}/awards`,
+            { ...noStore, timeoutMs: OPTIONAL_PROFILE_TIMEOUT_MS },
+          );
         } catch (awardError) {
           if (process.env.NODE_ENV !== "production") {
             console.error("Failed to load player awards", awardError);
@@ -680,7 +703,10 @@ const fetchPlayerProfile = cache(async (slug: string | undefined): Promise<Playe
       })(),
       (async () => {
         try {
-          return await nbaFetch<PlayerInfo | null>(`/v1/players/${playerId}/info`, noStore);
+          return await nbaFetch<PlayerInfo | null>(
+            `/v1/players/${playerId}/info`,
+            { ...noStore, timeoutMs: OPTIONAL_PROFILE_TIMEOUT_MS },
+          );
         } catch (playerInfoError) {
           if (process.env.NODE_ENV !== "production") {
             console.error("Failed to load player info", playerInfoError);
@@ -745,7 +771,7 @@ const fetchPlayerProfile = cache(async (slug: string | undefined): Promise<Playe
     try {
       bio = await nbaFetch<PlayerBio | null>(
         `/v1/players/${playerId}/bio?season=${statsSeasonId}`,
-        noStore,
+        { ...noStore, timeoutMs: OPTIONAL_PROFILE_TIMEOUT_MS },
       );
     } catch (error) {
       if (process.env.NODE_ENV !== "production") {
@@ -806,7 +832,7 @@ const fetchPlayerProfile = cache(async (slug: string | undefined): Promise<Playe
       headshot: `${HEADSHOT_BASE}/${playerId}.png`,
       rating,
       scoutingReport,
-      age: seasonRow?.player_age,
+      age: info?.age ?? seasonRow?.player_age ?? null,
       experience: experienceSeasons ? `${experienceSeasons} season${experienceSeasons === 1 ? "" : "s"}` : "Rookie",
       currentSeason: stats
         ? {
@@ -956,7 +982,10 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
     profile.info?.jersey && profile.info.jersey.trim() ? `#${profile.info.jersey.trim()}` : null;
   const positionPill = { label: "Position", value: profile.info?.position ?? null };
   const jerseyPill = { label: "Jersey", value: jerseyValue };
-  const agePill = { label: "Age", value: profile.age ? `${profile.age}` : "—" };
+  const agePill = {
+    label: "Age",
+    value: profile.age !== null && profile.age !== undefined ? `${profile.age}` : null,
+  };
   const experiencePill = { label: "Experience", value: profile.experience };
   const heightPill = { label: "Height", value: formatHeight(profile.bio?.height) };
   const weightPill = { label: "Weight", value: formatWeight(profile.bio?.weight ?? null) };

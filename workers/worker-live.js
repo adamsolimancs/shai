@@ -6,8 +6,10 @@ if (typeof fetch !== "function") {
   process.exit(1);
 }
 
+const { spawn } = require("child_process");
 const { cache } = require("./cache");
 const dns = require("dns");
+const path = require("path");
 
 // Prefer IPv4 to reduce intermittent `fetch failed` issues on dual-stack networks
 // (observed in GitHub Actions runners for stats.nba.com).
@@ -127,8 +129,6 @@ function buildSupportedSeasons({
 
 const CONFIG = {
   workerMode: process.env.WORKER_MODE || "cron",
-  apiBaseUrl: normalizeBaseUrl(process.env.BACKEND_API_BASE_URL || "http://localhost:8080"),
-  apiKey: process.env.BACKEND_API_KEY,
   supabaseUrl: process.env.SUPABASE_URL,
   supabaseKey: process.env.SUPABASE_SECRET_KEY,
   supabaseSchema: process.env.SUPABASE_SCHEMA || "public",
@@ -181,10 +181,7 @@ const CONFIG = {
   apiRetryBaseDelayMs: Number(process.env.API_RETRY_BASE_DELAY_MS || 750),
   statsRetryMax: Number(process.env.STATS_RETRY_MAX || process.env.API_RETRY_MAX || 4),
   statsTimeoutMs: Number(process.env.STATS_TIMEOUT_MS || 30000),
-  apiCircuitBreakerMaxFailures: Number(process.env.API_CIRCUIT_BREAKER_MAX_FAILURES || 5),
-  apiCircuitBreakerCooldownMs: Number(
-    process.env.API_CIRCUIT_BREAKER_COOLDOWN_MS || 5 * 60 * 1000
-  ),
+  statsTransport: process.env.STATS_TRANSPORT || "nba_api",
   gamesIntervalMs: Number(process.env.GAMES_INTERVAL_MS || 6 * 60 * 60 * 1000),
   livePollIntervalMs: Number(process.env.LIVE_GAMES_INTERVAL_MS || 5000),
   scoreboardIntervalMs: Number(process.env.SCOREBOARD_INTERVAL_MS || 10000),
@@ -258,21 +255,28 @@ let cachedSeason = null;
 let cachedSeasonAt = 0;
 let cachedSupportedSeasons = null;
 let cachedSupportedSeasonsAt = 0;
-let requestQueue = Promise.resolve();
 let statsRequestQueue = Promise.resolve();
-let lastApiRequestAt = 0;
 let lastStatsRequestAt = 0;
-let apiCircuitOpenUntil = 0;
-let apiCircuitFailures = 0;
 const cacheStats = {
   writes: 0,
   failures: 0,
   lastLogAt: 0,
 };
 let cronBudget = null;
+let nbaApiBridge = null;
+let nbaApiBridgeReady = null;
+let nbaApiBridgeStdout = "";
+let nbaApiBridgeRequestId = 0;
+const nbaApiBridgePending = new Map();
 
 process.on("unhandledRejection", (reason) => {
   console.error("Unhandled rejection", formatErrorForLog(reason, { includeStack: true }));
+});
+
+process.on("exit", () => {
+  if (nbaApiBridge) {
+    nbaApiBridge.kill();
+  }
 });
 
 function log(message, extra) {
@@ -480,13 +484,6 @@ async function invalidateCachePattern(pattern) {
   }
 }
 
-class CircuitOpenError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "CircuitOpenError";
-  }
-}
-
 class CronBudgetError extends Error {
   constructor(message) {
     super(message);
@@ -496,25 +493,6 @@ class CronBudgetError extends Error {
 
 function isCronBudgetError(error) {
   return error instanceof CronBudgetError || error?.name === "CronBudgetError";
-}
-
-function isCircuitOpen() {
-  return Date.now() < apiCircuitOpenUntil;
-}
-
-function recordApiSuccess() {
-  apiCircuitFailures = 0;
-}
-
-function recordApiFailure() {
-  apiCircuitFailures += 1;
-  if (apiCircuitFailures >= CONFIG.apiCircuitBreakerMaxFailures) {
-    apiCircuitFailures = 0;
-    apiCircuitOpenUntil = Date.now() + CONFIG.apiCircuitBreakerCooldownMs;
-    log("API circuit opened; cooling down", {
-      cooldown_ms: CONFIG.apiCircuitBreakerCooldownMs,
-    });
-  }
 }
 
 function formatDateInTZ(timeZone, date = new Date()) {
@@ -1122,39 +1100,6 @@ function applyRanks(rows, valueKey, rankKey, descending = true) {
   });
 }
 
-async function apiRequest(path) {
-  if (isCircuitOpen()) {
-    throw new CircuitOpenError("API circuit open; skipping request");
-  }
-  throwIfCronBudgetExceeded("api_request");
-  const url = path.startsWith("http") ? path : `${CONFIG.apiBaseUrl}${path}`;
-  const queued = requestQueue.then(async () => {
-    if (isCircuitOpen()) {
-      throw new CircuitOpenError("API circuit open; skipping request");
-    }
-    throwIfCronBudgetExceeded("api_request");
-    const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastApiRequestAt));
-    if (waitMs > 0) {
-      await sleep(waitMs);
-    }
-    lastApiRequestAt = Date.now();
-    return requestWithRetry(url);
-  }, async () => {
-    if (isCircuitOpen()) {
-      throw new CircuitOpenError("API circuit open; skipping request");
-    }
-    throwIfCronBudgetExceeded("api_request");
-    const waitMs = Math.max(0, CONFIG.apiMinIntervalMs - (Date.now() - lastApiRequestAt));
-    if (waitMs > 0) {
-      await sleep(waitMs);
-    }
-    lastApiRequestAt = Date.now();
-    return requestWithRetry(url);
-  });
-  requestQueue = queued.catch(() => {});
-  return queued;
-}
-
 async function statsRequest(url) {
   throwIfCronBudgetExceeded("stats_request");
   const queued = statsRequestQueue.then(async () => {
@@ -1186,69 +1131,152 @@ function computeRetryWaitMs(delay, retryAfterSeconds) {
   return Math.max(baseWaitMs, 30_000);
 }
 
-async function requestWithRetry(url) {
-  let attempt = 0;
-  let delay = CONFIG.apiRetryBaseDelayMs;
-  while (attempt <= CONFIG.apiRetryMax) {
-    throwIfCronBudgetExceeded("api_request");
-    let response;
-    try {
-      response = await fetch(url, {
-        headers: {
-          "x-api-key": CONFIG.apiKey,
-        },
-      });
-    } catch (error) {
-      if (attempt >= CONFIG.apiRetryMax) {
-        recordApiFailure();
-        throw new Error(`API request failed: ${String(error)}`);
-      }
-      const waitMs = computeRetryWaitMs(delay);
-      log("API request failed; backing off", {
-        url,
-        attempt: attempt + 1,
-        max_attempts: CONFIG.apiRetryMax + 1,
-        wait_ms: waitMs,
-        ...formatErrorForLog(error),
-      });
-      await sleep(waitMs);
-      delay *= 2;
-      attempt += 1;
-      continue;
-    }
-    if (response.ok) {
-      const payload = await response.json();
-      if (!payload || !payload.ok) {
-        throw new Error(`API error: ${JSON.stringify(payload)}`);
-      }
-      recordApiSuccess();
-      return payload;
-    }
-    const body = await response.text();
-    const retryable = response.status === 429 || response.status >= 500;
-    if (!retryable) {
-      throw new Error(`API ${response.status}: ${body}`);
-    }
-    if (attempt >= CONFIG.apiRetryMax) {
-      recordApiFailure();
-      throw new Error(`API ${response.status}: ${body}`);
-    }
-    const retryAfter = Number(response.headers.get("retry-after"));
-    const waitMs = computeRetryWaitMs(delay, retryAfter);
-    log("API request throttled; backing off", {
-      url,
-      attempt: attempt + 1,
-      max_attempts: CONFIG.apiRetryMax + 1,
-      status: response.status,
-      retry_after_s: Number.isFinite(retryAfter) ? retryAfter : null,
-      wait_ms: waitMs,
-      body_preview: body.slice(0, 200),
-    });
-    await sleep(waitMs);
-    delay *= 2;
-    attempt += 1;
+function parseStatsEndpointUrl(url) {
+  const parsed = new URL(url);
+  const endpoint = parsed.pathname.split("/").filter(Boolean).at(-1);
+  if (!endpoint) {
+    throw new Error(`Unable to determine stats endpoint from URL: ${url}`);
   }
-  throw new Error("API request failed after retries");
+  return {
+    endpoint,
+    parameters: Object.fromEntries(parsed.searchParams.entries()),
+  };
+}
+
+function rejectPendingNbaApiBridgeRequests(error) {
+  const pending = Array.from(nbaApiBridgePending.values());
+  nbaApiBridgePending.clear();
+  pending.forEach(({ reject }) => reject(error));
+}
+
+function handleNbaApiBridgeLine(line) {
+  let message = null;
+  try {
+    message = JSON.parse(line);
+  } catch (error) {
+    log("nba_api bridge emitted invalid JSON", {
+      line,
+      ...formatErrorForLog(error),
+    });
+    return;
+  }
+  if (message.ready) {
+    return;
+  }
+  const pending = nbaApiBridgePending.get(message.id);
+  if (!pending) {
+    return;
+  }
+  nbaApiBridgePending.delete(message.id);
+  if (message.ok) {
+    pending.resolve(message.data);
+  } else {
+    pending.reject(new Error(message.error || "nba_api bridge request failed"));
+  }
+}
+
+async function ensureNbaApiBridge() {
+  if (nbaApiBridge && nbaApiBridgeReady) {
+    return nbaApiBridgeReady;
+  }
+  const scriptPath = path.join(__dirname, "nba_api_bridge.py");
+  nbaApiBridgeStdout = "";
+  nbaApiBridge = spawn("python3", [scriptPath], {
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  nbaApiBridge.stdout.setEncoding("utf8");
+  nbaApiBridge.stderr.setEncoding("utf8");
+  nbaApiBridgeReady = new Promise((resolve, reject) => {
+    let settled = false;
+    let stderr = "";
+
+    const settleError = (error) => {
+      if (!settled) {
+        settled = true;
+        reject(error);
+      }
+      rejectPendingNbaApiBridgeRequests(error);
+      nbaApiBridge = null;
+      nbaApiBridgeReady = null;
+    };
+
+    nbaApiBridge.stdout.on("data", (chunk) => {
+      nbaApiBridgeStdout += chunk;
+      let newlineIndex = nbaApiBridgeStdout.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = nbaApiBridgeStdout.slice(0, newlineIndex).trim();
+        nbaApiBridgeStdout = nbaApiBridgeStdout.slice(newlineIndex + 1);
+        if (line) {
+          if (!settled) {
+            try {
+              const message = JSON.parse(line);
+              if (message.ready) {
+                settled = true;
+                resolve();
+              } else {
+                handleNbaApiBridgeLine(line);
+              }
+            } catch (error) {
+              settleError(
+                new Error(`nba_api bridge startup produced invalid output: ${line}`)
+              );
+            }
+          } else {
+            handleNbaApiBridgeLine(line);
+          }
+        }
+        newlineIndex = nbaApiBridgeStdout.indexOf("\n");
+      }
+    });
+
+    nbaApiBridge.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+
+    nbaApiBridge.once("error", (error) => {
+      settleError(error);
+    });
+
+    nbaApiBridge.once("exit", (code, signal) => {
+      const details = compactObject({
+        code,
+        signal,
+        stderr: stderr.trim() || null,
+      });
+      const message = `nba_api bridge exited unexpectedly: ${JSON.stringify(details)}`;
+      settleError(new Error(message));
+    });
+  });
+  return nbaApiBridgeReady;
+}
+
+async function nbaApiStatsRequest(url) {
+  return nbaApiBridgeRequest({
+    op: "stats_url",
+    url,
+    timeout_ms: CONFIG.statsTimeoutMs,
+  });
+}
+
+async function nbaApiBridgeRequest(payload) {
+  await ensureNbaApiBridge();
+  if (!nbaApiBridge) {
+    throw new Error("nba_api bridge unavailable");
+  }
+  const requestId = ++nbaApiBridgeRequestId;
+  return new Promise((resolve, reject) => {
+    nbaApiBridgePending.set(requestId, { resolve, reject });
+    const message = {
+      ...payload,
+      id: requestId,
+    };
+    try {
+      nbaApiBridge.stdin.write(`${JSON.stringify(message)}\n`);
+    } catch (error) {
+      nbaApiBridgePending.delete(requestId);
+      reject(error);
+    }
+  });
 }
 
 async function statsRequestWithRetry(url) {
@@ -1259,15 +1287,22 @@ async function statsRequestWithRetry(url) {
     : CONFIG.apiRetryMax;
   while (attempt <= maxAttempts) {
     throwIfCronBudgetExceeded("stats_request");
-    let response;
     try {
-      response = await fetch(url, {
-        headers: NBA_STATS_HEADERS,
-        signal:
-          typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
-            ? AbortSignal.timeout(CONFIG.statsTimeoutMs)
-            : undefined,
-      });
+      if (CONFIG.statsTransport === "fetch") {
+        const response = await fetch(url, {
+          headers: NBA_STATS_HEADERS,
+          signal:
+            typeof AbortSignal !== "undefined" && typeof AbortSignal.timeout === "function"
+              ? AbortSignal.timeout(CONFIG.statsTimeoutMs)
+              : undefined,
+        });
+        if (response.ok) {
+          return response.json();
+        }
+        const body = await response.text();
+        throw new Error(`NBA stats ${response.status} (${url}): ${body}`);
+      }
+      return await nbaApiStatsRequest(url);
     } catch (error) {
       if (attempt >= maxAttempts) {
         throw new Error(`NBA stats request failed (${url}): ${String(error)}`);
@@ -1285,31 +1320,6 @@ async function statsRequestWithRetry(url) {
       attempt += 1;
       continue;
     }
-    if (response.ok) {
-      return response.json();
-    }
-    const body = await response.text();
-    const retryable = response.status === 429 || response.status >= 500;
-    if (!retryable) {
-      throw new Error(`NBA stats ${response.status} (${url}): ${body}`);
-    }
-    if (attempt >= maxAttempts) {
-      throw new Error(`NBA stats ${response.status} (${url}): ${body}`);
-    }
-    const retryAfter = Number(response.headers.get("retry-after"));
-    const waitMs = computeRetryWaitMs(delay, retryAfter);
-    log("NBA stats request throttled; backing off", {
-      url,
-      attempt: attempt + 1,
-      max_attempts: maxAttempts + 1,
-      status: response.status,
-      retry_after_s: Number.isFinite(retryAfter) ? retryAfter : null,
-      wait_ms: waitMs,
-      body_preview: body.slice(0, 200),
-    });
-    await sleep(waitMs);
-    delay *= 2;
-    attempt += 1;
   }
   throw new Error("NBA stats request failed after retries");
 }
@@ -1443,10 +1453,6 @@ function isMissingRpcFunctionError(error) {
     message.includes("Could not find the function") ||
     message.includes("Searched for the function")
   );
-}
-
-function isCircuitOpenError(error) {
-  return error instanceof CircuitOpenError || String(error).includes("API circuit open");
 }
 
 async function supabaseUpsertRaw(table, rows, onConflict) {
@@ -1903,7 +1909,29 @@ async function fetchFranchiseHistory() {
   return extractResultSetRows(payload, "FranchiseHistory");
 }
 
+async function fetchStaticPlayers() {
+  const rows = await nbaApiBridgeRequest({ op: "static_players" });
+  return (rows || []).map((row) => ({
+    PERSON_ID: row.id,
+    DISPLAY_FIRST_LAST: row.full_name,
+    FIRST_NAME: row.first_name,
+    LAST_NAME: row.last_name,
+    ROSTERSTATUS: row.is_active ? "Active" : "Inactive",
+  }));
+}
+
 async function fetchCommonAllPlayers(season) {
+  try {
+    const players = await fetchStaticPlayers();
+    if (players.length) {
+      return players;
+    }
+  } catch (error) {
+    log("Static nba_api player directory fetch failed; falling back to stats endpoint", {
+      season,
+      ...formatErrorForLog(error),
+    });
+  }
   const url = new URL("https://stats.nba.com/stats/commonallplayers");
   url.searchParams.set("IsOnlyCurrentSeason", "0");
   url.searchParams.set("LeagueID", "00");
@@ -1971,7 +1999,31 @@ async function fetchLeagueLeadersRows(
   return extractResultSetRows(payload, "LeagueLeaders");
 }
 
+async function fetchStaticTeams() {
+  const rows = await nbaApiBridgeRequest({ op: "static_teams" });
+  return (rows || []).map((row) => ({
+    id: row.id,
+    team_id: row.id,
+    abbreviation: row.abbreviation,
+    city: row.city,
+    name: row.nickname || row.full_name,
+    conference: null,
+    division: null,
+  }));
+}
+
 async function fetchTeamsForSeason(season) {
+  try {
+    const teams = await fetchStaticTeams();
+    if (teams.length) {
+      return teams;
+    }
+  } catch (error) {
+    log("Static nba_api team directory fetch failed; falling back to stats endpoints", {
+      season,
+      ...formatErrorForLog(error),
+    });
+  }
   const seasonYear = seasonToYear(season);
   const [teamYears, historyRows] = await Promise.all([
     fetchCommonTeamYears(),
@@ -2078,7 +2130,48 @@ function normalizeGameFinderRows(rows, season) {
   );
 }
 
+function normalizeLiveScoreboardGame(game, season) {
+  const homeTeam = game?.homeTeam || {};
+  const awayTeam = game?.awayTeam || {};
+  const gameDate =
+    normalizeGameDate(game?.gameEt || game?.gameTimeUTC, CONFIG.timeZone) ||
+    formatDateInTZ(CONFIG.timeZone);
+  return {
+    game_id: cleanText(game?.gameId),
+    date: gameDate,
+    start_time: toText(game?.gameTimeUTC || game?.gameEt),
+    home_team_id: toInteger(homeTeam.teamId),
+    home_team_name: cleanText(homeTeam.teamName),
+    home_team_score: toInteger(homeTeam.score) ?? 0,
+    away_team_id: toInteger(awayTeam.teamId),
+    away_team_name: cleanText(awayTeam.teamName),
+    away_team_score: toInteger(awayTeam.score) ?? 0,
+    season,
+    status: cleanText(game?.gameStatusText),
+  };
+}
+
+async function fetchLiveScoreboardGames(season) {
+  const payload = await nbaApiBridgeRequest({ op: "live_scoreboard" });
+  const games = (payload?.scoreboard?.games || [])
+    .map((game) => normalizeLiveScoreboardGame(game, season))
+    .filter((row) => row.game_id && row.home_team_id !== null && row.away_team_id !== null);
+  return games;
+}
+
 async function fetchGamesFromStats(season, { dateFrom, dateTo } = {}) {
+  const today = formatDateInTZ(CONFIG.timeZone);
+  if (dateFrom && dateTo && dateFrom === today && dateTo === today) {
+    try {
+      return await fetchLiveScoreboardGames(season);
+    } catch (error) {
+      log("nba_api live scoreboard fetch failed; falling back to stats endpoint", {
+        season,
+        date: today,
+        ...formatErrorForLog(error),
+      });
+    }
+  }
   const url = new URL("https://stats.nba.com/stats/leaguegamefinder");
   const params = {
     LeagueID: "00",
@@ -2096,38 +2189,7 @@ async function fetchGamesFromStats(season, { dateFrom, dateTo } = {}) {
   return normalizeGameFinderRows(rows, season);
 }
 
-async function fetchGamesFromApi(season, { dateFrom, dateTo } = {}) {
-  let page = 1;
-  const pageSize = 200;
-  const games = [];
-  const baseParams = new URLSearchParams();
-  baseParams.set("season", season);
-  if (dateFrom) baseParams.set("date_from", dateFrom);
-  if (dateTo) baseParams.set("date_to", dateTo);
-
-  while (true) {
-    throwIfCronBudgetExceeded("games_api_page");
-    const params = new URLSearchParams(baseParams);
-    params.set("page", String(page));
-    params.set("page_size", String(pageSize));
-    const payload = await apiRequest(`/v1/games?${params.toString()}`);
-    const rows = payload.data || [];
-    for (const row of rows) {
-      if (row && (row.game_id || row.GAME_ID)) {
-        games.push(row);
-      }
-    }
-    const nextPage = payload.meta?.pagination?.next;
-    if (!nextPage) break;
-    page = nextPage;
-  }
-
-  return games;
-}
-
 async function fetchGames(season, { dateFrom, dateTo } = {}) {
-  // Ingestion should source fresh game lists directly from upstream rather than
-  // looping through the serving API's DB-backed /games route.
   return fetchGamesFromStats(season, { dateFrom, dateTo });
 }
 
@@ -2144,6 +2206,72 @@ async function loadGamesForSeason(season) {
     return rows;
   }
   return fetchGames(season);
+}
+
+async function loadStoredGamesForSeason(season) {
+  const seasonYear = seasonToYear(season);
+  const query = {
+    select:
+      "game_id,date,start_time,home_team_id,home_team_name,home_team_score,away_team_id,away_team_name,away_team_score,season",
+  };
+  if (seasonYear !== null && seasonYear !== undefined) {
+    query.season = `eq.${seasonYear}`;
+  }
+  return supabaseSelectAll("games", query);
+}
+
+function filterGamesByDateRange(rows, dateFrom, dateTo) {
+  return (rows || []).filter((row) => {
+    const gameDate = normalizeGameDate(row?.date, CONFIG.timeZone);
+    if (!gameDate) return false;
+    if (dateFrom && gameDate < dateFrom) return false;
+    if (dateTo && gameDate > dateTo) return false;
+    return true;
+  });
+}
+
+async function fetchGamesForRecentWindow(season, { dateFrom, dateTo } = {}) {
+  const merged = new Map();
+  try {
+    const storedGames = await loadStoredGamesForSeason(season);
+    for (const game of filterGamesByDateRange(storedGames, dateFrom, dateTo)) {
+      if (game?.game_id) {
+        merged.set(game.game_id, game);
+      }
+    }
+  } catch (error) {
+    log("Stored games fetch failed; falling back to upstream for recent window", {
+      season,
+      date_from: dateFrom ?? null,
+      date_to: dateTo ?? null,
+      ...formatErrorForLog(error),
+    });
+  }
+
+  const today = formatDateInTZ(CONFIG.timeZone);
+  if ((!dateFrom || dateFrom <= today) && (!dateTo || dateTo >= today)) {
+    try {
+      const liveGames = await fetchLiveScoreboardGames(season);
+      for (const game of liveGames) {
+        if (game?.game_id) {
+          merged.set(game.game_id, game);
+        }
+      }
+    } catch (error) {
+      log("Live scoreboard fetch failed during recent window load", {
+        season,
+        date_from: dateFrom ?? null,
+        date_to: dateTo ?? null,
+        ...formatErrorForLog(error),
+      });
+    }
+  }
+
+  if (merged.size > 0) {
+    return Array.from(merged.values());
+  }
+
+  return fetchGames(season, { dateFrom, dateTo });
 }
 
 async function fetchBoxscoreAdvancedTeamStats(gameId) {
@@ -2665,11 +2793,12 @@ async function refreshTeamDetails() {
     await runWithConcurrency(teams, CONFIG.boxscoreConcurrency, async (team) => {
       const payload = await fetchTeamDetailsPayload(team.id);
       const detail = normalizeTeamDetailsPayload(payload, team.id);
-      const row = mapTeamDetailRow(detail, team.id);
+      const teamId = team.id ?? team.team_id;
+      const row = mapTeamDetailRow(detail, teamId);
       if (row && row.team_id) {
         await supabaseUpsert("team_details", [row], "team_id");
         await writeCache(
-          CacheKeys.teamDetails(team.id),
+          CacheKeys.teamDetails(teamId),
           detail,
           CONFIG.cacheTtlTeamDetailsSec
         );
@@ -3498,7 +3627,7 @@ async function refreshRecentBoxscores({ lookbackDays, entity = "boxscores" } = {
   const dateTo = formatDateInTZ(CONFIG.timeZone, endDate);
   await withIngestionState(entity, async () => {
     throwIfCronBudgetExceeded("boxscores_page");
-    const games = await fetchGamesFromStats(season, { dateFrom, dateTo });
+    const games = await fetchGamesForRecentWindow(season, { dateFrom, dateTo });
     const gameIds = [...new Set(games.map((row) => row.game_id).filter(Boolean))];
     let totalPlayers = 0;
     throwIfCronBudgetExceeded("boxscores_updates");
@@ -3522,7 +3651,7 @@ async function refreshRecentGames({ lookbackDays, entity = "games_recent" } = {}
   const dateFrom = formatDateInTZ(CONFIG.timeZone, startDate);
   const dateTo = formatDateInTZ(CONFIG.timeZone, endDate);
   await withIngestionState(entity, async () => {
-    const games = await fetchGames(season, { dateFrom, dateTo });
+    const games = await fetchGamesForRecentWindow(season, { dateFrom, dateTo });
     const rows = games.map((row) => mapGameRow(row, season)).filter(Boolean);
     let total = 0;
     if (rows.length) {
@@ -3564,14 +3693,6 @@ async function runWithConcurrency(items, limit, fn, { strict = false } = {}) {
           errors.push({ item, error: String(error) });
           return;
         }
-        if (isCircuitOpenError(error)) {
-          if (!circuitOpen) {
-            log("API circuit open; halting task batch", { item });
-          }
-          circuitOpen = true;
-          errors.push({ item, error: String(error) });
-          return;
-        }
         errors.push({ item, error: String(error) });
         log("Worker task failed", { item, ...formatErrorForLog(error, { includeStack: true }) });
       }
@@ -3593,10 +3714,6 @@ function scheduleTask(name, intervalMs, fn, runImmediately = true) {
   let inFlight = false;
   const run = async () => {
     if (inFlight) return;
-    if (isCircuitOpen()) {
-      log("API circuit open; skipping task", { task: name });
-      return;
-    }
     inFlight = true;
     try {
       await fn();
@@ -3627,10 +3744,6 @@ function startWorker() {
 
 async function runCronTask(entity, intervalMs, fn) {
   if (!(await shouldRun(entity, intervalMs, { logSkip: true }))) {
-    return;
-  }
-  if (isCircuitOpen()) {
-    log("API circuit open; skipping cron task", { task: entity });
     return;
   }
   throwIfCronBudgetExceeded(`cron_task:${entity}`);
@@ -3814,6 +3927,7 @@ module.exports = {
   applyRanks,
   computeRetryWaitMs,
   dedupeRowsForConflict,
+  parseStatsEndpointUrl,
   formatErrorForLog,
   compactObject,
   toDateText,
