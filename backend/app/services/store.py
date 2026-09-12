@@ -6,6 +6,7 @@ import json
 from datetime import UTC, date, datetime
 from typing import Any
 
+from ..cache_helpers import ObservedData, source_observed_at
 from ..supabase import SupabaseClient
 
 
@@ -43,8 +44,8 @@ def _parse_list(value: Any) -> list[str]:
                 cleaned.append(text)
         return cleaned
     if isinstance(parsed, str):
-        cleaned = parsed.strip()
-        return [cleaned] if cleaned else []
+        text = parsed.strip()
+        return [text] if text else []
     if parsed is None:
         return []
     return [str(parsed)]
@@ -244,6 +245,19 @@ async def fetch_team_by_abbr(supabase: SupabaseClient, abbreviation: str) -> dic
     return await supabase.select_one("teams", filters={"abbreviation": f"eq.{abbr}"})
 
 
+async def fetch_observed_api_snapshot(supabase: SupabaseClient, cache_key: str) -> ObservedData:
+    row = await supabase.select_one("api_snapshots", filters={"cache_key": f"eq.{cache_key}"})
+    if not row:
+        return ObservedData(None, None)
+    payload = row.get("payload")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            payload = None
+    return ObservedData(payload, source_observed_at(row))
+
+
 async def fetch_api_snapshot(supabase: SupabaseClient, cache_key: str) -> Any | None:
     row = await supabase.select_one("api_snapshots", filters={"cache_key": f"eq.{cache_key}"})
     if not row:
@@ -371,6 +385,7 @@ async def upsert_user_account(
 
 
 async def store_api_snapshot(supabase: SupabaseClient, cache_key: str, payload: Any) -> None:
+    observed_at = source_observed_at(payload)
     await supabase.upsert(
         "api_snapshots",
         [
@@ -378,6 +393,7 @@ async def store_api_snapshot(supabase: SupabaseClient, cache_key: str, payload: 
                 "cache_key": cache_key,
                 "payload": json.dumps(payload, default=str),
                 "updated_at": datetime.utcnow().isoformat(),
+                "observed_at": observed_at.isoformat() if observed_at else None,
             }
         ],
         on_conflict="cache_key",
@@ -417,7 +433,7 @@ async def fetch_players(
         full_name = row.get("full_name") or ""
         first_name, last_name = _split_name(full_name)
         team_id = _coerce_int(row.get("current_team_id"))
-        team = teams_by_id.get(team_id) or {}
+        team = (teams_by_id.get(team_id) or {}) if team_id is not None else {}
         is_active = str(row.get("is_active") or "").strip().lower() == "true"
         results.append(
             {
@@ -555,7 +571,7 @@ async def fetch_player_career(
     results: list[dict[str, Any]] = []
     for row in rows:
         team_id = _coerce_int(row.get("team_id"))
-        team = teams_by_id.get(team_id) or {}
+        team = (teams_by_id.get(team_id) or {}) if team_id is not None else {}
         results.append(
             {
                 "season_id": _first_non_empty_text(row.get("season")),
@@ -625,7 +641,7 @@ async def fetch_player_stats(
         player = players_by_id.get(player_key) or {}
         player_info = player_info_by_id.get(player_key) or {}
         team_id_value = _coerce_int(row.get("team_id"))
-        team = teams_by_id.get(team_id_value) or {}
+        team = (teams_by_id.get(team_id_value) or {}) if team_id_value is not None else {}
         points = _coerce_float(row.get("points_pg"))
         if points is None:
             points = _coerce_float(row.get("points"))
@@ -755,16 +771,20 @@ async def fetch_games(
             home_result = (
                 "W"
                 if home_score is not None and away_score is not None and home_score > away_score
-                else "L"
-                if home_score is not None and away_score is not None and home_score < away_score
-                else None
+                else (
+                    "L"
+                    if home_score is not None and away_score is not None and home_score < away_score
+                    else None
+                )
             )
             away_result = (
                 "W"
                 if home_score is not None and away_score is not None and away_score > home_score
-                else "L"
-                if home_score is not None and away_score is not None and away_score < home_score
-                else None
+                else (
+                    "L"
+                    if home_score is not None and away_score is not None and away_score < home_score
+                    else None
+                )
             )
             if home_team_id is not None:
                 per_team_rows.append(
@@ -1057,9 +1077,9 @@ async def fetch_player_gamelog_from_boxscores(
         team_filters = {"team_id": f"in.({','.join(str(team_id) for team_id in team_ids)})"}
         teams = await supabase.select("teams", filters=team_filters)
         teams_by_id = {
-            _coerce_int(team.get("team_id")): team
+            team_key: team
             for team in teams
-            if team.get("team_id") is not None
+            if (team_key := _coerce_int(team.get("team_id"))) is not None
         }
 
     logs: list[dict[str, Any]] = []
@@ -1068,9 +1088,9 @@ async def fetch_player_gamelog_from_boxscores(
         game_id = row.get("game_id")
         if not game_id or game_id in used_games:
             continue
-        game = games_by_id.get(game_id)
-        if not game:
+        if game_id not in games_by_id:
             continue
+        game = games_by_id[game_id]
         game_date = _parse_game_date(game.get("date") or game.get("game_date"))
         if not game_date:
             continue

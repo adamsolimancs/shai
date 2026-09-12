@@ -166,9 +166,7 @@ class NameResolver:
             display = f"{row.get('TEAM_CITY', '')} {row.get('TEAM_NAME', '')}".strip()
             key = _normalize(display)
             abbreviation = (
-                row.get("TEAM_ABBREVIATION")
-                or row.get("TRICODE")
-                or row.get("ABBREVIATION")
+                row.get("TEAM_ABBREVIATION") or row.get("TRICODE") or row.get("ABBREVIATION")
             )
             teams[key] = {
                 "id": int(row.get("TEAM_ID")),

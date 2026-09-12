@@ -301,7 +301,7 @@ const HeroSection = () => (
         WELCOME TO ShAI
       </h1>
       <p className="mt-3 text-sm text-(--foreground-muted)/70 sm:mt-4 sm:text-base md:text-lg">
-        AI that speaks basketball: real-time stats, player insights, and predictive analytics powered by AI.
+        NBA scores, player insights, standings, and advanced stats in one place.
       </p>
     </div>
     <Suspense
@@ -317,13 +317,29 @@ const HeroSection = () => (
   </section>
 );
 
+function settledSection<T>(
+  section: string,
+  result: PromiseSettledResult<T>,
+  fallback: T,
+): T {
+  if (result.status === "fulfilled") {
+    return result.value;
+  }
+  console.error(`Homepage ${section} section failed to load`, result.reason);
+  return fallback;
+}
+
 export default async function HomePage() {
-  const [scores, players, leagueStandings, news] = await Promise.all([
+  const [scoresResult, playersResult, standingsResult, newsResult] = await Promise.allSettled([
     fetchRecentGames(),
     fetchPlayerHighlights(),
     fetchLeagueStandings(),
     fetchNews(),
   ]);
+  const scores = settledSection("scores", scoresResult, []);
+  const players = settledSection("players", playersResult, []);
+  const leagueStandings = settledSection("standings", standingsResult, []);
+  const news = settledSection("news", newsResult, []);
   const conferenceBuckets = buildConferenceBuckets(leagueStandings);
   const stories = [...news]
     .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())
@@ -360,7 +376,13 @@ export default async function HomePage() {
         <SectionTitle title="Recent Games" eyebrow="Live scores" link={{ href: "/scores", label: "View all scores →" }} />
         {/* TODO: if no recent games (offseason), display last season's playoff results. */}
         <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3 md:gap-5 lg:mx-auto lg:max-w-5xl lg:justify-items-center">
-          {scores.map((game) => {
+          {scores.length === 0 ? (
+            <div className="col-span-full w-full rounded-3xl border border-white/10 bg-slate-950/60 p-6 text-center text-sm text-white/70">
+              {scoresResult.status === "rejected"
+                ? "Scores are temporarily unavailable."
+                : "No recent games are available."}
+            </div>
+          ) : scores.map((game) => {
             const winner =
               game.homeScore === game.awayScore ? "even" : game.homeScore > game.awayScore ? "home" : "away";
             return (
@@ -386,7 +408,13 @@ export default async function HomePage() {
       <section id="players" className="mt-12 sm:mt-16 lg:mt-20">
         <SectionTitle title="Player Spotlight" eyebrow="Trending performers" link={{ href: "/players", label: "View all players →" }} />
         <div className="grid gap-4 sm:gap-6 md:grid-cols-3">
-          {players.map((player) => (
+          {players.length === 0 ? (
+            <div className="rounded-3xl border border-white/10 bg-slate-950/60 p-6 text-center text-sm text-white/70 md:col-span-3">
+              {playersResult.status === "rejected"
+                ? "Player highlights are temporarily unavailable."
+                : "No player highlights are available."}
+            </div>
+          ) : players.map((player) => (
             <StarBorder
               key={player.id}
               as={Link}

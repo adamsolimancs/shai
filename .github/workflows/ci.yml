@@ -91,10 +91,17 @@ jobs:
       - name: Frontend tests
         run: npm run test
 
+      - name: Install Chromium for fixture journeys
+        run: npx playwright install --with-deps chromium
+
+      - name: Desktop and mobile fixture journeys
+        run: npm run test:e2e
+
       - name: Frontend build
         env:
-          NBA_API_BASE_URL: http://localhost:8080
-          NBA_API_KEY: test-key
+          BACKEND_API_BASE_URL: http://localhost:8080
+          BACKEND_API_KEY: test-key
+          BACKEND_API_TIMEOUT_MS: 10000
           NBA_DEFAULT_SEASON: 2025-26
           AUTH_SECRET: test-auth-secret
         run: npm run build
@@ -120,3 +127,9 @@ jobs:
 
       - name: Worker tests
         run: npm run test
+
+      - name: Install local Redis for lease integration
+        run: sudo apt-get update && sudo apt-get install -y redis-server redis-tools
+
+      - name: Real Redis lease integration
+        run: npm run test:lease-integration

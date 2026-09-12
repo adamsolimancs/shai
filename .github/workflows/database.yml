@@ -1,0 +1,27 @@
+name: Database baseline
+
+on:
+  pull_request:
+    paths:
+      - 'database/**'
+      - '.github/workflows/database.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'database/**'
+      - '.github/workflows/database.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  reconstruct:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install PostgreSQL
+        run: sudo apt-get update && sudo apt-get install -y postgresql postgresql-contrib
+      - name: Reconstruct and exercise atomic snapshot publication
+        run: |
+          export PATH="$(pg_config --bindir):$PATH"
+          python3 database/tests/test_baseline.py

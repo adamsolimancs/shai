@@ -4,7 +4,14 @@ from app.services.store import fetch_boxscore
 
 
 class DummySupabase:
-    def __init__(self, *, rpc_payload=None, row=None, players=None, rpc_error: Exception | None = None):
+    def __init__(
+        self,
+        *,
+        rpc_payload=None,
+        row=None,
+        players=None,
+        rpc_error: Exception | None = None,
+    ):
         self.rpc_payload = rpc_payload
         self.row = row
         self.players = players or []

@@ -19,6 +19,13 @@ def success(
 ) -> Envelope[T]:
     meta = ServiceMeta(
         request_id=getattr(request.state, "request_id", None),
+        source=getattr(request.state, "data_source", "service"),
+        as_of=(
+            cache.as_of
+            if cache is not None and cache.as_of is not None
+            else getattr(request.state, "data_as_of", None)
+        ),
+        stale=cache.stale if cache is not None else False,
         cache=cache,
         pagination=pagination,
     )

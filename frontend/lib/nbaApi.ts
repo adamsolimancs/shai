@@ -1,12 +1,17 @@
 const API_BASE_URL = process.env.BACKEND_API_BASE_URL || "http://localhost:8080";
 const API_KEY = process.env.BACKEND_API_KEY;
-const ENV_TIMEOUT_MS = Number(process.env.NBA_API_TIMEOUT_MS ?? "");
+const ENV_TIMEOUT_MS = Number(
+  process.env.BACKEND_API_TIMEOUT_MS ?? process.env.NBA_API_TIMEOUT_MS ?? "",
+);
 
-type Envelope<T> = {
+export type Envelope<T> = {
   ok: true;
   data: T;
   meta: {
     request_id?: string;
+    source: string;
+    as_of: string | null;
+    stale: boolean;
   };
 };
 
@@ -18,18 +23,33 @@ type ErrorEnvelope = {
   };
 };
 
+export class NbaApiError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = "NbaApiError";
+  }
+}
+
 const DEFAULT_REVALIDATE_SECONDS = 300;
 const DEFAULT_CACHE: RequestCache = "no-store";
 const DEFAULT_TIMEOUT_MS =
   Number.isFinite(ENV_TIMEOUT_MS) && ENV_TIMEOUT_MS > 0 ? ENV_TIMEOUT_MS : 10_000;
-export const DEFAULT_SEASON = process.env.NBA_DEFAULT_SEASON || "2025-26";
+
+export function seasonForDate(value: Date = new Date()): string {
+  const year = value.getUTCFullYear();
+  const month = value.getUTCMonth();
+  const startYear = month >= 9 ? year : year - 1;
+  return `${startYear}-${String((startYear + 1) % 100).padStart(2, "0")}`;
+}
+
+export const DEFAULT_SEASON = process.env.NBA_DEFAULT_SEASON?.trim() || seasonForDate();
 
 type NbaFetchInit = RequestInit & { next?: { revalidate?: number }; timeoutMs?: number };
 
-export async function nbaFetch<T>(
+export async function nbaFetchEnvelope<T>(
   path: string,
   init?: NbaFetchInit,
-): Promise<T> {
+): Promise<Envelope<T>> {
   if (!API_KEY) {
     throw new Error("BACKEND_API_KEY must be set to call the backend.");
   }
@@ -98,14 +118,14 @@ export async function nbaFetch<T>(
       errorBody && typeof errorBody === "object" && "error" in errorBody
         ? (errorBody as Partial<ErrorEnvelope>).error?.message
         : undefined;
-    throw new Error(message || `NBA API request failed with ${response.status}`);
+    throw new NbaApiError(message || `NBA API request failed with ${response.status}`, response.status);
   }
 
   const body = (await response.json()) as Envelope<T> | ErrorEnvelope;
   if (!body.ok) {
     throw new Error(body.error?.message || "NBA API returned error");
   }
-  return body.data;
+  return body;
 }
 
 async function safeJson(response: Response): Promise<Record<string, unknown> | null> {
@@ -114,4 +134,31 @@ async function safeJson(response: Response): Promise<Record<string, unknown> | n
   } catch {
     return null;
   }
+}
+
+// Data-only adapter for consumers that do not display freshness.
+export async function nbaFetch<T>(path: string, init?: NbaFetchInit): Promise<T> {
+  return (await nbaFetchEnvelope<T>(path, init)).data;
+}
+
+export function combineFreshness(metas: Envelope<unknown>["meta"][]): Envelope<unknown>["meta"] {
+  const times = metas.map((meta) => meta.as_of ? Date.parse(meta.as_of) : NaN);
+  return {
+    source: [...new Set(metas.map((meta) => meta.source))].join(", "),
+    stale: metas.some((meta) => meta.stale),
+    as_of: times.length && times.every(Number.isFinite) ? new Date(Math.min(...times)).toISOString() : null,
+  };
+}
+
+// Keep observations local to a composed server view (never shared across requests).
+export function createObservedFetcher() {
+  const metas: Envelope<unknown>["meta"][] = [];
+  return {
+    metas,
+    async fetch<T>(path: string, init?: NbaFetchInit): Promise<T> {
+      const response = await nbaFetchEnvelope<T>(path, init);
+      metas.push(response.meta);
+      return response.data;
+    },
+  };
 }

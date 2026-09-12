@@ -219,8 +219,8 @@ async function fetchLeagueStandingsData(season: string): Promise<LeagueStanding[
   }
 }
 
-export default async function TeamsPage({ searchParams = {} }: { searchParams?: SearchParams }) {
-  const requestedSeason = extractParam(searchParams, "season");
+export default async function TeamsPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
+  const requestedSeason = extractParam((await searchParams) ?? {}, "season");
   const preferredSeason = isValidSeason(requestedSeason) ? requestedSeason : DEFAULT_SEASON;
 
   const meta = await nbaFetch<MetaResponse>("/v1/meta", { next: { revalidate: 3600 } });

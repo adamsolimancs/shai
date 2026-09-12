@@ -18,6 +18,17 @@ Client -> Backend API -> Redis (hot) -> DB (warm fallback) -> NBA API (rare; mos
 ## Setup
 Prereqs: Node 20+, Python 3.11+. Redis is optional but recommended.
 
+Install the frontend and backend dependencies using the setup steps below. Then,
+from the repository root, start the complete local app with:
+```bash
+npm install
+npm run dev
+```
+This starts the API at http://localhost:8080 and the frontend at
+http://localhost:3000. The command automatically uses `backend/.venv/bin/python`
+when that virtual environment exists; otherwise it uses `python` or `python3` from
+your shell.
+
 ### Backend API
 ```bash
 cd backend

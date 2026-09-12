@@ -6,12 +6,72 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any, TypeAlias
 
 from .cache import CacheBackend, RedisClientProtocol
 from .schemas import CacheMeta
 
 logger = logging.getLogger(__name__)
+CacheTTL: TypeAlias = int | Callable[[Any], int]
+CACHE_METADATA_SUFFIX = ":observation:v1"
+
+
+@dataclass
+class ObservedData:
+    data: Any
+    observed_at: datetime | None
+    stale: bool = False
+
+
+def observation_is_stale(as_of: datetime | None, ttl: int) -> bool:
+    return as_of is not None and (datetime.now(UTC) - as_of).total_seconds() > ttl
+
+
+def _resolve_ttl(ttl: CacheTTL, data: Any) -> int:
+    resolved = ttl(data) if callable(ttl) else ttl
+    return max(1, resolved)
+
+
+async def read_cache_as_of(
+    cache: CacheBackend,
+    key: str,
+    *,
+    stale: bool = False,
+) -> datetime | None:
+    metadata_key = f"{key}{CACHE_METADATA_SUFFIX}"
+    payload = await (cache.get_stale(metadata_key) if stale else cache.get(metadata_key))
+    return source_observed_at(payload)
+
+
+def source_observed_at(data: Any) -> datetime | None:
+    """Oldest known source observation; never infer one from cache or request time."""
+    if isinstance(data, list):
+        times = [source_observed_at(row) for row in data]
+        if not times or any(value is None for value in times):
+            return None
+        return min(value for value in times if value is not None)
+    raw = data.get("observed_at") if isinstance(data, dict) else None
+    try:
+        value = datetime.fromisoformat(raw) if isinstance(raw, str) else raw
+        return value if isinstance(value, datetime) and value.tzinfo is not None else None
+    except ValueError:
+        return None
+
+
+async def write_cache_as_of(
+    cache: CacheBackend,
+    key: str,
+    *,
+    as_of: datetime | None,
+    ttl: int,
+) -> None:
+    await cache.set(
+        f"{key}{CACHE_METADATA_SUFFIX}",
+        {"observed_at": as_of.isoformat() if as_of else None},
+        ttl,
+    )
 
 
 async def _acquire_lock(
@@ -36,7 +96,7 @@ async def get_or_set_cache(
     cache: CacheBackend,
     redis_client: RedisClientProtocol | None,
     key: str,
-    ttl: int,
+    ttl: CacheTTL,
     fetcher: Callable[[], Awaitable[Any]],
     allow_stale: bool = True,
     nocache: bool = False,
@@ -47,7 +107,12 @@ async def get_or_set_cache(
         cached = await cache.get(key)
         if cached is not None:
             logger.info("cache download", extra={"result": "hit"})
-            return cached, CacheMeta(hit=True, stale=False)
+            as_of = await read_cache_as_of(cache, key) or source_observed_at(cached)
+            return cached, CacheMeta(
+                hit=True,
+                stale=observation_is_stale(as_of, _resolve_ttl(ttl, cached)),
+                as_of=as_of,
+            )
 
     lock_key = f"{key}:lock"
     acquired = await _acquire_lock(redis_client, lock_key, lock_ttl_ms)
@@ -56,7 +121,12 @@ async def get_or_set_cache(
         cached = await cache.get(key)
         if cached is not None:
             logger.info("cache download", extra={"result": "hit_after_wait"})
-            return cached, CacheMeta(hit=True, stale=False)
+            as_of = await read_cache_as_of(cache, key) or source_observed_at(cached)
+            return cached, CacheMeta(
+                hit=True,
+                stale=observation_is_stale(as_of, _resolve_ttl(ttl, cached)),
+                as_of=as_of,
+            )
 
     try:
         data = await fetcher()
@@ -65,14 +135,28 @@ async def get_or_set_cache(
             stale = await cache.get_stale(key)
             if stale is not None:
                 logger.warning("cache download", extra={"result": "stale"})
-                return stale, CacheMeta(hit=True, stale=True)
+                return stale, CacheMeta(
+                    hit=True,
+                    stale=True,
+                    as_of=await read_cache_as_of(cache, key, stale=True)
+                    or source_observed_at(stale),
+                )
         raise
     finally:
         if acquired:
             await _release_lock(redis_client, lock_key)
 
-    if not nocache:
-        await cache.set(key, data, ttl)
+    source_stale = False
+    if isinstance(data, ObservedData):
+        as_of, source_stale, data = data.observed_at, data.stale, data.data
+    else:
+        as_of = source_observed_at(data)
+    resolved_ttl = _resolve_ttl(ttl, data)
+    if not nocache and not source_stale:
+        await cache.set(key, data, resolved_ttl)
+        await write_cache_as_of(cache, key, as_of=as_of, ttl=resolved_ttl)
     elapsed_ms = int((time.perf_counter() - start) * 1000)
     logger.info("cache upload", extra={"result": "miss", "latency_ms": elapsed_ms})
-    return data, CacheMeta(hit=False, stale=False)
+    return data, CacheMeta(
+        hit=False, stale=source_stale or observation_is_stale(as_of, resolved_ttl), as_of=as_of
+    )

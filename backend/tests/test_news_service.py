@@ -174,6 +174,9 @@ async def test_get_latest_prefers_db_before_upstream(monkeypatch: pytest.MonkeyP
 
     assert meta.hit is False
     assert meta.stale is False
+    assert meta.as_of is None  # A database read is not a new source observation.
+    _, cached_meta = await service.get_latest()
+    assert cached_meta.as_of is None
     assert articles[0].title == "From DB"
     cached = await cache.get("news:latest")
     assert cached[0]["title"] == "From DB"

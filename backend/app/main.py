@@ -65,23 +65,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await news_client.close()
 
 
+settings = get_settings()
+
 app = FastAPI(
     title="NBA Data API",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/docs" if settings.enable_docs else None,
+    redoc_url="/redoc" if settings.enable_docs else None,
+    openapi_url="/openapi.json" if settings.enable_docs else None,
     lifespan=lifespan,
 )
 
-settings = get_settings()
 configure_logging(settings.log_level, settings.log_format, settings.environment)
 
 app.add_middleware(RequestContextMiddleware, settings=settings)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_methods=["GET"],
-    allow_headers=["*"],
+    allow_methods=list(settings.cors_allow_methods),
+    allow_headers=list(settings.cors_allow_headers),
     allow_credentials=settings.cors_allow_credentials,
 )
 
@@ -111,7 +113,9 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     else:
         error_detail = ErrorDetail(code="HTTP_ERROR", message=str(exc.detail), retryable=False)
     payload = ErrorEnvelope(ok=False, error=error_detail)
-    return JSONResponse(status_code=exc.status_code, content=payload.model_dump())
+    return JSONResponse(
+        status_code=exc.status_code, content=payload.model_dump(), headers=exc.headers
+    )
 
 
 @app.exception_handler(Exception)

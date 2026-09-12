@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -48,7 +48,7 @@ class SupabaseClient:
         url = f"{self._base_url}/rest/v1/{table}"
         response = await self._client.get(url, params=params, headers=self._headers)
         response.raise_for_status()
-        return response.json()
+        return cast(list[dict[str, Any]], response.json())
 
     async def select_one(
         self,
@@ -150,7 +150,10 @@ class SupabaseClient:
         normalized_email = email.strip().lower()
         for user in await self.list_auth_users():
             existing_email = user.get("email")
-            if isinstance(existing_email, str) and existing_email.strip().lower() == normalized_email:
+            if (
+                isinstance(existing_email, str)
+                and existing_email.strip().lower() == normalized_email
+            ):
                 return user
         return await self.create_auth_user(
             email=normalized_email,

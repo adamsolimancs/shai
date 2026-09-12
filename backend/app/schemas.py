@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 class CacheMeta(BaseModel):
     hit: bool = False
     stale: bool = False
+    as_of: datetime | None = None
 
 
 class PaginationMeta(BaseModel):
@@ -25,6 +26,9 @@ class PaginationMeta(BaseModel):
 
 class ServiceMeta(BaseModel):
     request_id: str | None = None
+    source: str = "service"
+    as_of: datetime | None = None
+    stale: bool = False
     cache: CacheMeta | None = None
     pagination: PaginationMeta | None = None
 
@@ -76,6 +80,14 @@ class Player(BaseModel):
     team_id: int | None = None
     team_abbreviation: str | None = None
     is_active: bool = True
+
+
+class SearchSuggestion(BaseModel):
+    type: Literal["player", "team"]
+    id: int
+    name: str
+    subtitle: str | None = None
+    url: str
 
 
 class PlayerBio(BaseModel):

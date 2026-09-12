@@ -211,6 +211,7 @@ test("fetchGames sources fresh game lists from stats.nba.com", { concurrency: fa
   };
 
   try {
+    const started = Date.now();
     const games = await worker.fetchGames("2025-26", {
       dateFrom: "2026-04-08",
       dateTo: "2026-04-08",
@@ -219,9 +220,12 @@ test("fetchGames sources fresh game lists from stats.nba.com", { concurrency: fa
     assert.equal(requests.length, 1);
     assert.match(requests[0], /^https:\/\/stats\.nba\.com\/stats\/leaguegamefinder\?/);
     assert.ok(!requests[0].includes("/v1/games"));
+    assert.ok(Date.parse(games[0].observed_at) >= started);
+    assert.ok(Date.parse(games[0].observed_at) <= Date.now());
     assert.deepEqual(games, [
       {
         game_id: "0022500001",
+        observed_at: games[0].observed_at,
         date: "2026-04-08",
         start_time: null,
         home_team_id: 10,
@@ -260,6 +264,7 @@ test("row mappers normalize payloads", () => {
   });
   assert.deepEqual(worker.mapGameRow({ game_id: "001", date: "2024-10-10" }, "2024-25"), {
     game_id: "001",
+    observed_at: null,
     date: "2024-10-10",
     start_time: null,
     home_team_id: null,
@@ -556,4 +561,18 @@ test("parseCursor and chunkArray", () => {
   assert.deepEqual(worker.parseCursor({ last_cursor: "{\"page\":1}" }), { page: 1 });
   assert.equal(worker.parseCursor({ last_cursor: "invalid" }), null);
   assert.deepEqual(worker.chunkArray([1, 2, 3, 4, 5], 2), [[1, 2], [3, 4], [5]]);
+});
+
+
+test("source observation survives persistence mapping and mixed sources remain unknown", () => {
+  const observed_at = "2026-01-15T18:30:00.000Z";
+  const box = { game_id: "001", observed_at, game_date: "2026-01-15" };
+  const payload = worker.buildGameSnapshotPayload(box);
+  assert.equal(payload.p_game.observed_at, observed_at);
+  assert.equal(payload.p_boxscore.observed_at, observed_at);
+  assert.equal(worker.mapGameRow({ game_id: "001", observed_at }).observed_at, observed_at);
+  assert.equal(worker.sourceObservedAt([{ observed_at }, { observed_at: "2026-01-16T00:00:00Z" }]), observed_at);
+  assert.equal(worker.sourceObservedAt([{ observed_at }, {}]), null);
+  assert.equal(worker.sourceObservedAt([]), null);
+  assert.equal(worker.sourceObservedAt({ updated_at: observed_at }), null);
 });

@@ -49,7 +49,7 @@ def scoreboard_key(settings: Settings, game_date: date | str) -> str:
 
 
 def boxscore_key(settings: Settings, game_id: str) -> str:
-    return cache_key(settings, "boxscore", game_id)
+    return cache_key(settings, "boxscore", "v2", game_id)
 
 
 def standings_key(settings: Settings, season: str, league_id: str, season_type: str) -> str:

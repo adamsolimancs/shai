@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { nbaFetch } from "@/lib/nbaApi";
+import DataFreshness from "@/components/DataFreshness";
+import { nbaFetchEnvelope, NbaApiError, type Envelope } from "@/lib/nbaApi";
 import { slugifySegment } from "@/lib/utils";
 
 type BoxScoreTeamLeader = {
@@ -156,27 +157,6 @@ type BoxScoreGame = {
 type BoxScoreParams = {
   id?: string | string[];
   ":id"?: string | string[];
-};
-
-type StatsResultSet = {
-  name?: string;
-  headers: string[];
-  rowSet: unknown[][];
-};
-
-type StatsPayload = {
-  resultSets?: unknown;
-  resultSet?: unknown;
-};
-
-type TraditionalBoxScoreData = {
-  players: BoxScoreTraditionalPlayer[];
-  teamTotals: BoxScoreTeamTotals[];
-  starterBench: BoxScoreStarterBenchRow[];
-};
-
-type AdvancedBoxScoreData = {
-  players: BoxScoreAdvancedPlayer[];
 };
 
 type TopPerformer = {
@@ -371,369 +351,6 @@ function groupByTeam<T extends { team_id: number }>(rows: T[]) {
     acc[row.team_id].push(row);
     return acc;
   }, {} as Record<number, T[]>);
-}
-
-function mapResultSet(set?: StatsResultSet) {
-  if (!set) return [] as Record<string, unknown>[];
-  return set.rowSet.map((row) =>
-    set.headers.reduce<Record<string, unknown>>((acc, header, index) => {
-      acc[header] = row[index];
-      return acc;
-    }, {}),
-  );
-}
-
-function normalizeResultSet(input: unknown, fallbackName?: string): StatsResultSet | null {
-  if (!input || typeof input !== "object") return null;
-  const record = input as Record<string, unknown>;
-  if (!Array.isArray(record.headers) || !Array.isArray(record.rowSet)) {
-    return null;
-  }
-  return {
-    name: typeof record.name === "string" && record.name.trim().length ? record.name : fallbackName,
-    headers: record.headers.map((header) => String(header)),
-    rowSet: record.rowSet as unknown[][],
-  };
-}
-
-function extractResultSets(payload?: StatsPayload | null): StatsResultSet[] {
-  const source = payload?.resultSets ?? payload?.resultSet;
-  if (!source) return [];
-
-  if (Array.isArray(source)) {
-    return source
-      .map((entry) => normalizeResultSet(entry))
-      .filter((entry): entry is StatsResultSet => Boolean(entry));
-  }
-
-  const direct = normalizeResultSet(source);
-  if (direct) {
-    return [direct];
-  }
-
-  if (typeof source === "object") {
-    return Object.entries(source as Record<string, unknown>)
-      .map(([name, entry]) => normalizeResultSet(entry, name))
-      .filter((entry): entry is StatsResultSet => Boolean(entry));
-  }
-
-  return [];
-}
-
-function mapNamedResultSet(payload: StatsPayload, setName: string) {
-  const resultSets = extractResultSets(payload);
-  if (!resultSets.length) {
-    return [] as Record<string, unknown>[];
-  }
-  const target =
-    resultSets.find((set) => (set.name ?? "").toLowerCase() === setName.toLowerCase()) ??
-    resultSets[0];
-  return mapResultSet(target);
-}
-
-function pickRowValue(row: Record<string, unknown>, ...keys: string[]) {
-  for (const key of keys) {
-    const value = row[key];
-    if (value !== undefined && value !== null && value !== "") {
-      return value;
-    }
-  }
-  return null;
-}
-
-function coerceNumber(value: unknown): number | null {
-  if (value === null || value === undefined || value === "") return null;
-  const num = typeof value === "number" ? value : Number(value);
-  return Number.isFinite(num) ? num : null;
-}
-
-function coerceInt(value: unknown): number | null {
-  const num = coerceNumber(value);
-  return num === null ? null : Math.trunc(num);
-}
-
-function coerceString(value: unknown): string | null {
-  if (value === null || value === undefined) return null;
-  const str = String(value).trim();
-  return str.length ? str : null;
-}
-
-function mapAdvancedPlayerRow(row: Record<string, unknown>): BoxScoreAdvancedPlayer {
-  const minutesValue = pickRowValue(row, "MIN", "minutes");
-  return {
-    player_id: coerceInt(pickRowValue(row, "PLAYER_ID", "personId", "playerId")) ?? 0,
-    player_name:
-      coerceString(pickRowValue(row, "PLAYER_NAME", "playerName", "nameI", "firstName")) ??
-      "Unknown player",
-    team_id: coerceInt(pickRowValue(row, "TEAM_ID", "teamId")) ?? 0,
-    team_abbreviation: coerceString(
-      pickRowValue(row, "TEAM_ABBREVIATION", "teamTricode", "teamAbbreviation"),
-    ),
-    minutes:
-      typeof minutesValue === "string" ? minutesValue : coerceString(minutesValue),
-    offensive_rating: coerceNumber(
-      pickRowValue(
-        row,
-        "OFF_RATING",
-        "E_OFF_RATING",
-        "offensiveRating",
-        "estimatedOffensiveRating",
-      ),
-    ),
-    defensive_rating: coerceNumber(
-      pickRowValue(
-        row,
-        "DEF_RATING",
-        "E_DEF_RATING",
-        "defensiveRating",
-        "estimatedDefensiveRating",
-      ),
-    ),
-    net_rating: coerceNumber(
-      pickRowValue(row, "NET_RATING", "E_NET_RATING", "netRating", "estimatedNetRating"),
-    ),
-    usage_pct: coerceNumber(
-      pickRowValue(row, "USG_PCT", "E_USG_PCT", "usagePercentage", "estimatedUsagePercentage"),
-    ),
-    true_shooting_pct: coerceNumber(pickRowValue(row, "TS_PCT", "trueShootingPercentage")),
-    effective_fg_pct: coerceNumber(
-      pickRowValue(row, "EFG_PCT", "effectiveFieldGoalPercentage"),
-    ),
-    assist_pct: coerceNumber(pickRowValue(row, "AST_PCT", "assistPercentage")),
-    assist_to_turnover: coerceNumber(pickRowValue(row, "AST_TOV", "assistToTurnover")),
-    rebound_pct: coerceNumber(pickRowValue(row, "REB_PCT", "reboundPercentage")),
-    offensive_rebound_pct: coerceNumber(
-      pickRowValue(row, "OREB_PCT", "offensiveReboundPercentage"),
-    ),
-    defensive_rebound_pct: coerceNumber(
-      pickRowValue(row, "DREB_PCT", "defensiveReboundPercentage"),
-    ),
-    pace: coerceNumber(pickRowValue(row, "PACE", "E_PACE", "pace", "estimatedPace")),
-    pace_per40: coerceNumber(pickRowValue(row, "PACE_PER40", "pacePer40")),
-    possessions: coerceNumber(pickRowValue(row, "POSS", "possessions")),
-    pie: coerceNumber(pickRowValue(row, "PIE", "pie")),
-  };
-}
-
-function hasAdvancedMetrics(player: BoxScoreAdvancedPlayer) {
-  return [
-    player.offensive_rating,
-    player.defensive_rating,
-    player.net_rating,
-    player.usage_pct,
-    player.true_shooting_pct,
-    player.effective_fg_pct,
-    player.assist_pct,
-    player.rebound_pct,
-    player.pace,
-    player.pie,
-  ].some((value) => value !== null && value !== undefined && !Number.isNaN(value));
-}
-
-async function fetchTraditionalBoxScore(gameId: string): Promise<TraditionalBoxScoreData | null> {
-  try {
-    const url = new URL("https://stats.nba.com/stats/boxscoretraditionalv2");
-    url.searchParams.set("GameID", gameId);
-    url.searchParams.set("StartPeriod", "0");
-    url.searchParams.set("EndPeriod", "0");
-    url.searchParams.set("StartRange", "0");
-    url.searchParams.set("EndRange", "0");
-    url.searchParams.set("RangeType", "0");
-    url.searchParams.set("LeagueID", "00");
-
-    const response = await fetch(url.toString(), {
-      headers: {
-        Accept: "application/json,text/plain,*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Cache-Control": "no-cache",
-        Host: "stats.nba.com",
-        Origin: "https://www.nba.com",
-        Pragma: "no-cache",
-        Referer: "https://www.nba.com/",
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-        "x-nba-stats-origin": "stats",
-        "x-nba-stats-token": "true",
-      },
-      cache: "no-store",
-    });
-
-    if (!response.ok) {
-      console.error("Failed to fetch traditional boxscore", response.status, response.statusText);
-      return null;
-    }
-
-    const payload = (await response.json()) as StatsPayload;
-    const playerRows = mapNamedResultSet(payload, "PlayerStats");
-    const teamRows = mapNamedResultSet(payload, "TeamStats");
-    const starterBenchRows = mapNamedResultSet(payload, "TeamStarterBenchStats");
-
-    if (!playerRows.length && !teamRows.length && !starterBenchRows.length) {
-      return null;
-    }
-
-    const players: BoxScoreTraditionalPlayer[] = playerRows.map((row) => {
-      const minutesValue = row["MIN"];
-      const startPosition = coerceString(row["START_POSITION"]);
-      const comment = coerceString(row["COMMENT"]);
-      return {
-        player_id: coerceInt(row["PLAYER_ID"]) ?? 0,
-        player_name: coerceString(row["PLAYER_NAME"]) ?? "Unknown player",
-        team_id: coerceInt(row["TEAM_ID"]) ?? 0,
-        team_abbreviation: coerceString(row["TEAM_ABBREVIATION"]),
-        team_city: coerceString(row["TEAM_CITY"]),
-        start_position: startPosition,
-        comment,
-        minutes: typeof minutesValue === "string" ? minutesValue : coerceString(minutesValue),
-        field_goals_made: coerceNumber(row["FGM"]),
-        field_goals_attempted: coerceNumber(row["FGA"]),
-        field_goal_pct: coerceNumber(row["FG_PCT"]),
-        three_point_made: coerceNumber(row["FG3M"]),
-        three_point_attempted: coerceNumber(row["FG3A"]),
-        three_point_pct: coerceNumber(row["FG3_PCT"]),
-        free_throws_made: coerceNumber(row["FTM"]),
-        free_throws_attempted: coerceNumber(row["FTA"]),
-        free_throw_pct: coerceNumber(row["FT_PCT"]),
-        offensive_rebounds: coerceNumber(row["OREB"]),
-        defensive_rebounds: coerceNumber(row["DREB"]),
-        rebounds: coerceNumber(row["REB"]),
-        assists: coerceNumber(row["AST"]),
-        steals: coerceNumber(row["STL"]),
-        blocks: coerceNumber(row["BLK"]),
-        turnovers: coerceNumber(row["TO"]),
-        fouls: coerceNumber(row["PF"]),
-        points: coerceNumber(row["PTS"]),
-        plus_minus: coerceNumber(row["PLUS_MINUS"]),
-      };
-    });
-
-    const teamTotals: BoxScoreTeamTotals[] = teamRows.map((row) => {
-      const minutesValue = row["MIN"];
-      return {
-        team_id: coerceInt(row["TEAM_ID"]) ?? 0,
-        team_name: coerceString(row["TEAM_NAME"]),
-        team_abbreviation: coerceString(row["TEAM_ABBREVIATION"]),
-        minutes: typeof minutesValue === "string" ? minutesValue : coerceString(minutesValue),
-        field_goals_made: coerceNumber(row["FGM"]),
-        field_goals_attempted: coerceNumber(row["FGA"]),
-        field_goal_pct: coerceNumber(row["FG_PCT"]),
-        three_point_made: coerceNumber(row["FG3M"]),
-        three_point_attempted: coerceNumber(row["FG3A"]),
-        three_point_pct: coerceNumber(row["FG3_PCT"]),
-        free_throws_made: coerceNumber(row["FTM"]),
-        free_throws_attempted: coerceNumber(row["FTA"]),
-        free_throw_pct: coerceNumber(row["FT_PCT"]),
-        offensive_rebounds: coerceNumber(row["OREB"]),
-        defensive_rebounds: coerceNumber(row["DREB"]),
-        rebounds: coerceNumber(row["REB"]),
-        assists: coerceNumber(row["AST"]),
-        steals: coerceNumber(row["STL"]),
-        blocks: coerceNumber(row["BLK"]),
-        turnovers: coerceNumber(row["TO"]),
-        fouls: coerceNumber(row["PF"]),
-        points: coerceNumber(row["PTS"]),
-        plus_minus: coerceNumber(row["PLUS_MINUS"]),
-      };
-    });
-
-    const starterBench: BoxScoreStarterBenchRow[] = starterBenchRows.map((row) => {
-      const minutesValue = row["MIN"];
-      return {
-        team_id: coerceInt(row["TEAM_ID"]) ?? 0,
-        team_name: coerceString(row["TEAM_NAME"]),
-        team_abbreviation: coerceString(row["TEAM_ABBREVIATION"]),
-        label: coerceString(row["STARTERS_BENCH"]) ?? "Starters",
-        minutes: typeof minutesValue === "string" ? minutesValue : coerceString(minutesValue),
-        field_goals_made: coerceNumber(row["FGM"]),
-        field_goals_attempted: coerceNumber(row["FGA"]),
-        field_goal_pct: coerceNumber(row["FG_PCT"]),
-        three_point_made: coerceNumber(row["FG3M"]),
-        three_point_attempted: coerceNumber(row["FG3A"]),
-        three_point_pct: coerceNumber(row["FG3_PCT"]),
-        free_throws_made: coerceNumber(row["FTM"]),
-        free_throws_attempted: coerceNumber(row["FTA"]),
-        free_throw_pct: coerceNumber(row["FT_PCT"]),
-        offensive_rebounds: coerceNumber(row["OREB"]),
-        defensive_rebounds: coerceNumber(row["DREB"]),
-        rebounds: coerceNumber(row["REB"]),
-        assists: coerceNumber(row["AST"]),
-        steals: coerceNumber(row["STL"]),
-        blocks: coerceNumber(row["BLK"]),
-        turnovers: coerceNumber(row["TO"]),
-        fouls: coerceNumber(row["PF"]),
-        points: coerceNumber(row["PTS"]),
-      };
-    });
-
-    return { players, teamTotals, starterBench };
-  } catch (error) {
-    console.error("Error loading traditional boxscore from stats.nba.com", error);
-    return null;
-  }
-}
-
-async function fetchAdvancedBoxScore(gameId: string): Promise<AdvancedBoxScoreData | null> {
-  try {
-    const headers = {
-      Accept: "application/json,text/plain,*/*",
-      "Accept-Language": "en-US,en;q=0.9",
-      "Cache-Control": "no-cache",
-      Host: "stats.nba.com",
-      Origin: "https://www.nba.com",
-      Pragma: "no-cache",
-      Referer: "https://www.nba.com/",
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-      "x-nba-stats-origin": "stats",
-      "x-nba-stats-token": "true",
-    };
-
-    const loadRows = async (endpoint: string, includeLeagueId: boolean) => {
-      const url = new URL(`https://stats.nba.com/stats/${endpoint}`);
-      url.searchParams.set("GameID", gameId);
-      url.searchParams.set("StartPeriod", "0");
-      url.searchParams.set("EndPeriod", "0");
-      url.searchParams.set("StartRange", "0");
-      url.searchParams.set("EndRange", "0");
-      url.searchParams.set("RangeType", "0");
-      if (includeLeagueId) {
-        url.searchParams.set("LeagueID", "00");
-      }
-      const response = await fetch(url.toString(), { headers, cache: "no-store" });
-      if (!response.ok) {
-        console.error(
-          "Failed to fetch advanced boxscore",
-          endpoint,
-          response.status,
-          response.statusText,
-        );
-        return [] as Record<string, unknown>[];
-      }
-      const payload = (await response.json()) as StatsPayload;
-      return mapNamedResultSet(payload, "PlayerStats");
-    };
-
-    let playerRows = await loadRows("boxscoreadvancedv2", true);
-    let players = playerRows.map((row) => mapAdvancedPlayerRow(row));
-    const hasMetrics = players.some((player) => hasAdvancedMetrics(player));
-
-    if (!playerRows.length || !hasMetrics) {
-      const fallbackRows = await loadRows("boxscoreadvancedv3", false);
-      if (fallbackRows.length) {
-        playerRows = fallbackRows;
-        players = fallbackRows.map((row) => mapAdvancedPlayerRow(row));
-      }
-    }
-
-    if (!players.length) {
-      return null;
-    }
-
-    return { players };
-  } catch (error) {
-    console.error("Error loading advanced boxscore from stats.nba.com", error);
-    return null;
-  }
 }
 
 function TraditionalTable({
@@ -945,7 +562,13 @@ function AdvancedBoxScoreTeamTable({
   players: BoxScoreTraditionalPlayer[];
   advancedPlayers: BoxScoreAdvancedPlayer[];
 }) {
-  if (!players.length) {
+  const observedPlayers = players.filter((player) => advancedPlayers.some((row) =>
+    (row.player_id === player.player_id || playerLookupKey(row.player_name) === playerLookupKey(player.player_name)) &&
+    [row.offensive_rating, row.defensive_rating, row.net_rating, row.usage_pct,
+      row.true_shooting_pct, row.assist_pct, row.rebound_pct, row.pace, row.pie]
+      .some((value) => value !== null && value !== undefined),
+  ));
+  if (!observedPlayers.length) {
     return (
       <div className="rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface-soft)] p-4 text-xs text-[color:var(--color-app-foreground-muted)] dark:border-white/10 dark:bg-slate-950/40 dark:text-white/60 sm:p-6 sm:text-sm">
         No advanced box score data available for {team.team_name ?? team.team_abbreviation ?? "this team"}.
@@ -953,7 +576,7 @@ function AdvancedBoxScoreTeamTable({
     );
   }
 
-  const { starters, bench } = splitTraditionalPlayers(players);
+  const { starters, bench } = splitTraditionalPlayers(observedPlayers);
   const advancedByPlayer = advancedPlayers.reduce((acc, row) => {
     if (row.player_id > 0) {
       acc[row.player_id] = row;
@@ -1039,21 +662,30 @@ export default async function BoxscorePage({ params }: { params: Promise<BoxScor
     notFound();
   }
 
-  let boxscore: BoxScoreGame;
+  let boxscore: BoxScoreGame | null = null;
+  let meta: Envelope<BoxScoreGame>["meta"] | undefined;
   try {
-    boxscore = await nbaFetch<BoxScoreGame>(`/v1/boxscores/${id}`);
+    const response = await nbaFetchEnvelope<BoxScoreGame>(`/v1/boxscores/${id}`);
+    boxscore = response.data;
+    meta = response.meta;
   } catch (error) {
-    console.error("Failed to load boxscore", error);
-    notFound();
+    if (!(error instanceof NbaApiError && error.status === 404)) {
+      console.warn("Failed to load boxscore", error);
+      return (
+        <div className="space-y-4">
+          <Link href="/scores">Back to scores</Link>
+          <p role="alert">Box score data is unavailable. Please try again later.</p>
+        </div>
+      );
+    }
   }
 
-  const traditionalData = await fetchTraditionalBoxScore(id);
-  const advancedData = await fetchAdvancedBoxScore(id);
+  if (!boxscore) return <div className="space-y-4"><Link href="/scores">Back to scores</Link><DataFreshness meta={meta} /><p>No box score is available for this game yet.</p></div>;
 
-  const traditionalPlayers = traditionalData?.players?.length ? traditionalData.players : boxscore.traditional_players;
-  const advancedPlayers = advancedData?.players?.length ? advancedData.players : boxscore.advanced_players;
-  const teamTotals = traditionalData?.teamTotals?.length ? traditionalData.teamTotals : boxscore.team_totals;
-  const starterBench = traditionalData?.starterBench?.length ? traditionalData.starterBench : boxscore.starter_bench;
+  const traditionalPlayers = boxscore.traditional_players ?? [];
+  const advancedPlayers = boxscore.advanced_players ?? [];
+  const teamTotals = boxscore.team_totals ?? [];
+  const starterBench = boxscore.starter_bench ?? [];
 
   const traditionalByTeam = groupByTeam(traditionalPlayers);
   const advancedByTeam = groupByTeam(advancedPlayers.filter((player) => player.team_id > 0));
@@ -1075,6 +707,7 @@ export default async function BoxscorePage({ params }: { params: Promise<BoxScor
 
   return (
     <div className="relative left-1/2 w-[min(88rem,calc(100vw-0.75rem))] -translate-x-1/2 space-y-4 text-[color:var(--color-app-foreground)] dark:text-white sm:w-[min(88rem,calc(100vw-3rem))] sm:space-y-8">
+      <DataFreshness meta={meta} />
       <Link
         href="/scores"
         className="inline-flex items-center gap-1.5 text-xs text-[color:var(--color-app-foreground-muted)] transition hover:text-[color:var(--color-app-foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-app-primary-soft)] dark:text-white/70 dark:hover:text-white dark:focus-visible:ring-white/40 sm:gap-2 sm:text-sm"

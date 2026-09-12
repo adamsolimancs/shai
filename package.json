@@ -1,0 +1,12 @@
+{
+  "name": "shai",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently --kill-others-on-fail --names api,web --prefix-colors blue,green \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:api": "if [ -x backend/.venv/bin/python ]; then backend/.venv/bin/python -m uvicorn app.main:app --app-dir backend --reload --port 8080; elif command -v python >/dev/null 2>&1; then python -m uvicorn app.main:app --app-dir backend --reload --port 8080; elif command -v python3 >/dev/null 2>&1; then python3 -m uvicorn app.main:app --app-dir backend --reload --port 8080; else echo 'Python 3.11+ is required; create backend/.venv as described in README.md.' >&2; exit 1; fi",
+    "dev:web": "npm --prefix frontend run dev"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

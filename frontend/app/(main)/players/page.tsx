@@ -42,7 +42,7 @@ function extractParam(params: SearchParams, key: string): string {
 }
 
 type PlayersPageProps = {
-  searchParams?: SearchParams | Promise<SearchParams>;
+  searchParams?: Promise<SearchParams>;
 };
 
 async function fetchLeaders(

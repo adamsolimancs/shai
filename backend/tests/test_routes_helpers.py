@@ -2,8 +2,7 @@ from datetime import date
 
 import pytest
 
-from app.api.routes import _filter_player_gamelog_rows
-from app.api.routes import _resolve_user_account_auth_user_id
+from app.api.routes import _filter_player_gamelog_rows, _resolve_user_account_auth_user_id
 from app.schemas import UserAccountSyncRequest
 
 
