@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isOffseasonDate, resolveSeasonalMode } from "./seasonMode";
+import { isOffseasonDate, resolveSeasonalMode } from "@/lib/seasonMode";
 
 describe("season mode", () => {
   it.each([
