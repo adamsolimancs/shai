@@ -41,12 +41,40 @@ async function checkPage(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
 }
 
+// WCAG contrast of the element's text against its background, composited over the page background.
+async function textContrast(page: Page, name: string) {
+  return page.getByRole('button', { name }).evaluate(element => {
+    const parse = (value: string) => {
+      const [r, g, b, a = 1] = value.match(/[\d.]+/g)!.map(Number);
+      return { r, g, b, a };
+    };
+    const over = (top: ReturnType<typeof parse>, base: ReturnType<typeof parse>) => ({
+      r: top.r * top.a + base.r * (1 - top.a), g: top.g * top.a + base.g * (1 - top.a), b: top.b * top.a + base.b * (1 - top.a), a: 1,
+    });
+    const luminance = ({ r, g, b }: ReturnType<typeof parse>) => {
+      const [R, G, B] = [r, g, b].map(v => (v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+      return 0.2126 * R + 0.7152 * G + 0.0722 * B;
+    };
+    const style = getComputedStyle(element);
+    const background = over(parse(style.backgroundColor), parse(getComputedStyle(document.body).backgroundColor));
+    const [light, dark] = [luminance(parse(style.color)), luminance(background)].sort((a, b) => b - a);
+    return (light + 0.05) / (dark + 0.05);
+  });
+}
+
 test('offseason homepage → in-season toggle', async ({ page }) => {
   await page.goto('/?offseason=1');
   await expect(page.getByRole('heading', { name: '2025-2026 NBA Season Recap' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'NBA Finals' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'LeBron James' }).first()).toBeVisible();
   await checkPage(page);
+
+  // The dev toggle label must stay legible in both colour modes.
+  for (const dark of [false, true]) {
+    await page.evaluate(isDark => document.documentElement.classList.toggle('dark', isDark), dark);
+    expect(await textContrast(page, 'Dev: offseason')).toBeGreaterThanOrEqual(4.5);
+  }
+  await page.evaluate(() => document.documentElement.classList.remove('dark'));
 
   await page.getByRole('button', { name: 'Dev: offseason' }).click();
   await expect(page).toHaveURL(/offseason=0/);
