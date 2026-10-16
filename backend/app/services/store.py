@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -301,6 +302,20 @@ async def fetch_news_articles(
     ]
 
 
+_LEGACY_AUTH_USER_ID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
+)
+
+
+def _user_account(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "auth_user_id": _first_non_empty_text(row.get("auth_user_id")) or "",
+        "email": _first_non_empty_text(row.get("email")) or "",
+        "name": _first_non_empty_text(row.get("name")),
+        "username": _normalize_username(row.get("username")),
+    }
+
+
 async def fetch_user_account_by_auth_user_id(
     supabase: SupabaseClient,
     *,
@@ -313,14 +328,7 @@ async def fetch_user_account_by_auth_user_id(
         "user_accounts",
         filters={"auth_user_id": f"eq.{normalized_auth_user_id}"},
     )
-    if not row:
-        return None
-    return {
-        "auth_user_id": _first_non_empty_text(row.get("auth_user_id")) or "",
-        "email": _first_non_empty_text(row.get("email")) or "",
-        "name": _first_non_empty_text(row.get("name")),
-        "username": _normalize_username(row.get("username")),
-    }
+    return _user_account(row) if row else None
 
 
 async def fetch_user_account_by_username(
@@ -335,14 +343,25 @@ async def fetch_user_account_by_username(
         "user_accounts",
         filters={"username": f"eq.{normalized_username}"},
     )
-    if not row:
+    return _user_account(row) if row else None
+
+
+async def _claim_legacy_user_account(
+    supabase: SupabaseClient,
+    *,
+    auth_user_id: str,
+    email: str,
+) -> dict[str, Any] | None:
+    row = await supabase.select_one("user_accounts", filters={"email": f"eq.{email}"})
+    legacy_auth_user_id = _first_non_empty_text(row.get("auth_user_id")) if row else None
+    if not legacy_auth_user_id or not _LEGACY_AUTH_USER_ID.fullmatch(legacy_auth_user_id):
         return None
-    return {
-        "auth_user_id": _first_non_empty_text(row.get("auth_user_id")) or "",
-        "email": _first_non_empty_text(row.get("email")) or "",
-        "name": _first_non_empty_text(row.get("name")),
-        "username": _normalize_username(row.get("username")),
-    }
+    rows = await supabase.update(
+        "user_accounts",
+        {"auth_user_id": auth_user_id, "updated_at": datetime.now(UTC).isoformat()},
+        filters={"auth_user_id": f"eq.{legacy_auth_user_id}"},
+    )
+    return _user_account(rows[0]) if rows else None
 
 
 async def upsert_user_account(
@@ -350,6 +369,7 @@ async def upsert_user_account(
     *,
     auth_user_id: str,
     email: str,
+    email_verified: bool = False,
     name: str | None = None,
     username: str | None = None,
 ) -> dict[str, Any]:
@@ -357,31 +377,57 @@ async def upsert_user_account(
     normalized_email = _first_non_empty_text(email)
     if not normalized_auth_user_id or not normalized_email:
         raise ValueError("auth_user_id and email are required")
+    normalized_email = normalized_email.lower()
 
-    await supabase.upsert(
-        "user_accounts",
-        [
-            {
-                "auth_user_id": normalized_auth_user_id,
-                "email": normalized_email.lower(),
-                "name": _first_non_empty_text(name),
-                "username": _normalize_username(username),
-                "updated_at": datetime.utcnow().isoformat(),
-            }
-        ],
-        on_conflict="auth_user_id",
+    existing = await fetch_user_account_by_auth_user_id(
+        supabase,
+        auth_user_id=normalized_auth_user_id,
     )
+    if existing is None and email_verified:
+        existing = await _claim_legacy_user_account(
+            supabase,
+            auth_user_id=normalized_auth_user_id,
+            email=normalized_email,
+        )
+
+    row: dict[str, Any] = {
+        "auth_user_id": normalized_auth_user_id,
+        "email": normalized_email,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+    if not (existing and existing["name"]):
+        row["name"] = _first_non_empty_text(name)
+    if not (existing and existing["username"]):
+        row["username"] = _normalize_username(username)
+    await supabase.upsert("user_accounts", [row], on_conflict="auth_user_id")
 
     account = await fetch_user_account_by_auth_user_id(
         supabase,
         auth_user_id=normalized_auth_user_id,
     )
-    return account or {
-        "auth_user_id": normalized_auth_user_id,
-        "email": normalized_email.lower(),
-        "name": _first_non_empty_text(name),
-        "username": _normalize_username(username),
-    }
+    return account or _user_account({**(existing or {}), **row})
+
+
+async def update_user_account_profile(
+    supabase: SupabaseClient,
+    *,
+    auth_user_id: str,
+    name: str | None,
+    username: str | None,
+) -> dict[str, Any] | None:
+    normalized_auth_user_id = _first_non_empty_text(auth_user_id)
+    if not normalized_auth_user_id:
+        return None
+    rows = await supabase.update(
+        "user_accounts",
+        {
+            "name": _first_non_empty_text(name),
+            "username": _normalize_username(username),
+            "updated_at": datetime.now(UTC).isoformat(),
+        },
+        filters={"auth_user_id": f"eq.{normalized_auth_user_id}"},
+    )
+    return _user_account(rows[0]) if rows else None
 
 
 async def store_api_snapshot(supabase: SupabaseClient, cache_key: str, payload: Any) -> None:

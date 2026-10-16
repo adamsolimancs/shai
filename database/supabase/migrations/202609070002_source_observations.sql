@@ -82,5 +82,17 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.publish_game_snapshot(jsonb, jsonb, jsonb) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.publish_game_snapshot(jsonb, jsonb, jsonb) TO service_role;
+REVOKE ALL ON FUNCTION public.publish_game_snapshot(jsonb, jsonb, jsonb) FROM PUBLIC;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    REVOKE ALL ON FUNCTION public.publish_game_snapshot(jsonb, jsonb, jsonb) FROM anon;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+    REVOKE ALL ON FUNCTION public.publish_game_snapshot(jsonb, jsonb, jsonb) FROM authenticated;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+    GRANT EXECUTE ON FUNCTION public.publish_game_snapshot(jsonb, jsonb, jsonb) TO service_role;
+  END IF;
+END;
+$$;

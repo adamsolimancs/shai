@@ -57,6 +57,7 @@ from ..schemas import (
     TeamSeasonHistoryRow,
     TeamStatsRow,
     UserAccount,
+    UserAccountProfileUpdate,
     UserAccountSyncRequest,
 )
 from ..services.nba import NBAStatsClient
@@ -81,6 +82,7 @@ from ..services.store import (
     fetch_user_account_by_auth_user_id,
     fetch_user_account_by_username,
     store_api_snapshot,
+    update_user_account_profile,
     upsert_user_account,
 )
 from ..serving_cache import (
@@ -491,6 +493,42 @@ async def user_account_by_auth_user(
     return success(request, UserAccount(**account))
 
 
+@router.patch("/user-accounts/by-auth-user/{auth_user_id}", response_model=Envelope[UserAccount])
+async def update_user_account(
+    request: Request,
+    auth_user_id: str,
+    payload: UserAccountProfileUpdate,
+    supabase: SupabaseDep,
+) -> Envelope[UserAccount]:
+    client = _require_supabase_client(supabase)
+    try:
+        account = await update_user_account_profile(
+            client,
+            auth_user_id=auth_user_id,
+            name=payload.name,
+            username=payload.username,
+        )
+    except asyncpg.UniqueViolationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "CONFLICT",
+                "message": "That username is already in use.",
+                "retryable": False,
+            },
+        ) from error
+    if account is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={
+                "code": "NOT_FOUND",
+                "message": "Account not found.",
+                "retryable": False,
+            },
+        )
+    return success(request, UserAccount(**account))
+
+
 @router.get("/user-accounts/lookup", response_model=Envelope[UserAccount])
 async def user_account_lookup(
     request: Request,
@@ -524,6 +562,7 @@ async def sync_user_account(
             client,
             auth_user_id=auth_user_id,
             email=payload.email,
+            email_verified=payload.email_verified,
             name=payload.name,
             username=payload.username,
         )

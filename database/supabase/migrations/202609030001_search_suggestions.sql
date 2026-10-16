@@ -99,4 +99,10 @@ as $$
 $$;
 
 revoke all on function public.search_suggestions(text, integer) from public;
-grant execute on function public.search_suggestions(text, integer) to service_role;
+do $$
+begin
+  if exists (select 1 from pg_roles where rolname = 'service_role') then
+    grant execute on function public.search_suggestions(text, integer) to service_role;
+  end if;
+end;
+$$;

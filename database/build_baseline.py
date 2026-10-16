@@ -27,12 +27,7 @@ def render() -> str:
         *indexes,
     ]
     for migration in sorted((ROOT / "supabase/migrations").glob("*.sql")):
-        sql = "\n".join(
-            line
-            for line in migration.read_text().splitlines()
-            if not line.lstrip().upper().startswith(("GRANT ", "REVOKE "))
-        )
-        chunks.extend([f"-- Migration: {migration.name}", sql])
+        chunks.extend([f"-- Migration: {migration.name}", migration.read_text()])
     chunks.append("COMMIT;")
     return "\n\n".join(chunks) + "\n"
 

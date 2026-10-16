@@ -2,7 +2,7 @@
 
 import { auth, unstable_update } from "@/auth";
 import { initialProfileFormState, type ProfileFormState } from "@/lib/profileFormState";
-import { syncUserAccount } from "@/lib/userAccountsApi";
+import { updateUserAccountProfile } from "@/lib/userAccountsApi";
 
 const getField = (formData: FormData, key: string) => {
   const value = formData.get(key);
@@ -46,27 +46,33 @@ export async function updateProfileAction(
     };
   }
 
-  if (session.user.provider === "credentials" && session.user.email) {
-    try {
-      await syncUserAccount({
-        auth_user_id: session.user.id,
-        email: session.user.email,
-        name,
-        username: username || null,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "We couldn't save your profile.";
-      return {
-        error: message,
-        success: null,
-      };
-    }
+  let account;
+  try {
+    account = session.user.id
+      ? await updateUserAccountProfile(session.user.id, {
+          name,
+          username: username || null,
+        })
+      : null;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "We couldn't save your profile.";
+    return {
+      error: message,
+      success: null,
+    };
+  }
+
+  if (!account) {
+    return {
+      error: "Sign in again to update your profile.",
+      success: null,
+    };
   }
 
   await unstable_update({
     user: {
-      name,
-      username: username || null,
+      name: account.name ?? name,
+      username: account.username,
     },
   });
 

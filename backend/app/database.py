@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import re
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import asyncpg
+import certifi
 
 from .config import Settings
 
@@ -33,6 +38,35 @@ def _json_value(value: Any) -> Any:
     return value
 
 
+def _with_trusted_root_certificates(
+    database_url: str, environ: Mapping[str, str] | None = None
+) -> str:
+    """Use a public CA bundle when verified TLS has no configured root certificate.
+
+    asyncpg otherwise requires ``~/.postgresql/root.crt`` for ``verify-ca`` and
+    ``verify-full``. Explicit ``sslrootcert``, ``PGSSLROOTCERT``, service files,
+    and an existing libpq root certificate keep precedence.
+    """
+    env = os.environ if environ is None else environ
+    parts = urlsplit(database_url)
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    params = dict(query)
+    sslmode = params.get("sslmode") or env.get("PGSSLMODE")
+    if sslmode not in {"verify-ca", "verify-full"}:
+        return database_url
+    if "sslrootcert" in params or "service" in params:
+        return database_url
+    if env.get("PGSSLROOTCERT") or env.get("PGSERVICE"):
+        return database_url
+    try:
+        if (Path.home() / ".postgresql" / "root.crt").is_file():
+            return database_url
+    except (OSError, RuntimeError, KeyError):
+        pass
+    query.append(("sslrootcert", certifi.where()))
+    return urlunsplit(parts._replace(query=urlencode(query)))
+
+
 def _row_dict(row: asyncpg.Record) -> dict[str, Any]:
     # Text IDs and JSON-looking text must retain their PostgreSQL types.
     return {
@@ -50,15 +84,18 @@ class DatabaseClient:
         self._database_url = settings.database_url
         self._schema = _identifier(settings.database_schema)
         self._pool: asyncpg.Pool | None = None
+        self._pool_lock = asyncio.Lock()
 
     async def _get_pool(self) -> asyncpg.Pool:
         if self._pool is None:
-            self._pool = await asyncpg.create_pool(
-                self._database_url,
-                min_size=1,
-                max_size=10,
-                command_timeout=30,
-            )
+            async with self._pool_lock:
+                if self._pool is None:
+                    self._pool = await asyncpg.create_pool(
+                        _with_trusted_root_certificates(self._database_url),
+                        min_size=1,
+                        max_size=10,
+                        command_timeout=30,
+                    )
         return self._pool
 
     def _table(self, table: str) -> str:
@@ -189,6 +226,25 @@ class DatabaseClient:
                 )
                 values = [(json.dumps(row),) for row in group]
                 await connection.executemany(query, values)
+
+    async def update(
+        self, table: str, values: dict[str, Any], *, filters: dict[str, str]
+    ) -> list[dict[str, Any]]:
+        if not values:
+            raise ValueError("update requires at least one value")
+        if not filters:
+            raise ValueError("update requires filters")
+        column_sql = ", ".join(f'"{_identifier(column)}"' for column in values)
+        args: list[Any] = [json.dumps(values)]
+        query = (
+            f"UPDATE {self._table(table)} SET ({column_sql}) = "
+            f"(SELECT {column_sql} FROM jsonb_populate_record("
+            f"NULL::{self._table(table)}, $1::jsonb))"
+        )
+        query += self._where(filters, args)
+        query += " RETURNING *"
+        pool = await self._get_pool()
+        return [_row_dict(row) for row in await pool.fetch(query, *args)]
 
     async def rpc(self, function_name: str, params: dict[str, Any] | None = None) -> Any:
         function_name = _identifier(function_name)

@@ -21,9 +21,20 @@ that require it.
 The application and worker connect with a private PostgreSQL role. Browser clients
 never receive database credentials; account and data access stay behind the backend.
 
+Migrations run unchanged on plain PostgreSQL (including Neon) and Supabase.
+Function privileges for Supabase's `anon`, `authenticated` and `service_role`
+roles are applied only when those roles exist.
+
 Apply `202610160001_oauth_account_ids.sql` to existing databases before deploying
-the direct PostgreSQL adapter. It preserves existing UUID account IDs as text and
-allows OAuth provider subjects. Fresh baselines already use text IDs.
+the direct PostgreSQL adapter. It drops the legacy `auth.users` foreign key,
+preserves existing UUID account IDs as text and allows OAuth provider subjects.
+Fresh baselines already use text IDs without that key.
+
+Accounts are keyed by `<provider>:<subject>` (for example `google:1234…`). On the
+first sign-in with a new subject, a legacy row keyed by a Supabase UUID is re-keyed
+to that subject only when the provider reports the email as verified and it matches
+the row's email. Rows keyed by another provider subject are never claimed. Sign-in
+keeps the saved name and username; profile edits update only an existing account.
 
 `publish_game_snapshot(jsonb, jsonb, jsonb)` writes a game, its boxscore, and its
 complete player set atomically. Player rows absent from the new snapshot are
@@ -44,7 +55,8 @@ python3 database/tests/test_baseline.py
 It creates a disposable local cluster using a Unix socket with TCP disabled,
 reconstructs from empty, and checks successful/idempotent publication, player replacement,
 invalid identifiers, foreign-key rollback, and statement cancellation after game and
-boxscore updates. It deliberately accepts no database URL and never contacts deployed
+boxscore updates, the legacy account-ID migration, and account claiming and
+profile persistence. It deliberately accepts no database URL and never contacts deployed
 services. This validates PostgreSQL contracts independently of the hosting provider.
 
 The source-observation migration adds nullable `observed_at` columns to games,

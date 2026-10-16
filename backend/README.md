@@ -32,6 +32,11 @@ For persistence:
 ```
 DATABASE_URL=postgresql://...-pooler.../neondb?sslmode=verify-full
 ```
+`verify-full` and `verify-ca` keep certificate and hostname verification. When no
+root certificate is configured, the API verifies the server against the bundled
+`certifi` public CA set. An explicit `sslrootcert` query parameter, `PGSSLROOTCERT`,
+a libpq service (`service`/`PGSERVICE`) or an existing `~/.postgresql/root.crt`
+takes precedence. Other `sslmode` values are passed through unchanged.
 
 Run the API:
 ```bash

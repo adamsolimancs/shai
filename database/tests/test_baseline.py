@@ -44,8 +44,8 @@ class BaselineTest(unittest.TestCase):
             raise RuntimeError(f"{args[0]} failed:\n{result.stdout}\n{result.stderr}")
 
     @classmethod
-    def sql(cls, query, *, succeeds=True):
-        result = subprocess.run(["psql", "-X", "-v", "ON_ERROR_STOP=1", "-At", "-h", cls.tmp.name, "-U", "postgres", "postgres"], input=query, text=True, capture_output=True, env=cls.env)
+    def sql(cls, query, *, succeeds=True, database="postgres"):
+        result = subprocess.run(["psql", "-X", "-v", "ON_ERROR_STOP=1", "-At", "-h", cls.tmp.name, "-U", "postgres", database], input=query, text=True, capture_output=True, env=cls.env)
         if succeeds and result.returncode:
             raise AssertionError(result.stderr)
         if not succeeds and not result.returncode:
@@ -110,6 +110,78 @@ class BaselineTest(unittest.TestCase):
                 await client.close()
 
         asyncio.run(exercise())
+
+    def test_oauth_migration_upgrades_legacy_supabase_accounts(self):
+        self.sql("DROP DATABASE IF EXISTS legacy; CREATE DATABASE legacy;")
+        legacy_id = "2f0c6a52-3f43-4c1e-9d55-5f3b0f1d7a10"
+        self.sql(f"""
+          CREATE SCHEMA auth;
+          CREATE TABLE auth.users (id uuid PRIMARY KEY);
+          CREATE TABLE public.user_accounts (
+            auth_user_id uuid PRIMARY KEY,
+            name text, username text UNIQUE, email text NOT NULL UNIQUE,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            updated_at timestamptz NOT NULL DEFAULT now()
+          );
+          ALTER TABLE public.user_accounts ADD CONSTRAINT user_accounts_auth_user_id_fkey
+            FOREIGN KEY (auth_user_id) REFERENCES auth.users(id) ON UPDATE CASCADE ON DELETE CASCADE;
+          INSERT INTO auth.users VALUES ('{legacy_id}');
+          INSERT INTO public.user_accounts (auth_user_id, email) VALUES ('{legacy_id}', 'legacy@example.test');
+        """, database="legacy")
+        migration = Path(__file__).resolve().parents[1] / "supabase/migrations/202610160001_oauth_account_ids.sql"
+        self.sql(migration.read_text(), database="legacy")
+        self.assertEqual(self.sql("""
+          SELECT format_type(atttypid, atttypmod) FROM pg_attribute
+          WHERE attrelid = 'public.user_accounts'::regclass AND attname = 'auth_user_id';
+        """, database="legacy"), "text")
+        self.assertEqual(self.sql("SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND conrelid = 'public.user_accounts'::regclass;", database="legacy"), "0")
+        self.assertEqual(self.sql("SELECT auth_user_id FROM public.user_accounts;", database="legacy"), legacy_id)
+        self.sql("INSERT INTO public.user_accounts (auth_user_id, email) VALUES ('google:001234567890', 'new@example.test');", database="legacy")
+
+    def test_account_sync_claims_legacy_rows_and_persists_profiles(self):
+        from app.config import Settings
+        from app.database import DatabaseClient
+        from app.services.store import update_user_account_profile, upsert_user_account
+
+        legacy_id = "8b1b4d7e-6f0a-4c0f-a7c2-1a2b3c4d5e6f"
+        self.sql(f"""
+          DELETE FROM public.user_accounts;
+          INSERT INTO public.user_accounts (auth_user_id, email, name, username)
+          VALUES ('{legacy_id}', 'legacy@example.test', 'Saved Name', 'saved_user');
+        """)
+
+        async def exercise():
+            client = DatabaseClient(Settings(
+                _env_file=None,
+                database_url=f"postgresql://postgres@/postgres?host={self.tmp.name}",
+            ))
+            try:
+                subject = "google:001234567890123456789"
+                claimed = await upsert_user_account(
+                    client, auth_user_id=subject, email="Legacy@Example.test",
+                    email_verified=True, name="Google Name",
+                )
+                self.assertEqual(claimed, {
+                    "auth_user_id": subject, "email": "legacy@example.test",
+                    "name": "Saved Name", "username": "saved_user",
+                })
+                updated = await update_user_account_profile(
+                    client, auth_user_id=subject, name="Edited", username="Edited_User",
+                )
+                self.assertEqual(updated["username"], "edited_user")
+                again = await upsert_user_account(
+                    client, auth_user_id=subject, email="legacy@example.test",
+                    email_verified=True, name="Google Name",
+                )
+                self.assertEqual((again["name"], again["username"]), ("Edited", "edited_user"))
+                self.assertIsNone(await update_user_account_profile(
+                    client, auth_user_id="google:missing", name="Nobody", username=None,
+                ))
+            finally:
+                await client.close()
+
+        asyncio.run(exercise())
+        self.assertEqual(self.sql("SELECT count(*) FROM public.user_accounts;"), "1")
 
     def test_replacement_idempotence_and_empty_players(self):
         self.sql(self.publish())

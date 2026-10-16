@@ -105,11 +105,31 @@ export async function findUserAccountByAuthUserId(authUserId: string): Promise<U
 export async function syncUserAccount(input: {
   auth_user_id: string;
   email: string;
+  email_verified: boolean;
   name?: string | null;
-  username?: string | null;
 }): Promise<UserAccountRecord> {
   return accountApiRequest<UserAccountRecord>("/v1/user-accounts/sync", {
     method: "POST",
     body: JSON.stringify(input),
   });
+}
+
+export async function updateUserAccountProfile(
+  authUserId: string,
+  input: { name: string; username: string | null },
+): Promise<UserAccountRecord | null> {
+  try {
+    return await accountApiRequest<UserAccountRecord>(
+      `/v1/user-accounts/by-auth-user/${encodeURIComponent(authUserId.trim())}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(input),
+      },
+    );
+  } catch (error) {
+    if ((error as ApiError).status === 404) {
+      return null;
+    }
+    throw error;
+  }
 }

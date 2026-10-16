@@ -473,6 +473,12 @@ class UserAccount(BaseModel):
 class UserAccountSyncRequest(BaseModel):
     auth_user_id: str
     email: str
+    email_verified: bool = False
+    name: str | None = None
+    username: str | None = None
+
+
+class UserAccountProfileUpdate(BaseModel):
     name: str | None = None
     username: str | None = None
 

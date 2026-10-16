@@ -50,35 +50,34 @@ export const {
   session: { strategy: "jwt" },
   providers,
   callbacks: {
-    async jwt({ token, user, account, trigger, session }) {
-      if (user) {
+    async jwt({ token, user, account, profile, trigger, session }) {
+      if (user && account) {
+        const authUserId = `${account.provider}:${account.providerAccountId}`;
+        const email = user.email ?? (typeof token.email === "string" ? token.email : "");
         let syncedAccount = null;
-        const tokenEmail = typeof token.email === "string" ? token.email : "";
-        const tokenName = typeof token.name === "string" ? token.name : null;
-        const tokenUsername = typeof token.username === "string" ? token.username : null;
 
         try {
           syncedAccount = await syncUserAccount({
-            auth_user_id: user.id ?? token.sub ?? "",
-            email: user.email ?? tokenEmail,
-            name: user.name ?? tokenName,
-            username: user.username ?? tokenUsername,
+            auth_user_id: authUserId,
+            email,
+            email_verified: profile?.email_verified === true,
+            name: user.name ?? null,
           });
         } catch (error) {
           console.error("[ShAI] user account sync failed", {
-            provider: account?.provider ?? user.provider ?? null,
-            authUserId: user.id ?? token.sub ?? null,
-            email: user.email ?? (tokenEmail || null),
+            provider: account.provider,
+            authUserId,
+            email: email || null,
             error,
           });
         }
 
-        token.sub = syncedAccount?.auth_user_id ?? user.id ?? token.sub;
-        token.name = syncedAccount?.name ?? user.name ?? tokenName;
-        token.email = syncedAccount?.email ?? user.email ?? tokenEmail;
+        token.sub = authUserId;
+        token.name = syncedAccount?.name ?? user.name ?? null;
+        token.email = syncedAccount?.email ?? email;
         token.picture = user.image ?? token.picture;
-        token.username = syncedAccount?.username ?? user.username ?? tokenUsername;
-        token.provider = user.provider ?? account?.provider ?? token.provider ?? null;
+        token.username = syncedAccount?.username ?? null;
+        token.provider = account.provider;
       }
 
       if (trigger === "update") {
