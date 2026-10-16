@@ -34,6 +34,14 @@ test.afterEach(async ({ request, page }) => {
   expect(await (await request.get(`${backend}/__unknown`)).json()).toEqual([]);
 });
 
+// Acting before React hydrates drops focus/input events, and a screenshot's injected caret style
+// on server-rendered inputs causes a hydration mismatch. Wait until every control is hydrated.
+async function open(page: Page, path: string) {
+  await page.goto(path);
+  await page.waitForFunction(() => [...document.querySelectorAll('a, button, input')]
+    .every(element => Object.keys(element).some(key => key.startsWith('__reactFiber$'))));
+}
+
 async function checkPage(page: Page) {
   await expect(page.locator('main')).not.toBeEmpty();
   await expect(page).toHaveTitle(/ShAI|Player profile|404/);
@@ -63,7 +71,7 @@ async function textContrast(page: Page, name: string) {
 }
 
 test('offseason homepage → in-season toggle', async ({ page }) => {
-  await page.goto('/?offseason=1');
+  await open(page, '/?offseason=1');
   await expect(page.getByRole('heading', { name: '2025-2026 NBA Season Recap' })).toBeVisible();
   await expect(page.getByRole('heading', { name: 'NBA Finals' })).toBeVisible();
   await expect(page.getByRole('link', { name: 'LeBron James' }).first()).toBeVisible();
@@ -87,7 +95,7 @@ for (const mode of ['fresh', 'empty', 'partial', 'stale', 'unknown', 'failed']) 
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
     await scenario(request, { scores: mode === 'partial' ? 'fresh' : mode, tonight: mode === 'partial' ? 'failed' : mode, boxscore: mode });
-    await page.goto('/scores');
+    await open(page, '/scores');
     await expect(page.getByRole('heading', { name: 'Latest results' })).toBeVisible();
     if (mode === 'empty') {
       await expect(page.getByText('No games found for 2025-26.')).toBeVisible();
@@ -126,7 +134,7 @@ for (const mode of ['fresh', 'empty', 'partial', 'stale', 'unknown', 'failed']) 
 for (const mode of ['empty', 'failed']) {
   test(`scores → box score destination ${mode}`, async ({ page, request }) => {
     await scenario(request, { boxscore: mode });
-    await page.goto('/scores');
+    await open(page, '/scores');
     await page.locator('a[href="/boxscore/0022500001"]').last().click();
     await expect(page).toHaveURL(/\/boxscore\/0022500001$/);
     if (mode === 'empty') await expect(page.getByText('No box score is available for this game yet.')).toBeVisible();
@@ -143,7 +151,7 @@ for (const entity of ['player', 'team']) {
       const errors: string[] = [];
       page.on('pageerror', error => errors.push(error.message));
       await scenario(request, { [entity]: mode });
-      await page.goto('/scores');
+      await open(page, '/scores');
       const input = page.getByRole('combobox', { name: 'Search players and teams' });
       await input.fill(entity === 'player' ? 'LeBron' : 'Lakers');
       const option = page.getByRole('option', { name: new RegExp(entity === 'player' ? 'LeBron James' : 'Los Angeles Lakers') });
@@ -173,7 +181,7 @@ for (const entity of ['player', 'team']) {
 for (const mode of ['empty', 'failed']) {
   test(`search ${mode} and recovery`, async ({ page, request }) => {
     await scenario(request, { search: mode });
-    await page.goto('/scores');
+    await open(page, '/scores');
     const input = page.getByRole('combobox', { name: 'Search players and teams' });
     await input.fill('LeBron');
     await expect(page.locator('p').filter({ hasText: mode === 'empty' ? /^No matching players or teams\.$/ : /^Suggestions are unavailable\. Press Enter to search players\.$/ })).toBeVisible();
