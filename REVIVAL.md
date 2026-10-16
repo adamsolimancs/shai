@@ -25,7 +25,7 @@ The first sandboxed E2E run exposed the missing league-leader fixture (39 passed
 ### Now — make the database/auth cutover deployable
 
 - Resolved: `202610160001_oauth_account_ids.sql` migrates existing `user_accounts` rows to text OAuth subjects, and the disposable-PostgreSQL suite rehearses it with legacy rows. See `database/README.md` for the account-claiming contract.
-- Run the `DatabaseClient` integration tests in CI. `database/tests/test_baseline.py` now exercises the adapter against disposable PostgreSQL, but `.github/workflows/database.yml` neither installs the backend dependencies those tests import nor triggers on `backend/**` changes. Install `backend/` on Python 3.11 in that job and widen its path filter.
+- Resolved: `.github/workflows/database.yml` installs `backend/` on Python 3.11 and also runs on `backend/**` changes, so the `DatabaseClient` and account tests in `database/tests/test_baseline.py` run in CI.
 - Resolve the box-score read contract. `fetch_boxscore` calls `get_boxscore_snapshot`, but no definition exists in the tracked schema or migrations; every database-backed box-score request can pay for a failed RPC before falling back to separate reads. Either track and test the function or deliberately remove the probe and document the consistency tradeoff.
 
 ### Next — harden production boundaries and degraded behavior
