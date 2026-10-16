@@ -8,11 +8,11 @@ from fastapi import Request
 
 from .cache import CacheBackend
 from .config import Settings, get_settings
+from .database import DatabaseClient
 from .rate_limit import RateLimiter
 from .resolvers import NameResolver
 from .services.nba import NBAStatsClient
 from .services.news import NewsService
-from .supabase import SupabaseClient
 
 
 def get_app_state(request: Request) -> dict[str, Any]:
@@ -35,8 +35,8 @@ def get_cache_backend(request: Request) -> CacheBackend:
     return cast(CacheBackend, request.app.state.cache)
 
 
-def get_supabase_client(request: Request) -> SupabaseClient | None:
-    return cast(SupabaseClient | None, request.app.state.supabase)
+def get_database_client(request: Request) -> DatabaseClient | None:
+    return cast(DatabaseClient | None, request.app.state.database)
 
 
 def get_resolver(request: Request) -> NameResolver:

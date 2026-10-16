@@ -1,8 +1,10 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import type { Metadata } from "next";
 
-import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
+import DataFreshness from "@/components/DataFreshness";
+import { DEFAULT_SEASON, createObservedFetcher, combineFreshness, type Envelope } from "@/lib/nbaApi";
 import { slugifySegment } from "@/lib/utils";
 
 type Team = {
@@ -72,6 +74,7 @@ type TeamSeasonHistoryRow = {
 };
 
 type TeamContext = {
+  freshness: Envelope<unknown>["meta"];
   team: Team;
   standing: LeagueStanding | null;
   details: TeamDetail | null;
@@ -212,40 +215,63 @@ const resolveTeamBySlug = (teams: Team[], slug: string): Team | null => {
 const isNotFoundError = (error: unknown): boolean =>
   error instanceof Error && (/404/.test(error.message) || /Not Found/i.test(error.message));
 
-async function fetchTeams(): Promise<Team[]> {
-  return nbaFetch<Team[]>(`/v1/teams?season=${DEFAULT_SEASON}`, { next: { revalidate: 1800 } });
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ name: string }>;
+}): Promise<Metadata> {
+  const { name } = await params;
+  const readableName = name
+    .split("-")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+
+  return {
+    title: readableName ? `${readableName} Team Profile` : "NBA Team Profile",
+    description: readableName
+      ? `View ${readableName} standings, season results, team details, and franchise history.`
+      : "View NBA team standings, season results, details, and franchise history.",
+    alternates: { canonical: `/teams/${encodeURIComponent(name)}` },
+  };
 }
 
-async function fetchLeagueStandings(): Promise<LeagueStanding[]> {
-  return nbaFetch<LeagueStanding[]>(
-    `/v1/league_standings?season=${DEFAULT_SEASON}&league_id=00&season_type=Regular%20Season`,
-    { next: { revalidate: 900 } },
-  );
-}
-
-async function fetchTeamDetails(teamId: number): Promise<TeamDetail | null> {
-  try {
-    return await nbaFetch<TeamDetail>(`/v1/teams/${teamId}/details`, { next: { revalidate: 3600 } });
-  } catch (error) {
-    if (isNotFoundError(error)) {
-      return null;
-    }
-    throw error;
-  }
-}
-
-async function fetchTeamHistory(teamId: number): Promise<TeamSeasonHistoryRow[]> {
-  try {
-    return await nbaFetch<TeamSeasonHistoryRow[]>(
-      `/v1/teams/${teamId}/history?season_type=Regular%20Season&per_mode=Totals&limit=8`,
-      { next: { revalidate: 3600 } },
-    );
-  } catch {
-    return [];
-  }
-}
 
 async function fetchTeamContext(slug: string): Promise<TeamContext | null> {
+  const observations = createObservedFetcher();
+  async function fetchTeams(): Promise<Team[]> {
+    return observations.fetch<Team[]>(`/v1/teams?season=${DEFAULT_SEASON}`, { next: { revalidate: 1800 } });
+  }
+
+  async function fetchLeagueStandings(): Promise<LeagueStanding[]> {
+    return observations.fetch<LeagueStanding[]>(
+      `/v1/league_standings?season=${DEFAULT_SEASON}&league_id=00&season_type=Regular%20Season`,
+      { next: { revalidate: 900 } },
+    );
+  }
+
+  async function fetchTeamDetails(teamId: number): Promise<TeamDetail | null> {
+    try {
+      return await observations.fetch<TeamDetail>(`/v1/teams/${teamId}/details`, { next: { revalidate: 3600 } });
+    } catch (error) {
+      if (isNotFoundError(error)) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  async function fetchTeamHistory(teamId: number): Promise<TeamSeasonHistoryRow[]> {
+    try {
+      return await observations.fetch<TeamSeasonHistoryRow[]>(
+        `/v1/teams/${teamId}/history?season_type=Regular%20Season&per_mode=Totals&limit=8`,
+        { next: { revalidate: 3600 } },
+      );
+    } catch {
+      return [];
+    }
+  }
+
   const decodedSlug = decodeURIComponent(slug);
   const teams = await fetchTeams();
   const team = resolveTeamBySlug(teams, decodedSlug);
@@ -259,6 +285,7 @@ async function fetchTeamContext(slug: string): Promise<TeamContext | null> {
   const standing = standings.find((row) => row.team_id === team.id) ?? null;
 
   return {
+    freshness: combineFreshness(observations.metas),
     team,
     standing,
     details,
@@ -270,7 +297,7 @@ async function fetchTeamContext(slug: string): Promise<TeamContext | null> {
 export default async function TeamDetailPage({
   params,
 }: {
-  params: Promise<{ name?: string | string[] }> | { name?: string | string[] };
+  params: Promise<{ name?: string | string[] }>;
 }) {
   const resolvedParams = await Promise.resolve(params);
   const slug = Array.isArray(resolvedParams.name) ? resolvedParams.name[0] : resolvedParams.name;
@@ -278,7 +305,12 @@ export default async function TeamDetailPage({
     notFound();
   }
 
-  const context = await fetchTeamContext(slug);
+  let context: TeamContext | null;
+  try {
+    context = await fetchTeamContext(slug);
+  } catch {
+    return <p role="alert">Team data is unavailable. Please try again later.</p>;
+  }
 
   if (!context) {
     notFound();
@@ -291,7 +323,7 @@ export default async function TeamDetailPage({
   const recordWithWinPct = record && winPct ? `${record} (${winPct})` : record;
   const conferenceLabel = formatConference(standing?.conference ?? team.conference);
   const divisionLabel = formatDivision(standing?.division ?? team.division);
-  const headerKicker = [conferenceLabel, divisionLabel].filter(Boolean).join(" · ");
+  const headerKicker = [conferenceLabel, divisionLabel ? `${divisionLabel} division` : null].filter(Boolean).join(" · ");
   const summaryLine = [team.abbreviation].filter(Boolean).join(" · ");
 
   const overviewFacts = buildFacts([
@@ -357,9 +389,10 @@ export default async function TeamDetailPage({
 
       <section className="text-center">
         <p className="my-0 text-s uppercase tracking-[0.35em] text-white/40">Team overview</p>
-        <h1 className="text-5xl font-semibold text-white">{teamName + ` (${summaryLine})`}</h1>
+        <DataFreshness meta={context.freshness} />
+            <h1 className="text-5xl font-semibold text-white">{teamName + ` (${summaryLine})`}</h1>
         {headerKicker ? (
-          <p className="mt-4 text-xs uppercase tracking-[0.3em] text-white/50">{headerKicker + " division"}</p>
+          <p className="mt-4 text-xs uppercase tracking-[0.3em] text-white/50">{headerKicker}</p>
         ) : null}
         {overviewFacts.length > 0 ? (
           <dl className="mt-4 flex flex-wrap justify-center gap-x-10 gap-y-3 text-sm text-white/70">

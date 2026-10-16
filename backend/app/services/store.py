@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, date, datetime
 from typing import Any
 
-from ..supabase import SupabaseClient
+from ..cache_helpers import ObservedData, source_observed_at
+from ..database import DatabaseClient as SupabaseClient
 
 
 def _season_year(season: str) -> int | None:
@@ -43,8 +45,8 @@ def _parse_list(value: Any) -> list[str]:
                 cleaned.append(text)
         return cleaned
     if isinstance(parsed, str):
-        cleaned = parsed.strip()
-        return [cleaned] if cleaned else []
+        text = parsed.strip()
+        return [text] if text else []
     if parsed is None:
         return []
     return [str(parsed)]
@@ -244,6 +246,19 @@ async def fetch_team_by_abbr(supabase: SupabaseClient, abbreviation: str) -> dic
     return await supabase.select_one("teams", filters={"abbreviation": f"eq.{abbr}"})
 
 
+async def fetch_observed_api_snapshot(supabase: SupabaseClient, cache_key: str) -> ObservedData:
+    row = await supabase.select_one("api_snapshots", filters={"cache_key": f"eq.{cache_key}"})
+    if not row:
+        return ObservedData(None, None)
+    payload = row.get("payload")
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except ValueError:
+            payload = None
+    return ObservedData(payload, source_observed_at(row))
+
+
 async def fetch_api_snapshot(supabase: SupabaseClient, cache_key: str) -> Any | None:
     row = await supabase.select_one("api_snapshots", filters={"cache_key": f"eq.{cache_key}"})
     if not row:
@@ -287,6 +302,20 @@ async def fetch_news_articles(
     ]
 
 
+_LEGACY_AUTH_USER_ID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE
+)
+
+
+def _user_account(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "auth_user_id": _first_non_empty_text(row.get("auth_user_id")) or "",
+        "email": _first_non_empty_text(row.get("email")) or "",
+        "name": _first_non_empty_text(row.get("name")),
+        "username": _normalize_username(row.get("username")),
+    }
+
+
 async def fetch_user_account_by_auth_user_id(
     supabase: SupabaseClient,
     *,
@@ -299,14 +328,7 @@ async def fetch_user_account_by_auth_user_id(
         "user_accounts",
         filters={"auth_user_id": f"eq.{normalized_auth_user_id}"},
     )
-    if not row:
-        return None
-    return {
-        "auth_user_id": _first_non_empty_text(row.get("auth_user_id")) or "",
-        "email": _first_non_empty_text(row.get("email")) or "",
-        "name": _first_non_empty_text(row.get("name")),
-        "username": _normalize_username(row.get("username")),
-    }
+    return _user_account(row) if row else None
 
 
 async def fetch_user_account_by_username(
@@ -321,14 +343,25 @@ async def fetch_user_account_by_username(
         "user_accounts",
         filters={"username": f"eq.{normalized_username}"},
     )
-    if not row:
+    return _user_account(row) if row else None
+
+
+async def _claim_legacy_user_account(
+    supabase: SupabaseClient,
+    *,
+    auth_user_id: str,
+    email: str,
+) -> dict[str, Any] | None:
+    row = await supabase.select_one("user_accounts", filters={"email": f"eq.{email}"})
+    legacy_auth_user_id = _first_non_empty_text(row.get("auth_user_id")) if row else None
+    if not legacy_auth_user_id or not _LEGACY_AUTH_USER_ID.fullmatch(legacy_auth_user_id):
         return None
-    return {
-        "auth_user_id": _first_non_empty_text(row.get("auth_user_id")) or "",
-        "email": _first_non_empty_text(row.get("email")) or "",
-        "name": _first_non_empty_text(row.get("name")),
-        "username": _normalize_username(row.get("username")),
-    }
+    rows = await supabase.update(
+        "user_accounts",
+        {"auth_user_id": auth_user_id, "updated_at": datetime.now(UTC).isoformat()},
+        filters={"auth_user_id": f"eq.{legacy_auth_user_id}"},
+    )
+    return _user_account(rows[0]) if rows else None
 
 
 async def upsert_user_account(
@@ -336,6 +369,7 @@ async def upsert_user_account(
     *,
     auth_user_id: str,
     email: str,
+    email_verified: bool = False,
     name: str | None = None,
     username: str | None = None,
 ) -> dict[str, Any]:
@@ -343,34 +377,61 @@ async def upsert_user_account(
     normalized_email = _first_non_empty_text(email)
     if not normalized_auth_user_id or not normalized_email:
         raise ValueError("auth_user_id and email are required")
+    normalized_email = normalized_email.lower()
 
-    await supabase.upsert(
-        "user_accounts",
-        [
-            {
-                "auth_user_id": normalized_auth_user_id,
-                "email": normalized_email.lower(),
-                "name": _first_non_empty_text(name),
-                "username": _normalize_username(username),
-                "updated_at": datetime.utcnow().isoformat(),
-            }
-        ],
-        on_conflict="auth_user_id",
+    existing = await fetch_user_account_by_auth_user_id(
+        supabase,
+        auth_user_id=normalized_auth_user_id,
     )
+    if existing is None and email_verified:
+        existing = await _claim_legacy_user_account(
+            supabase,
+            auth_user_id=normalized_auth_user_id,
+            email=normalized_email,
+        )
+
+    row: dict[str, Any] = {
+        "auth_user_id": normalized_auth_user_id,
+        "email": normalized_email,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+    if not (existing and existing["name"]):
+        row["name"] = _first_non_empty_text(name)
+    if not (existing and existing["username"]):
+        row["username"] = _normalize_username(username)
+    await supabase.upsert("user_accounts", [row], on_conflict="auth_user_id")
 
     account = await fetch_user_account_by_auth_user_id(
         supabase,
         auth_user_id=normalized_auth_user_id,
     )
-    return account or {
-        "auth_user_id": normalized_auth_user_id,
-        "email": normalized_email.lower(),
-        "name": _first_non_empty_text(name),
-        "username": _normalize_username(username),
-    }
+    return account or _user_account({**(existing or {}), **row})
+
+
+async def update_user_account_profile(
+    supabase: SupabaseClient,
+    *,
+    auth_user_id: str,
+    name: str | None,
+    username: str | None,
+) -> dict[str, Any] | None:
+    normalized_auth_user_id = _first_non_empty_text(auth_user_id)
+    if not normalized_auth_user_id:
+        return None
+    rows = await supabase.update(
+        "user_accounts",
+        {
+            "name": _first_non_empty_text(name),
+            "username": _normalize_username(username),
+            "updated_at": datetime.now(UTC).isoformat(),
+        },
+        filters={"auth_user_id": f"eq.{normalized_auth_user_id}"},
+    )
+    return _user_account(rows[0]) if rows else None
 
 
 async def store_api_snapshot(supabase: SupabaseClient, cache_key: str, payload: Any) -> None:
+    observed_at = source_observed_at(payload)
     await supabase.upsert(
         "api_snapshots",
         [
@@ -378,6 +439,7 @@ async def store_api_snapshot(supabase: SupabaseClient, cache_key: str, payload: 
                 "cache_key": cache_key,
                 "payload": json.dumps(payload, default=str),
                 "updated_at": datetime.utcnow().isoformat(),
+                "observed_at": observed_at.isoformat() if observed_at else None,
             }
         ],
         on_conflict="cache_key",
@@ -417,7 +479,7 @@ async def fetch_players(
         full_name = row.get("full_name") or ""
         first_name, last_name = _split_name(full_name)
         team_id = _coerce_int(row.get("current_team_id"))
-        team = teams_by_id.get(team_id) or {}
+        team = (teams_by_id.get(team_id) or {}) if team_id is not None else {}
         is_active = str(row.get("is_active") or "").strip().lower() == "true"
         results.append(
             {
@@ -555,7 +617,7 @@ async def fetch_player_career(
     results: list[dict[str, Any]] = []
     for row in rows:
         team_id = _coerce_int(row.get("team_id"))
-        team = teams_by_id.get(team_id) or {}
+        team = (teams_by_id.get(team_id) or {}) if team_id is not None else {}
         results.append(
             {
                 "season_id": _first_non_empty_text(row.get("season")),
@@ -625,7 +687,7 @@ async def fetch_player_stats(
         player = players_by_id.get(player_key) or {}
         player_info = player_info_by_id.get(player_key) or {}
         team_id_value = _coerce_int(row.get("team_id"))
-        team = teams_by_id.get(team_id_value) or {}
+        team = (teams_by_id.get(team_id_value) or {}) if team_id_value is not None else {}
         points = _coerce_float(row.get("points_pg"))
         if points is None:
             points = _coerce_float(row.get("points"))
@@ -755,16 +817,20 @@ async def fetch_games(
             home_result = (
                 "W"
                 if home_score is not None and away_score is not None and home_score > away_score
-                else "L"
-                if home_score is not None and away_score is not None and home_score < away_score
-                else None
+                else (
+                    "L"
+                    if home_score is not None and away_score is not None and home_score < away_score
+                    else None
+                )
             )
             away_result = (
                 "W"
                 if home_score is not None and away_score is not None and away_score > home_score
-                else "L"
-                if home_score is not None and away_score is not None and away_score < home_score
-                else None
+                else (
+                    "L"
+                    if home_score is not None and away_score is not None and away_score < home_score
+                    else None
+                )
             )
             if home_team_id is not None:
                 per_team_rows.append(
@@ -1057,9 +1123,9 @@ async def fetch_player_gamelog_from_boxscores(
         team_filters = {"team_id": f"in.({','.join(str(team_id) for team_id in team_ids)})"}
         teams = await supabase.select("teams", filters=team_filters)
         teams_by_id = {
-            _coerce_int(team.get("team_id")): team
+            team_key: team
             for team in teams
-            if team.get("team_id") is not None
+            if (team_key := _coerce_int(team.get("team_id"))) is not None
         }
 
     logs: list[dict[str, Any]] = []
@@ -1068,9 +1134,9 @@ async def fetch_player_gamelog_from_boxscores(
         game_id = row.get("game_id")
         if not game_id or game_id in used_games:
             continue
-        game = games_by_id.get(game_id)
-        if not game:
+        if game_id not in games_by_id:
             continue
+        game = games_by_id[game_id]
         game_date = _parse_game_date(game.get("date") or game.get("game_date"))
         if not game_date:
             continue

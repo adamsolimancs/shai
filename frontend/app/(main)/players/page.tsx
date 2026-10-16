@@ -1,5 +1,13 @@
+import type { Metadata } from "next";
 import MagicBentoLeaderboardGrid from "@/components/MagicBentoLeaderboardGrid";
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
+
+export const metadata: Metadata = {
+  title: "NBA Player Leaderboards",
+  description: "Explore NBA per-game leaders in points, rebounds, assists, steals, and blocks.",
+  alternates: { canonical: "/players" },
+  openGraph: { url: "/players" },
+};
 
 type LeagueLeaderRow = {
   player_id: number;
@@ -42,7 +50,7 @@ function extractParam(params: SearchParams, key: string): string {
 }
 
 type PlayersPageProps = {
-  searchParams?: SearchParams | Promise<SearchParams>;
+  searchParams?: Promise<SearchParams>;
 };
 
 async function fetchLeaders(
@@ -79,9 +87,9 @@ export default async function PlayersPage({ searchParams }: PlayersPageProps) {
       <section className="space-y-4">
         <div>
           <p className="text-xs uppercase tracking-[0.4em] text-white/40">Leaderboards</p>
-          <h2 className="mt-2 text-2xl font-semibold text-white">
+          <h1 className="mt-2 text-2xl font-semibold text-white">
             {seasonType === "Playoffs" ? "Playoff Leaders" : "Season Leaders"}
-          </h2>
+          </h1>
           <p className="mt-1 text-xs uppercase tracking-[0.28em] text-white/45">Per game</p>
         </div>
         <MagicBentoLeaderboardGrid leaderboards={leaderboards} />

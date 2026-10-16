@@ -38,6 +38,7 @@ from nba_api.stats.endpoints import (
 from pydantic import ValidationError
 
 from ..cache import CacheBackend
+from ..cache_helpers import read_cache_as_of, write_cache_as_of
 from ..config import Settings
 from ..resolvers import NameResolver, Resolution
 from ..schemas import (
@@ -290,12 +291,7 @@ class NBAStatsClient:
 
         deduped = self._dedupe_games(raw_rows, season)
         filtered = self._filter_game_rows(deduped, team_id, team_abbr, date_from, date_to)
-        if (
-            not filtered
-            and date_from is not None
-            and date_to is not None
-            and date_from == date_to
-        ):
+        if not filtered and date_from is not None and date_to is not None and date_from == date_to:
             scoreboard_result = await self.get_scoreboard_games(date_from, season=season)
             filtered = self._filter_game_rows(
                 scoreboard_result.data,
@@ -305,7 +301,7 @@ class NBAStatsClient:
                 date_to,
             )
             cache_meta = scoreboard_result.cache
-        games: list[Game] = []
+        games = []
         for row in filtered:
             try:
                 games.append(Game(**row))
@@ -671,7 +667,7 @@ class NBAStatsClient:
             championships=format_award_rows(data.get("championships", [])),
             conference_titles=format_award_rows(data.get("conference", [])),
             division_titles=format_award_rows(data.get("division", [])),
-            hall_of_famers=[row.get("PLAYER") for row in data.get("hof", []) if row.get("PLAYER")],
+            hall_of_famers=[str(row["PLAYER"]) for row in data.get("hof", []) if row.get("PLAYER")],
             retired_numbers=[
                 "{}{}".format(
                     (row.get("PLAYER") or "").strip(),
@@ -681,7 +677,7 @@ class NBAStatsClient:
                 if row.get("PLAYER")
             ],
             social_sites={
-                str((row.get("ACCOUNTTYPE") or "").lower()): row.get("WEBSITE_LINK")
+                str((row.get("ACCOUNTTYPE") or "").lower()): str(row["WEBSITE_LINK"])
                 for row in data.get("social", [])
                 if row.get("WEBSITE_LINK")
             },
@@ -835,7 +831,7 @@ class NBAStatsClient:
                 self.get_players(season, active=None, search=None, page=1, page_size=10),
             )
 
-    def _load_players_frame(self, season: str):
+    def _load_players_frame(self, season: str) -> Any:
         try:
             endpoint = commonallplayers.CommonAllPlayers(
                 season=season,
@@ -865,11 +861,19 @@ class NBAStatsClient:
     ) -> tuple[TData, CacheMeta]:
         cached = await self.cache.get(key)
         if cached is not None:
-            return cast(TData, cached), CacheMeta(hit=True, stale=False)
+            return cast(TData, cached), CacheMeta(
+                hit=True,
+                stale=False,
+                as_of=await read_cache_as_of(self.cache, key),
+            )
         if not self.settings.nba_api_calls_allowed:
             fallback = await self.cache.get_stale(key)
             if fallback is not None:
-                return cast(TData, fallback), CacheMeta(hit=True, stale=True)
+                return cast(TData, fallback), CacheMeta(
+                    hit=True,
+                    stale=True,
+                    as_of=await read_cache_as_of(self.cache, key, stale=True),
+                )
             raise UpstreamError("NBA API disabled; cache miss")
         try:
             data = await self._run_with_retry(fetcher)
@@ -880,11 +884,17 @@ class NBAStatsClient:
             )
             fallback = await self.cache.get_stale(key)
             if fallback is not None:
-                return cast(TData, fallback), CacheMeta(hit=True, stale=True)
+                return cast(TData, fallback), CacheMeta(
+                    hit=True,
+                    stale=True,
+                    as_of=await read_cache_as_of(self.cache, key, stale=True),
+                )
             raise UpstreamError("NBA stats service unavailable") from exc
+        as_of = datetime.now(tz=UTC)
         await self.cache.set(key, data, ttl)
-        self._last_refresh[key] = datetime.now(tz=UTC)
-        return data, CacheMeta(hit=False, stale=False)
+        await write_cache_as_of(self.cache, key, as_of=as_of, ttl=ttl)
+        self._last_refresh[key] = as_of
+        return data, CacheMeta(hit=False, stale=False, as_of=as_of)
 
     async def _run_with_retry(self, fetcher: Callable[[], TData]) -> TData:
         delay = self.settings.upstream_retry_backoff_seconds
@@ -1770,11 +1780,11 @@ class NBAStatsClient:
         rows: list[dict[str, Any]],
         home_id: int,
         away_id: int,
-    ) -> list[dict[str, int]]:
+    ) -> list[dict[str, int | str]]:
         lookup = {self._safe_int(row.get("TEAM_ID")): row for row in rows}
         home_row = lookup.get(home_id, {})
         away_row = lookup.get(away_id, {})
-        line_score: list[dict[str, int]] = []
+        line_score: list[dict[str, int | str]] = []
         for period in range(1, 5):
             label = f"Q{period}"
             home_pts = self._coerce_int(home_row.get(f"PTS_QTR{period}")) or 0

@@ -36,7 +36,7 @@ export function LeagueStandings({ conferences, className }: LeagueStandingsProps
     <div className={cn("grid gap-4 lg:grid-cols-[repeat(auto-fit,minmax(360px,1fr))]", className)}>
       {conferences.map((conference) => {
         return (
-          <article key={conference.id} className="rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface)] p-3 shadow-sm shadow-black/5 sm:p-4">
+          <article key={conference.id} className="min-w-0 rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface)] p-3 shadow-sm shadow-black/5 sm:p-4">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-semibold text-[color:var(--color-app-foreground)]">{conference.title}</h3>
               {conference.subtitle ? (

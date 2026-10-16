@@ -1,7 +1,16 @@
+import type { Metadata } from "next";
+import DataFreshness from "@/components/DataFreshness";
 import LocalGameTime from "@/components/LocalGameTime";
 import ScoreCard from "@/components/ScoreCard";
 import { buildTimeFallback, isFinalGame, parseGameDate, toDateKey } from "@/lib/gameUtils";
-import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
+import { DEFAULT_SEASON, nbaFetchEnvelope } from "@/lib/nbaApi";
+
+export const metadata: Metadata = {
+  title: "NBA Scores and Results",
+  description: "Follow the latest NBA scores, game status, schedules, and recent results.",
+  alternates: { canonical: "/scores" },
+  openGraph: { url: "/scores" },
+};
 
 type Game = {
   game_id: string;
@@ -93,16 +102,18 @@ function groupGamesByDate(games: EnhancedGame[]): { date: string; label: string;
 
 export default async function ScoresPage() {
   const nbaToday = getNbaDateKey();
-  const [games, tonightGames] = await Promise.all([
-    nbaFetch<Game[]>(
+  const [gamesResult, tonightResult] = await Promise.allSettled([
+    nbaFetchEnvelope<Game[]>(
       `/v1/games?season=${DEFAULT_SEASON}&page_size=36`,
-      { next: { revalidate: 120 } },
-    ).catch(() => []),
-    nbaFetch<Game[]>(
+      { cache: "no-store" },
+    ),
+    nbaFetchEnvelope<Game[]>(
       `/v1/games?season=${DEFAULT_SEASON}&date_from=${nbaToday}&date_to=${nbaToday}&page_size=24`,
-      { next: { revalidate: 120 } },
-    ).catch(() => []),
+      { cache: "no-store" },
+    ),
   ]);
+  const games = gamesResult.status === "fulfilled" ? gamesResult.value.data : [];
+  const tonightGames = tonightResult.status === "fulfilled" ? tonightResult.value.data : [];
   const enhanced = games.map(enhanceGame);
   const tonightSlate = tonightGames
     .map(enhanceGame)
@@ -121,11 +132,14 @@ export default async function ScoresPage() {
       <section className="space-y-6">
         <div className="flex items-center justify-between">
           <h2 className="text-2xl font-semibold text-white">Tonight&apos;s slate</h2>
-          {tonightSlate.length > 0 ? <span className="text-xs uppercase tracking-[0.3em] text-white/60">{tonightSlate.length} games</span> : null}
+          {tonightSlate.length > 0 ? <span className="text-xs uppercase tracking-[0.3em] text-white/60">{tonightSlate.length} {tonightSlate.length === 1 ? "game" : "games"}</span> : null}
         </div>
-        {tonightSlate.length === 0 ? (
+        <DataFreshness meta={tonightResult.status === "fulfilled" ? tonightResult.value.meta : undefined} />
+        {tonightResult.status === "rejected" ? (
+          <p role="alert">Tonight’s game data is unavailable. Please try again later.</p>
+        ) : tonightSlate.length === 0 ? (
           <div className="rounded-3xl border border-white/10 bg-slate-950/40 p-8 text-sm text-white/70">
-            No games on tonight&apos;s slate yet.
+            No upcoming or live games on tonight&apos;s slate.
           </div>
         ) : (
           <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3 xl:mx-auto xl:max-w-6xl xl:justify-items-center">
@@ -134,6 +148,8 @@ export default async function ScoresPage() {
               return (
                 <ScoreCard
                   key={`tonight-${game.id}`}
+                  href={`/boxscore/${game.id}`}
+                  prefetch={false}
                   className="w-full max-w-[360px]"
                   timeLabel={<LocalGameTime value={game.timeValue} fallback={game.timeFallback} showTime={true} />}
                   status={game.status}
@@ -151,9 +167,12 @@ export default async function ScoresPage() {
         <div>
           <h2 className="text-2xl font-semibold text-white">Latest results</h2>
         </div>
-        {grouped.length === 0 ? (
+        <DataFreshness meta={gamesResult.status === "fulfilled" ? gamesResult.value.meta : undefined} />
+        {gamesResult.status === "rejected" ? (
+          <p role="alert">Latest results are unavailable. Please try again later.</p>
+        ) : grouped.length === 0 ? (
           <div className="rounded-3xl border border-white/10 bg-slate-950/40 p-10 text-center text-white/70">
-            No games have been loaded for {DEFAULT_SEASON} yet. Once the API cache warms up, fresh scores will appear here.
+            No games found for {DEFAULT_SEASON}.
           </div>
         ) : (
           <div className="space-y-8">
@@ -161,7 +180,7 @@ export default async function ScoresPage() {
               <div key={group.date} className="space-y-4">
                 <div className="flex items-center justify-between">
                   <p className="text-sm font-semibold tracking-[0.3em] text-white/60">{group.label}</p>
-                  <span className="text-xs uppercase text-white/60">{group.games.length} games</span>
+                  <span className="text-xs uppercase text-white/60">{group.games.length} {group.games.length === 1 ? "game" : "games"}</span>
                 </div>
                 <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-3 xl:mx-auto xl:max-w-6xl xl:justify-items-center">
                   {group.games.map((game) => (

@@ -1,13 +1,34 @@
 import { Suspense } from "react";
 import Link from "next/link";
+import type { Metadata } from "next";
 import { LeagueStandings, type LeagueStandingsConference } from "@/components/LeagueStandings";
 import HeroSearch from "@/components/HeroSearch";
 import LocalGameTime from "@/components/LocalGameTime";
 import ScoreCard from "@/components/ScoreCard";
 import StarBorder from "@/components/StarBorder";
+import DevOffseasonToggle from "@/components/DevOffseasonToggle";
+import OffseasonHome, { type FinalsSummary, type OffseasonLeader } from "@/components/OffseasonHome";
 import { buildTimeFallback, isFinalGame } from "@/lib/gameUtils";
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
+import { resolveSeasonalMode } from "@/lib/seasonMode";
 import { slugifySegment } from "@/lib/utils";
+
+const SITE_URL = "https://shaistats.vercel.app";
+
+export const metadata: Metadata = {
+  alternates: { canonical: "/" },
+  openGraph: { url: "/" },
+};
+
+const websiteJsonLd = {
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  "@id": `${SITE_URL}/#website`,
+  url: `${SITE_URL}/`,
+  name: "ShAI",
+  description: "Explore NBA scores, player and team profiles, standings, and advanced stats.",
+  inLanguage: "en-US",
+};
 
 type Game = {
   game_id: string;
@@ -45,7 +66,7 @@ type ScoreCardData = {
   timeValue: string;
   timeFallback: string;
   showTime: boolean;
-  location: string;
+  location?: string;
 };
 
 type PlayerHighlight = {
@@ -62,56 +83,6 @@ type PlayerInfo = {
   first_name?: string | null;
   last_name?: string | null;
 };
-
-type FranchiseLocation = {
-  name: string;
-  location: string;
-  aliases?: string[];
-};
-
-const TEAM_LOCATIONS: FranchiseLocation[] = [
-  { name: "Atlanta Hawks", location: "Atlanta, GA" },
-  { name: "Boston Celtics", location: "Boston, MA" },
-  { name: "Brooklyn Nets", location: "Brooklyn, NY" },
-  { name: "Charlotte Hornets", location: "Charlotte, NC" },
-  { name: "Chicago Bulls", location: "Chicago, IL" },
-  { name: "Cleveland Cavaliers", location: "Cleveland, OH" },
-  { name: "Dallas Mavericks", location: "Dallas, TX" },
-  { name: "Denver Nuggets", location: "Denver, CO" },
-  { name: "Detroit Pistons", location: "Detroit, MI" },
-  { name: "Golden State Warriors", location: "San Francisco, CA" },
-  { name: "Houston Rockets", location: "Houston, TX" },
-  { name: "Indiana Pacers", location: "Indianapolis, IN" },
-  { name: "Los Angeles Clippers", aliases: ["LA Clippers"], location: "Los Angeles, CA" },
-  { name: "Los Angeles Lakers", aliases: ["LA Lakers"], location: "Los Angeles, CA" },
-  { name: "Memphis Grizzlies", location: "Memphis, TN" },
-  { name: "Miami Heat", location: "Miami, FL" },
-  { name: "Milwaukee Bucks", location: "Milwaukee, WI" },
-  { name: "Minnesota Timberwolves", location: "Minneapolis, MN" },
-  { name: "New Orleans Pelicans", location: "New Orleans, LA" },
-  { name: "New York Knicks", location: "New York, NY" },
-  { name: "Oklahoma City Thunder", location: "Oklahoma City, OK" },
-  { name: "Orlando Magic", location: "Orlando, FL" },
-  { name: "Philadelphia 76ers", location: "Philadelphia, PA" },
-  { name: "Phoenix Suns", location: "Phoenix, AZ" },
-  { name: "Portland Trail Blazers", location: "Portland, OR" },
-  { name: "Sacramento Kings", location: "Sacramento, CA" },
-  { name: "San Antonio Spurs", location: "San Antonio, TX" },
-  { name: "Toronto Raptors", location: "Toronto, ON" },
-  { name: "Utah Jazz", location: "Salt Lake City, UT" },
-  { name: "Washington Wizards", location: "Washington, DC" },
-];
-
-const TEAM_LOCATION_LOOKUP = TEAM_LOCATIONS.reduce((map, team) => {
-  map.set(team.name.toLowerCase(), team.location);
-  team.aliases?.forEach((alias) => map.set(alias.toLowerCase(), team.location));
-  return map;
-}, new Map<string, string>());
-
-function fallbackLocationForTeam(name?: string | null): string | undefined {
-  if (!name) return undefined;
-  return TEAM_LOCATION_LOOKUP.get(name.toLowerCase());
-}
 
 type LeagueStanding = {
   team_id: number;
@@ -144,6 +115,15 @@ type NewsArticle = {
   image_url?: string | null;
 };
 
+type LeaderStatCategory = "PTS" | "REB" | "AST" | "STL" | "BLK";
+
+const OFFSEASON_LEADERBOARDS = [
+  { label: "Points", metric: "PPG", category: "PTS" as const },
+  { label: "Rebounds", metric: "RPG", category: "REB" as const },
+  { label: "Assists", metric: "APG", category: "AST" as const },
+  { label: "Blocks", metric: "BPG", category: "BLK" as const },
+];
+
 const NEWS_DATE = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
 
 const HOME_DATE_FALLBACK = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
@@ -167,7 +147,7 @@ async function fetchRecentGames(): Promise<ScoreCardData[]> {
       timeValue,
       timeFallback: buildTimeFallback(game.date, showTime, HOME_DATE_FALLBACK),
       showTime,
-      location: game.location ?? fallbackLocationForTeam(game.home_team_name) ?? "Venue TBA",
+      location: game.location?.trim() || undefined,
     };
   });
 }
@@ -238,6 +218,54 @@ async function fetchNews(): Promise<NewsArticle[]> {
   return nbaFetch<NewsArticle[]>("/v1/news", { next: { revalidate: 300 } });
 }
 
+async function fetchLeaders(category: LeaderStatCategory, seasonType = "Regular Season", limit = 5) {
+  const params = new URLSearchParams({
+    season: DEFAULT_SEASON,
+    season_type: seasonType,
+    per_mode: "PerGame",
+    stat_category: category,
+    limit: String(limit),
+  });
+  return nbaFetch<OffseasonLeader[]>(`/v1/league/leaders?${params.toString()}`, {
+    next: { revalidate: 900 },
+  });
+}
+
+async function fetchFinalsSummary(): Promise<FinalsSummary> {
+  const endYear = Number(DEFAULT_SEASON.slice(0, 4)) + 1;
+  const games = await nbaFetch<Game[]>(
+    `/v1/games?season=${DEFAULT_SEASON}&date_from=${endYear}-06-01&date_to=${endYear}-06-30&page_size=50`,
+    { next: { revalidate: 3600 }, timeoutMs: 3000 },
+  );
+  const completed = games.filter((game) => isFinalGame(game.status ?? "", game.date, game.home_team_score, game.away_team_score));
+  const latest = completed.toSorted((a, b) => b.date.localeCompare(a.date))[0];
+  if (!latest) return null;
+  const finalists = [latest.home_team_name, latest.away_team_name].toSorted();
+  const finalsGames = completed.filter((game) =>
+    [game.home_team_name, game.away_team_name].toSorted().every((team, index) => team === finalists[index]),
+  );
+  if (finalsGames.length === 0) return null;
+
+  const totals = new Map<string, { wins: number; points: number }>(finalists.map((team) => [team, { wins: 0, points: 0 }]));
+  for (const game of finalsGames) {
+    const home = totals.get(game.home_team_name)!;
+    const away = totals.get(game.away_team_name)!;
+    home.points += game.home_team_score;
+    away.points += game.away_team_score;
+    if (game.home_team_score > game.away_team_score) home.wins += 1;
+    if (game.away_team_score > game.home_team_score) away.wins += 1;
+  }
+  const [champion, finalist] = finalists.toSorted((a, b) => totals.get(b)!.wins - totals.get(a)!.wins);
+  return {
+    champion,
+    finalist,
+    championWins: totals.get(champion)!.wins,
+    finalistWins: totals.get(finalist)!.wins,
+    championPoints: totals.get(champion)!.points / finalsGames.length,
+    finalistPoints: totals.get(finalist)!.points / finalsGames.length,
+  };
+}
+
 function formatNewsDate(value: string): string {
   return NEWS_DATE.format(new Date(value));
 }
@@ -301,13 +329,13 @@ const HeroSection = () => (
         WELCOME TO ShAI
       </h1>
       <p className="mt-3 text-sm text-(--foreground-muted)/70 sm:mt-4 sm:text-base md:text-lg">
-        AI that speaks basketball: real-time stats, player insights, and predictive analytics powered by AI.
+        NBA scores, player insights, standings, and advanced stats in one place.
       </p>
     </div>
     <Suspense
       fallback={
         <div
-          className="mx-auto h-[52px] w-full max-w-3xl animate-pulse rounded-full border border-white/10 bg-white/5 sm:h-[68px]"
+          className="skeleton-block mx-auto h-[52px] w-full max-w-3xl rounded-full border border-white/10 bg-white/5 sm:h-[68px]"
           aria-hidden="true"
         />
       }
@@ -317,13 +345,61 @@ const HeroSection = () => (
   </section>
 );
 
-export default async function HomePage() {
-  const [scores, players, leagueStandings, news] = await Promise.all([
+function settledSection<T>(
+  section: string,
+  result: PromiseSettledResult<T>,
+  fallback: T,
+): T {
+  if (result.status === "fulfilled") {
+    return result.value;
+  }
+  console.error(`Homepage ${section} section failed to load`, result.reason);
+  return fallback;
+}
+
+type HomePageProps = { searchParams?: Promise<Record<string, string | string[] | undefined>> };
+
+export default async function HomePage({ searchParams }: HomePageProps) {
+  const params: Record<string, string | string[] | undefined> = searchParams
+    ? await searchParams
+    : {};
+  const override = typeof params.offseason === "string" ? params.offseason : undefined;
+  const isOffseason = resolveSeasonalMode(new Date(), override) === "offseason";
+
+  if (isOffseason) {
+    const [scorersResult, playoffsResult, finalsResult, ...leaderResults] = await Promise.allSettled([
+      fetchLeaders("PTS"),
+      fetchLeaders("PTS", "Playoffs"),
+      fetchFinalsSummary(),
+      ...OFFSEASON_LEADERBOARDS.map((board) => fetchLeaders(board.category, "Regular Season", 1)),
+    ]);
+    const topScorers = settledSection("top scorers", scorersResult, []);
+    const playoffLeaders = settledSection("playoff leaders", playoffsResult, []);
+    // Finals snapshots may not be ingested yet; absence is a supported offseason state.
+    const finals = finalsResult.status === "fulfilled" ? finalsResult.value : null;
+    const leaderboards = OFFSEASON_LEADERBOARDS.map((board, index) => ({
+      label: board.label,
+      metric: board.metric,
+      rows: settledSection(`${board.label} leaders`, leaderResults[index], []),
+    }));
+    return <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteJsonLd).replace(/</g, "\\u003c") }} />
+      <HeroSection />
+      <OffseasonHome season={DEFAULT_SEASON} topScorers={topScorers} playoffLeaders={playoffLeaders} leaderboards={leaderboards} finals={finals} />
+      {process.env.NODE_ENV !== "production" ? <Suspense><DevOffseasonToggle isOffseason /></Suspense> : null}
+    </>;
+  }
+
+  const [scoresResult, playersResult, standingsResult, newsResult] = await Promise.allSettled([
     fetchRecentGames(),
     fetchPlayerHighlights(),
     fetchLeagueStandings(),
     fetchNews(),
   ]);
+  const scores = settledSection("scores", scoresResult, []);
+  const players = settledSection("players", playersResult, []);
+  const leagueStandings = settledSection("standings", standingsResult, []);
+  const news = settledSection("news", newsResult, []);
   const conferenceBuckets = buildConferenceBuckets(leagueStandings);
   const stories = [...news]
     .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())
@@ -354,13 +430,20 @@ export default async function HomePage() {
 
   return (
     <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(websiteJsonLd).replace(/</g, "\\u003c") }} />
       <HeroSection />
 
       <section id="scores" className="mt-12 sm:mt-16 lg:mt-20">
         <SectionTitle title="Recent Games" eyebrow="Live scores" link={{ href: "/scores", label: "View all scores →" }} />
         {/* TODO: if no recent games (offseason), display last season's playoff results. */}
         <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3 md:gap-5 lg:mx-auto lg:max-w-5xl lg:justify-items-center">
-          {scores.map((game) => {
+          {scores.length === 0 ? (
+            <div className="col-span-full w-full rounded-3xl border border-white/10 bg-slate-950/60 p-6 text-center text-sm text-white/70">
+              {scoresResult.status === "rejected"
+                ? "Scores are temporarily unavailable."
+                : "No recent games are available."}
+            </div>
+          ) : scores.map((game) => {
             const winner =
               game.homeScore === game.awayScore ? "even" : game.homeScore > game.awayScore ? "home" : "away";
             return (
@@ -386,7 +469,13 @@ export default async function HomePage() {
       <section id="players" className="mt-12 sm:mt-16 lg:mt-20">
         <SectionTitle title="Player Spotlight" eyebrow="Trending performers" link={{ href: "/players", label: "View all players →" }} />
         <div className="grid gap-4 sm:gap-6 md:grid-cols-3">
-          {players.map((player) => (
+          {players.length === 0 ? (
+            <div className="rounded-3xl border border-white/10 bg-slate-950/60 p-6 text-center text-sm text-white/70 md:col-span-3">
+              {playersResult.status === "rejected"
+                ? "Player highlights are temporarily unavailable."
+                : "No player highlights are available."}
+            </div>
+          ) : players.map((player) => (
             <StarBorder
               key={player.id}
               as={Link}
@@ -479,6 +568,7 @@ export default async function HomePage() {
           )}
         </div>
       </section>
+      {process.env.NODE_ENV !== "production" ? <Suspense><DevOffseasonToggle isOffseason={false} /></Suspense> : null}
     </>
   );
 }

@@ -92,15 +92,7 @@ class Settings(BaseSettings):
     readiness_startup_delay_seconds: float = Field(2.0, ge=0.0)
     supported_season_start_year: int = Field(1996, ge=1946)
     database_url: str | None = None
-    supabase_url: str | None = Field(None, validation_alias=AliasChoices("SUPABASE_URL"))
-    supabase_key: str | None = Field(
-        None,
-        validation_alias=AliasChoices(
-            "SUPABASE_KEY",
-            "SUPABASE_SECRET_KEY",
-        ),
-    )
-    supabase_schema: str = Field("public")
+    database_schema: str = Field("public", validation_alias=AliasChoices("DATABASE_SCHEMA"))
     hot_cache_keys: list[str] = Field(default_factory=list)
     enable_integration_tests: bool = False
     cache_key_prefix: str = Field("nba:serve")

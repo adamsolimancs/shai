@@ -55,6 +55,33 @@ async def test_get_or_set_cache_miss_sets_value():
 
 
 @pytest.mark.asyncio
+async def test_get_or_set_cache_supports_data_dependent_ttl():
+    settings = Settings()
+
+    class RecordingCache(InMemoryCacheBackend):
+        ttl: int | None = None
+
+        async def set(self, key, value, ttl):
+            self.ttl = ttl
+            await super().set(key, value, ttl)
+
+    cache = RecordingCache(settings)
+
+    async def fetcher():
+        return {"status": "live"}
+
+    await get_or_set_cache(
+        cache=cache,
+        redis_client=None,
+        key="key",
+        ttl=lambda data: 5 if data["status"] == "live" else 60,
+        fetcher=fetcher,
+    )
+
+    assert cache.ttl == 5
+
+
+@pytest.mark.asyncio
 async def test_get_or_set_cache_stale_fallback():
     settings = Settings()
     cache = InMemoryCacheBackend(settings)

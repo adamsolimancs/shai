@@ -1,0 +1,14 @@
+{
+  "name": "shai",
+  "private": true,
+  "scripts": {
+    "predev": "if ! docker info >/dev/null 2>&1; then if [ \"$(uname)\" = Darwin ] && command -v open >/dev/null 2>&1; then open -ga Docker; for _ in $(seq 1 60); do docker info >/dev/null 2>&1 && break; sleep 1; done; fi; docker info >/dev/null 2>&1 || { echo 'Docker must be running before starting the app.' >&2; exit 1; }; fi; if [ ! -d frontend/node_modules ]; then npm --prefix frontend install; fi",
+    "dev": "concurrently --kill-others-on-fail --names services,web --prefix-colors blue,green \"npm run dev:services\" \"npm run dev:web\"",
+    "dev:services": "docker compose --env-file frontend/.env -f docker-compose.yml -f docker-compose.dev.yml up --build --remove-orphans",
+    "dev:web": "npm --prefix frontend run dev",
+    "dev:down": "docker compose --env-file frontend/.env -f docker-compose.yml -f docker-compose.dev.yml down"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1"
+  }
+}

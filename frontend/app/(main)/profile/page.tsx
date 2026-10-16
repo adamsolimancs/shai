@@ -1,7 +1,13 @@
 import { redirect } from "next/navigation";
+import type { Metadata } from "next";
 
 import { auth } from "@/auth";
 import ProfileAccountForm from "@/components/ProfileAccountForm";
+
+export const metadata: Metadata = {
+  title: "Account profile",
+  robots: { index: false, follow: false, nocache: true },
+};
 
 const providerLabel = (provider: string | null | undefined) => {
   if (!provider) {

@@ -9,11 +9,8 @@ describe("ThemeToggle", () => {
     document.cookie = "shai-color-mode=dark; Path=/";
     render(<ThemeToggle />);
 
-    await waitFor(() => {
-      expect(document.documentElement.dataset.theme).toBe("dark");
-    });
-
-    const button = screen.getByRole("button", { name: /switch to light mode/i });
+    const button = await screen.findByRole("button", { name: /switch to light mode/i });
+    expect(document.documentElement.dataset.theme).toBe("dark");
     fireEvent.click(button);
 
     await waitFor(() => {

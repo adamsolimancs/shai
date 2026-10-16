@@ -6,12 +6,14 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: "jsdom",
+    include: ["test/**/*.test.{ts,tsx}"],
     setupFiles: ["./test/setup.ts"],
     globals: true,
   },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "."),
+      "server-only": path.resolve(__dirname, "node_modules/next/dist/compiled/server-only/empty.js"),
     },
   },
 });

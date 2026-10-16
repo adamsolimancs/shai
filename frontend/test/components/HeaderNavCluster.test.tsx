@@ -42,7 +42,7 @@ describe("HeaderNavCluster", () => {
     pathname = "/players/jalen-brunson";
     render(<HeaderSearchBar />);
 
-    const input = screen.getByPlaceholderText(/search the league/i) as HTMLInputElement;
+    const input = screen.getByPlaceholderText(/search nba players/i) as HTMLInputElement;
     await waitFor(() => {
       expect(input.value).toBe("jalen brunson");
     });

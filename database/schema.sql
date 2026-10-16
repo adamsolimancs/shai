@@ -42,7 +42,7 @@
   pace_per40 real,
   possessions real,
   pie real\n);\n |
-| CREATE TABLE public.boxscores (\n  game_id text NOT NULL,
+| CREATE TABLE public.boxscores (\n  observed_at timestamp with time zone,\n  game_id text NOT NULL,
   status text NOT NULL,
   game_date text,
   start_time text,
@@ -53,7 +53,7 @@
   away_team text,
   line_score text,
   team_totals text\n);\n                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| CREATE TABLE public.games (\n  game_id text NOT NULL,
+| CREATE TABLE public.games (\n  observed_at timestamp with time zone,\n  game_id text NOT NULL,
   date text,
   start_time text,
   home_team_id bigint,
@@ -63,7 +63,7 @@
   away_team_name text,
   away_team_score smallint,
   season integer\n);\n                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| CREATE TABLE public.api_snapshots (\n  cache_key text NOT NULL,
+| CREATE TABLE public.api_snapshots (\n  observed_at timestamp with time zone,\n  cache_key text NOT NULL,
   payload text,
   updated_at text\n);\n                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | CREATE TABLE public.ingestion_state (\n  id text,
@@ -147,7 +147,7 @@
   draft_pick text,
   country text,
   college text\n);\n                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| CREATE TABLE public.user_accounts (\n  auth_user_id uuid NOT NULL,
+| CREATE TABLE public.user_accounts (\n  auth_user_id text NOT NULL,
   name text,
   username text,
   email text NOT NULL,
@@ -248,7 +248,6 @@
 | ALTER TABLE public.player_season_stats ADD CONSTRAINT player_season_stats_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams(team_id) ON UPDATE RESTRICT ON DELETE RESTRICT;\n         |
 | ALTER TABLE public.players ADD CONSTRAINT players_pkey PRIMARY KEY (player_id);\n                                                                                                       |
 | ALTER TABLE public.user_accounts ADD CONSTRAINT user_accounts_pkey PRIMARY KEY (auth_user_id);\n                                                                                       |
-| ALTER TABLE public.user_accounts ADD CONSTRAINT user_accounts_auth_user_id_fkey FOREIGN KEY (auth_user_id) REFERENCES auth.users(id) ON UPDATE CASCADE ON DELETE CASCADE;\n            |
 | ALTER TABLE public.user_accounts ADD CONSTRAINT user_accounts_email_key UNIQUE (email);\n                                                                                              |
 | ALTER TABLE public.user_accounts ADD CONSTRAINT user_accounts_username_key UNIQUE (username);\n                                                                                        |
 | ALTER TABLE public.team_season_history ADD CONSTRAINT team_season_history_pkey PRIMARY KEY (season, team_id, season_type, per_mode);\n                                                   |
@@ -261,3 +260,5 @@
 | ALTER TABLE public.league_leader_rows ADD CONSTRAINT league_leader_rows_player_id_fkey FOREIGN KEY (player_id) REFERENCES players(player_id) ON UPDATE RESTRICT ON DELETE RESTRICT;\n    |
 | ALTER TABLE public.league_leader_rows ADD CONSTRAINT league_leader_rows_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams(team_id) ON UPDATE RESTRICT ON DELETE RESTRICT;\n            |
 | ALTER TABLE public.teams ADD CONSTRAINT teams_pkey PRIMARY KEY (team_id);\n                                                                                                             |
+| CREATE INDEX players_full_name_trgm_idx ON public.players USING gin (full_name extensions.gin_trgm_ops);\n                                                           |
+| CREATE INDEX teams_full_name_trgm_idx ON public.teams USING gin (((COALESCE(city, ''::text) || ' '::text) || COALESCE(name, ''::text)) extensions.gin_trgm_ops);\n |

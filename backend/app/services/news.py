@@ -16,10 +16,11 @@ from bs4 import BeautifulSoup
 from fastapi import HTTPException, status
 
 from ..cache import CacheBackend
+from ..cache_helpers import read_cache_as_of, write_cache_as_of
 from ..config import Settings
+from ..database import DatabaseClient
 from ..schemas import CacheMeta, NewsArticle
 from ..services.store import fetch_news_articles
-from ..supabase import SupabaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,7 @@ class NewsService:
         self,
         settings: Settings,
         cache: CacheBackend,
-        supabase: SupabaseClient | None = None,
+        supabase: DatabaseClient | None = None,
     ):
         self.settings = settings
         self.cache = cache
@@ -87,7 +88,11 @@ class NewsService:
         cached = await self.cache.get(self._cache_key)
         if cached is not None:
             try:
-                return [NewsArticle(**item) for item in cached], CacheMeta(hit=True, stale=False)
+                return [NewsArticle(**item) for item in cached], CacheMeta(
+                    hit=True,
+                    stale=False,
+                    as_of=await read_cache_as_of(self.cache, self._cache_key),
+                )
             except Exception:  # pragma: no cover - cache corruption guard
                 logger.warning("news cache payload invalid; refetching.")
 
@@ -95,7 +100,13 @@ class NewsService:
         if db_articles:
             serialized = [article.model_dump(mode="json") for article in db_articles]
             await self.cache.set(self._cache_key, serialized, self.settings.news_cache_ttl_seconds)
-            return db_articles, CacheMeta(hit=False, stale=False)
+            await write_cache_as_of(
+                self.cache,
+                self._cache_key,
+                as_of=None,
+                ttl=self.settings.news_cache_ttl_seconds,
+            )
+            return db_articles, CacheMeta(hit=False, stale=False, as_of=None)
 
         if not self.settings.nba_api_calls_allowed:
             return [], CacheMeta(hit=False, stale=False)
@@ -106,12 +117,23 @@ class NewsService:
             stale = await self.cache.get_stale(self._cache_key)
             if stale:
                 logger.warning("news scrape failed; serving stale copy.", extra={"error": str(exc)})
-                return [NewsArticle(**item) for item in stale], CacheMeta(hit=True, stale=True)
+                return [NewsArticle(**item) for item in stale], CacheMeta(
+                    hit=True,
+                    stale=True,
+                    as_of=await read_cache_as_of(self.cache, self._cache_key, stale=True),
+                )
             raise NewsUpstreamError("Unable to reach ESPN / SportsCenter / CBS feeds.") from exc
 
         serialized = [article.model_dump(mode="json") for article in articles]
+        as_of = datetime.now(UTC)
         await self.cache.set(self._cache_key, serialized, self.settings.news_cache_ttl_seconds)
-        return articles, CacheMeta(hit=False, stale=False)
+        await write_cache_as_of(
+            self.cache,
+            self._cache_key,
+            as_of=as_of,
+            ttl=self.settings.news_cache_ttl_seconds,
+        )
+        return articles, CacheMeta(hit=False, stale=False, as_of=as_of)
 
     async def _read_db_articles(self) -> list[NewsArticle]:
         if not self.supabase:
@@ -138,10 +160,8 @@ class NewsService:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         aggregated: list[ScrapedArticle] = []
-        for source_name, result in zip(
-            ("espn", "sportscenter", "cbs"), results, strict=True
-        ):
-            if isinstance(result, Exception):
+        for source_name, result in zip(("espn", "sportscenter", "cbs"), results, strict=True):
+            if isinstance(result, BaseException):
                 logger.warning(
                     "news source failed",
                     extra={"source": source_name, "error": str(result)},
@@ -187,11 +207,7 @@ class NewsService:
 
     def _normalize_espn_article(self, item: dict[str, Any]) -> ScrapedArticle | None:
         headline = item.get("headline") or item.get("title")
-        link = (
-            item.get("links", {})
-            .get("web", {})
-            .get("href")
-        ) or item.get("link")
+        link = (item.get("links", {}).get("web", {}).get("href")) or item.get("link")
         if not headline or not link:
             return None
         description = item.get("description") or item.get("summary") or ""
@@ -247,7 +263,7 @@ class NewsService:
     def _clean_html(self, html: str) -> str:
         soup = BeautifulSoup(html, "html.parser")
         text = soup.get_text(" ", strip=True)
-        return text
+        return str(text)
 
     def _parse_datetime(self, value: str | None) -> datetime:
         if not value:
@@ -271,7 +287,7 @@ class NewsService:
         for image in images:
             href = image.get("href") or image.get("url")
             if href:
-                return href
+                return str(href)
         return None
 
     def _dedupe_articles(self, articles: Iterable[ScrapedArticle]) -> list[ScrapedArticle]:

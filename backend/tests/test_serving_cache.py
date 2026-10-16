@@ -36,7 +36,7 @@ def test_scoreboard_key_accepts_date_objects():
 
 def test_keys_build_expected_paths():
     settings = Settings(cache_key_prefix="nba:serve")
-    assert boxscore_key(settings, "001") == "nba:serve:boxscore:001"
+    assert boxscore_key(settings, "001") == "nba:serve:boxscore:v2:001"
     assert standings_key(settings, "2024-25", "00", "Regular Season") == (
         "nba:serve:standings:2024-25:00:Regular Season"
     )

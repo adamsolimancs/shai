@@ -1,8 +1,16 @@
 import Link from "next/link";
+import type { Metadata } from "next";
 
 import { LeagueStandings, type LeagueStandingsConference } from "@/components/LeagueStandings";
 import { DEFAULT_SEASON, nbaFetch } from "@/lib/nbaApi";
 import { slugifySegment } from "@/lib/utils";
+
+export const metadata: Metadata = {
+  title: "NBA Teams and Standings",
+  description: "Browse NBA teams, conference standings, season records, and statistical leaders.",
+  alternates: { canonical: "/teams" },
+  openGraph: { url: "/teams" },
+};
 
 type Team = {
   id: number;
@@ -219,8 +227,8 @@ async function fetchLeagueStandingsData(season: string): Promise<LeagueStanding[
   }
 }
 
-export default async function TeamsPage({ searchParams = {} }: { searchParams?: SearchParams }) {
-  const requestedSeason = extractParam(searchParams, "season");
+export default async function TeamsPage({ searchParams }: { searchParams?: Promise<SearchParams> }) {
+  const requestedSeason = extractParam((await searchParams) ?? {}, "season");
   const preferredSeason = isValidSeason(requestedSeason) ? requestedSeason : DEFAULT_SEASON;
 
   const meta = await nbaFetch<MetaResponse>("/v1/meta", { next: { revalidate: 3600 } });
@@ -380,7 +388,7 @@ export default async function TeamsPage({ searchParams = {} }: { searchParams?: 
       <section className="space-y-6">
         <div>
           <p className="text-xs uppercase tracking-[0.4em] text-white/40">Season dashboard</p>
-          <h2 className="mt-2 text-2xl font-semibold text-white">{activeSeason} Standings</h2>
+          <h1 className="mt-2 text-2xl font-semibold text-white">{activeSeason} Standings</h1>
           {usingFallbackSeason && (
             <p className="mt-2 text-xs text-amber-200/80">
               Requested season {preferredSeason} isn&apos;t available yet. Showing {activeSeason} data instead.

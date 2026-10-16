@@ -9,23 +9,19 @@ import HeaderNavCluster, { HeaderSearchBar } from "@/components/HeaderNavCluster
 import ThemeToggle from "@/components/ThemeToggle";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://www.shaistats.com"),
+  metadataBase: new URL("https://shaistats.vercel.app"),
   title: {
-    default: "ShAI – NBA Scores, Stats, and AI Insights",
+    default: "ShAI – NBA Scores, Stats, and Player Insights",
     template: "%s · ShAI",
   },
-  description: "Real-time NBA intelligence with AI-generated scouting reports, live scores, and advanced stats.",
-  keywords: ["NBA stats", "basketball analytics", "AI scouting", "ShAI", "NBA scores", "NBA data"],
+  description: "Explore NBA scores, player and team profiles, standings, and advanced stats.",
+  keywords: ["NBA stats", "basketball analytics", "ShAI", "NBA scores", "NBA data"],
   authors: [{ name: "ShAI Team" }],
   creator: "ShAI",
   publisher: "ShAI",
-  alternates: {
-    canonical: "https://www.shaistats.com",
-  },
   openGraph: {
-    title: "ShAI – NBA Scores, Stats, and AI Insights",
-    description: "Track every player and team with real-time data, AI insights, and curated analysis.",
-    url: "https://www.shaistats.com",
+    title: "ShAI – NBA Scores, Stats, and Player Insights",
+    description: "Explore NBA scores, player and team profiles, standings, and advanced stats.",
     siteName: "ShAI",
     images: [
       {
@@ -42,13 +38,20 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     site: "@ShAIStats",
     creator: "@ShAIStats",
-    title: "ShAI – NBA Scores, Stats, and AI Insights",
-    description: "Live NBA data, AI-powered scouting reports, and curated analysis.",
+    title: "ShAI – NBA Scores, Stats, and Player Insights",
+    description: "Explore NBA scores, player and team profiles, standings, and advanced stats.",
     images: ["/shai-logo.png"],
   },
   robots: {
     index: true,
     follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-image-preview": "large",
+      "max-snippet": -1,
+      "max-video-preview": -1,
+    },
   },
   other: {
     "google-adsense-account": "ca-pub-2936132092849787",
@@ -56,7 +59,7 @@ export const metadata: Metadata = {
 };
 
 const HeaderSearchFallback = () => (
-  <div className="mx-auto h-12 w-full max-w-[30rem] animate-pulse rounded-full border border-white/10 bg-white/5" aria-hidden="true" />
+  <div className="skeleton-block mx-auto h-12 w-full max-w-[30rem] rounded-full border border-white/10 bg-white/5" aria-hidden="true" />
 );
 
 export default function RootLayout({
@@ -69,7 +72,7 @@ export default function RootLayout({
       <body className="antialiased">
         <main className="app-shell">
           <SiteHeader />
-          <div className="mx-auto max-w-6xl px-5 pb-16 pt-12 md:pb-24">
+          <div className="app-content mx-auto max-w-6xl px-5 pb-16 pt-12 md:pb-24">
             {children}
           </div>
           <SiteFooter />
@@ -165,7 +168,7 @@ const SiteFooter = () => {
         <div className="flex flex-col gap-6 text-[color:var(--color-app-foreground-muted)] md:flex-row md:items-center md:justify-between">
           <div className="space-y-2">
             <p className="text-lg font-semibold text-[var(--color-app-foreground)]">ShAI</p>
-            <p className="text-sm">Real-time NBA scores, stats, and AI-powered insights.</p>
+            <p className="text-sm">NBA scores, stats, standings, and player insights.</p>
           </div>
           <div className="flex flex-wrap gap-4 text-sm">
             <Link href="/teams" className="transition hover:text-[var(--color-app-foreground)]">

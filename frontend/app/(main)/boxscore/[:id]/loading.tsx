@@ -1,7 +1,7 @@
 export default function Loading() {
   return (
     <div
-      className="relative left-1/2 w-[min(88rem,calc(100vw-1.5rem))] -translate-x-1/2 space-y-8 sm:w-[min(88rem,calc(100vw-3rem))]"
+      className="loading-shell relative left-1/2 w-[min(88rem,calc(100vw-1.5rem))] -translate-x-1/2 space-y-8 sm:w-[min(88rem,calc(100vw-3rem))]"
       aria-hidden="true"
     >
       <div className="skeleton-block h-4 w-28 rounded-full bg-white/10" />

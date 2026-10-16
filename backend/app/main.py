@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from .api.routes import router as v1_router
 from .cache import CacheBackend, init_cache
 from .config import get_settings
+from .database import DatabaseClient
 from .logging import configure_logging
 from .middleware import RequestContextMiddleware
 from .rate_limit import RateLimiter
@@ -22,7 +23,6 @@ from .resolvers import NameResolver
 from .schemas import ErrorDetail, ErrorEnvelope
 from .services.nba import NBAStatsClient
 from .services.news import NewsService
-from .supabase import SupabaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -32,19 +32,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.log_level, settings.log_format, settings.environment)
     cache, redis_client = await init_cache(settings)
-    supabase = None
-    if settings.supabase_url and settings.supabase_key:
-        supabase = SupabaseClient(settings)
-    resolver = NameResolver(cache, supabase, allow_upstream=settings.nba_api_calls_allowed)
+    database = DatabaseClient(settings) if settings.database_url else None
+    resolver = NameResolver(cache, database, allow_upstream=settings.nba_api_calls_allowed)
     await resolver.initialize()
     nba_client = NBAStatsClient(settings, cache, resolver)
-    news_client = NewsService(settings, cache, supabase)
+    news_client = NewsService(settings, cache, database)
     rate_limiter = RateLimiter(settings.rate_limit_requests_per_minute, redis_client)
 
     app.state.settings = settings
     app.state.cache = cache
     app.state.redis = redis_client
-    app.state.supabase = supabase
+    app.state.database = database
     app.state.resolver = resolver
     app.state.nba_client = nba_client
     app.state.news_client = news_client
@@ -60,28 +58,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         for task in getattr(app.state, "background_tasks", []):
             task.cancel()
         await cache.close()
-        if supabase:
-            await supabase.close()
+        if database:
+            await database.close()
         await news_client.close()
 
+
+settings = get_settings()
 
 app = FastAPI(
     title="NBA Data API",
     version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
+    docs_url="/docs" if settings.enable_docs else None,
+    redoc_url="/redoc" if settings.enable_docs else None,
+    openapi_url="/openapi.json" if settings.enable_docs else None,
     lifespan=lifespan,
 )
 
-settings = get_settings()
 configure_logging(settings.log_level, settings.log_format, settings.environment)
 
 app.add_middleware(RequestContextMiddleware, settings=settings)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
-    allow_methods=["GET"],
-    allow_headers=["*"],
+    allow_methods=list(settings.cors_allow_methods),
+    allow_headers=list(settings.cors_allow_headers),
     allow_credentials=settings.cors_allow_credentials,
 )
 
@@ -111,7 +111,9 @@ async def http_exception_handler(request: Request, exc: HTTPException) -> JSONRe
     else:
         error_detail = ErrorDetail(code="HTTP_ERROR", message=str(exc.detail), retryable=False)
     payload = ErrorEnvelope(ok=False, error=error_detail)
-    return JSONResponse(status_code=exc.status_code, content=payload.model_dump())
+    return JSONResponse(
+        status_code=exc.status_code, content=payload.model_dump(), headers=exc.headers
+    )
 
 
 @app.exception_handler(Exception)

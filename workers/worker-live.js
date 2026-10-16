@@ -7,7 +7,9 @@ if (typeof fetch !== "function") {
 }
 
 const { spawn } = require("child_process");
+const { Pool } = require("pg");
 const { cache } = require("./cache");
+const { acquireCronLease } = require("./cron-lease");
 const dns = require("dns");
 const path = require("path");
 
@@ -129,9 +131,8 @@ function buildSupportedSeasons({
 
 const CONFIG = {
   workerMode: process.env.WORKER_MODE || "cron",
-  supabaseUrl: process.env.SUPABASE_URL,
-  supabaseKey: process.env.SUPABASE_SECRET_KEY,
-  supabaseSchema: process.env.SUPABASE_SCHEMA || "public",
+  databaseUrl: process.env.DATABASE_URL,
+  databaseSchema: process.env.DATABASE_SCHEMA || "public",
   supportedSeasonStartYear: Number(process.env.SUPPORTED_SEASON_START_YEAR || 1996),
   seasonOverride: process.env.NBA_SEASON,
   historicSeasons: process.env.HISTORIC_SEASONS || "",
@@ -217,10 +218,18 @@ const CONFIG = {
 };
 
 function validateConfig() {
-  if (!CONFIG.supabaseUrl || !CONFIG.supabaseKey) {
-    throw new Error("SUPABASE_URL and SUPABASE_SECRET_KEY are required.");
+  if (!CONFIG.databaseUrl) {
+    throw new Error("DATABASE_URL is required.");
   }
 }
+
+const databasePool = CONFIG.databaseUrl
+  ? new Pool({ connectionString: CONFIG.databaseUrl, max: 5 })
+  : null;
+let databaseQuery = (...args) => {
+  if (!databasePool) throw new Error("DATABASE_URL is required.");
+  return databasePool.query(...args);
+};
 
 const NBA_STATS_HEADERS = {
   Accept: "application/json, text/plain, */*",
@@ -440,13 +449,25 @@ function recordCacheWrite(ok) {
   }
 }
 
-async function writeCache(key, payload, ttlSeconds) {
+function sourceObservedAt(payload) {
+  if (Array.isArray(payload)) {
+    const times = payload.map(sourceObservedAt);
+    return times.length && times.every(Boolean) ? times.sort()[0] : null;
+  }
+  const value = payload?.observed_at;
+  return typeof value === "string" && Number.isFinite(Date.parse(value))
+    ? new Date(value).toISOString() : null;
+}
+
+async function writeCache(key, payload, ttlSeconds, observedAt = sourceObservedAt(payload)) {
   if (!cache) return;
   try {
     const staleTtl = Math.max(ttlSeconds, CONFIG.cacheStaleTtlSec);
     await Promise.all([
       cache.set(key, payload, { ex: ttlSeconds }),
       cache.set(`${key}:stale`, payload, { ex: staleTtl }),
+      cache.set(`${key}:observation:v1`, { observed_at: observedAt }, { ex: ttlSeconds }),
+      cache.set(`${key}:observation:v1:stale`, { observed_at: observedAt }, { ex: staleTtl }),
     ]);
     recordCacheWrite(true);
   } catch (error) {
@@ -699,6 +720,7 @@ function mapGameRow(game, season) {
   if (!gameId) return null;
   return {
     game_id: gameId,
+    observed_at: game.observed_at ?? null,
     date: toText(game.date),
     start_time: toText(
       game.start_time ??
@@ -1346,24 +1368,65 @@ function shouldRecordIngestionState(table) {
   return Boolean(table && table !== "ingestion_state");
 }
 
-async function supabaseInsertRaw(table, rows) {
-  if (!rows || rows.length === 0) return;
-  const url = new URL(`${CONFIG.supabaseUrl}/rest/v1/${table}`);
-  const response = await fetch(url.toString(), {
-    method: "POST",
-    headers: {
-      apikey: CONFIG.supabaseKey,
-      Authorization: `Bearer ${CONFIG.supabaseKey}`,
-      "Content-Type": "application/json",
-      "Content-Profile": CONFIG.supabaseSchema,
-      Prefer: "return=minimal",
-    },
-    body: JSON.stringify(rows),
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Supabase ${table} insert failed: ${response.status} ${body}`);
+function sqlIdentifier(value) {
+  if (!/^[a-z_][a-z0-9_]*$/.test(value || "")) {
+    throw new Error(`Invalid SQL identifier: ${String(value)}`);
   }
+  return `"${value}"`;
+}
+
+function sqlTable(table) {
+  return `${sqlIdentifier(CONFIG.databaseSchema)}.${sqlIdentifier(table)}`;
+}
+
+function buildWhere(filters = {}, values = []) {
+  const clauses = [];
+  for (const [column, expression] of Object.entries(filters)) {
+    if (["select", "order", "limit", "offset"].includes(column)) continue;
+    const [operator, ...rest] = String(expression).split(".");
+    const rawValue = rest.join(".");
+    const operators = { eq: "=", neq: "<>", gt: ">", gte: ">=", lt: "<", lte: "<=" };
+    if (!operators[operator]) throw new Error(`Unsupported database filter: ${expression}`);
+    values.push(rawValue);
+    clauses.push(`${sqlIdentifier(column)}::text ${operators[operator]} $${values.length}`);
+  }
+  return clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+}
+
+async function insertRows(table, rows, onConflict = null) {
+  if (!databasePool || !rows || rows.length === 0) return;
+  const client = await databasePool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const row of rows) {
+      const columns = Object.keys(row);
+      const columnSql = columns.map(sqlIdentifier).join(", ");
+      const placeholders = columns.map((_, index) => `$${index + 1}`).join(", ");
+      let conflictSql = "";
+      if (onConflict) {
+        const conflictColumns = onConflict.split(",").map((column) => column.trim());
+        const updates = columns.filter((column) => !conflictColumns.includes(column));
+        const action = updates.length
+          ? `DO UPDATE SET ${updates.map((column) => `${sqlIdentifier(column)} = EXCLUDED.${sqlIdentifier(column)}`).join(", ")}`
+          : "DO NOTHING";
+        conflictSql = ` ON CONFLICT (${conflictColumns.map(sqlIdentifier).join(", ")}) ${action}`;
+      }
+      await client.query(
+        `INSERT INTO ${sqlTable(table)} (${columnSql}) VALUES (${placeholders})${conflictSql}`,
+        columns.map((column) => row[column])
+      );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function supabaseInsertRaw(table, rows) {
+  await insertRows(table, rows);
   logDbWrite("insert", table, { count: rows.length });
 }
 
@@ -1379,7 +1442,7 @@ async function supabaseInsert(table, rows, options = {}) {
       await updateIngestionState(table, "ok", cursor, null);
     }
   } catch (error) {
-    log("Supabase insert failed", {
+    log("Database insert failed", {
       table,
       count: Array.isArray(rows) ? rows.length : 0,
       ...formatErrorForLog(error),
@@ -1392,25 +1455,11 @@ async function supabaseInsert(table, rows, options = {}) {
 }
 
 async function supabaseDeleteRaw(table, filters) {
-  const url = new URL(`${CONFIG.supabaseUrl}/rest/v1/${table}`);
-  Object.entries(filters || {}).forEach(([key, value]) => {
-    if (value !== undefined && value !== null) {
-      url.searchParams.set(key, String(value));
-    }
-  });
-  const response = await fetch(url.toString(), {
-    method: "DELETE",
-    headers: {
-      apikey: CONFIG.supabaseKey,
-      Authorization: `Bearer ${CONFIG.supabaseKey}`,
-      "Content-Profile": CONFIG.supabaseSchema,
-      Prefer: "return=minimal",
-    },
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Supabase ${table} delete failed: ${response.status} ${body}`);
-  }
+  if (!databasePool) throw new Error("DATABASE_URL is required.");
+  const values = [];
+  const where = buildWhere(filters, values);
+  if (!where) throw new Error("Refusing to delete without filters.");
+  await databasePool.query(`DELETE FROM ${sqlTable(table)}${where}`, values);
   logDbWrite("delete", table, { filters: filters || {} });
 }
 
@@ -1426,7 +1475,7 @@ async function supabaseDelete(table, filters, options = {}) {
       await updateIngestionState(table, "ok", cursor, null);
     }
   } catch (error) {
-    log("Supabase delete failed", {
+    log("Database delete failed", {
       table,
       filters,
       ...formatErrorForLog(error),
@@ -1438,20 +1487,12 @@ async function supabaseDelete(table, filters, options = {}) {
   }
 }
 
-function isNoUniqueConstraintError(error) {
-  const message = String(error || "");
-  return (
-    message.includes("\"code\":\"42P10\"") ||
-    message.includes("no unique or exclusion constraint matching the ON CONFLICT specification")
-  );
-}
-
 function isMissingRpcFunctionError(error) {
   const message = String(error || "");
   return (
-    message.includes("\"code\":\"PGRST202\"") ||
-    message.includes("Could not find the function") ||
-    message.includes("Searched for the function")
+    message.includes("does not exist") ||
+    message.includes("undefined_function") ||
+    message.includes("PGRST202")
   );
 }
 
@@ -1459,25 +1500,7 @@ async function supabaseUpsertRaw(table, rows, onConflict) {
   if (!rows || rows.length === 0) return;
   const payload = dedupeRowsForConflict(rows, onConflict);
   if (!payload || payload.length === 0) return;
-  const url = new URL(`${CONFIG.supabaseUrl}/rest/v1/${table}`);
-  if (onConflict) {
-    url.searchParams.set("on_conflict", onConflict);
-  }
-  const response = await fetch(url.toString(), {
-    method: "POST",
-    headers: {
-      apikey: CONFIG.supabaseKey,
-      Authorization: `Bearer ${CONFIG.supabaseKey}`,
-      "Content-Type": "application/json",
-      Prefer: "resolution=merge-duplicates",
-      "Content-Profile": CONFIG.supabaseSchema,
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Supabase ${table} upsert failed: ${response.status} ${body}`);
-  }
+  await insertRows(table, payload, onConflict);
   logDbWrite("upsert", table, {
     count: payload.length,
     on_conflict: onConflict || null,
@@ -1485,29 +1508,20 @@ async function supabaseUpsertRaw(table, rows, onConflict) {
 }
 
 async function supabaseRpc(functionName, payload = {}) {
-  const url = new URL(`${CONFIG.supabaseUrl}/rest/v1/rpc/${functionName}`);
-  const response = await fetch(url.toString(), {
-    method: "POST",
-    headers: {
-      apikey: CONFIG.supabaseKey,
-      Authorization: `Bearer ${CONFIG.supabaseKey}`,
-      "Content-Type": "application/json",
-      "Accept-Profile": CONFIG.supabaseSchema,
-      "Content-Profile": CONFIG.supabaseSchema,
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Supabase rpc ${functionName} failed: ${response.status} ${body}`);
-  }
+  sqlIdentifier(functionName);
+  const entries = Object.entries(payload);
+  const argumentsSql = entries
+    .map(([name], index) => `${sqlIdentifier(name)} => $${index + 1}::jsonb`)
+    .join(", ");
+  const values = entries.map(([, value]) => JSON.stringify(value));
+  const response = await databaseQuery(
+    `SELECT ${sqlIdentifier(CONFIG.databaseSchema)}.${sqlIdentifier(functionName)}(${argumentsSql}) AS result`,
+    values
+  );
   logDbWrite("rpc", functionName, {
     keys: Object.keys(payload || {}),
   });
-  if (response.status === 204) {
-    return null;
-  }
-  return response.json();
+  return response.rows[0]?.result ?? null;
 }
 
 async function supabaseUpsert(table, rows, onConflict, options = {}) {
@@ -1527,7 +1541,7 @@ async function supabaseUpsert(table, rows, onConflict, options = {}) {
       message.includes("\"code\":\"21000\"") ||
       message.includes("ON CONFLICT DO UPDATE command cannot affect row a second time");
     if (isDuplicateConflict && Array.isArray(rows) && rows.length > 1) {
-      log("Supabase upsert conflict detected; retrying rows individually", {
+      log("Database upsert conflict detected; retrying rows individually", {
         table,
         count: rows.length,
       });
@@ -1539,7 +1553,7 @@ async function supabaseUpsert(table, rows, onConflict, options = {}) {
       }
       return;
     }
-    log("Supabase upsert failed", {
+    log("Database upsert failed", {
       table,
       on_conflict: onConflict || null,
       count: Array.isArray(rows) ? rows.length : 0,
@@ -1560,6 +1574,7 @@ async function writeApiSnapshot(cacheKeyValue, payload) {
         cache_key: cacheKeyValue,
         payload: JSON.stringify(payload),
         updated_at: new Date().toISOString(),
+        observed_at: sourceObservedAt(payload),
       },
     ],
     "cache_key",
@@ -1568,24 +1583,29 @@ async function writeApiSnapshot(cacheKeyValue, payload) {
 }
 
 async function supabaseSelect(table, query) {
-  const url = new URL(`${CONFIG.supabaseUrl}/rest/v1/${table}`);
-  Object.entries(query).forEach(([key, value]) => {
-    if (value !== undefined && value !== null) {
-      url.searchParams.set(key, String(value));
-    }
-  });
-  const response = await fetch(url.toString(), {
-    headers: {
-      apikey: CONFIG.supabaseKey,
-      Authorization: `Bearer ${CONFIG.supabaseKey}`,
-      "Accept-Profile": CONFIG.supabaseSchema,
-    },
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Supabase ${table} select failed: ${response.status} ${body}`);
+  if (!databasePool) throw new Error("DATABASE_URL is required.");
+  const columns = String(query.select || "*")
+    .split(",")
+    .map((column) => column.trim())
+    .filter(Boolean);
+  const selectSql = columns.length === 1 && columns[0] === "*"
+    ? "*"
+    : columns.map(sqlIdentifier).join(", ");
+  const values = [];
+  let sql = `SELECT ${selectSql} FROM ${sqlTable(table)}${buildWhere(query, values)}`;
+  if (query.order) {
+    const [column, direction] = String(query.order).split(".");
+    sql += ` ORDER BY ${sqlIdentifier(column)} ${direction === "desc" ? "DESC" : "ASC"}`;
   }
-  return response.json();
+  if (query.limit !== undefined) {
+    values.push(Number(query.limit));
+    sql += ` LIMIT $${values.length}`;
+  }
+  if (query.offset !== undefined) {
+    values.push(Number(query.offset));
+    sql += ` OFFSET $${values.length}`;
+  }
+  return (await databasePool.query(sql, values)).rows;
 }
 
 async function supabaseSelectAll(table, query, pageSize = 1000) {
@@ -1628,7 +1648,7 @@ async function updateIngestionState(entity, status, cursor, errorMessage) {
 
 async function getIngestionState(entity) {
   const rows = await supabaseSelect("ingestion_state", {
-    select: "last_success_at,last_cursor",
+    select: "last_success_at,last_attempt_at,last_cursor",
     source: "eq.nba_api",
     entity: `eq.${entity}`,
     limit: 1,
@@ -2152,9 +2172,10 @@ function normalizeLiveScoreboardGame(game, season) {
 }
 
 async function fetchLiveScoreboardGames(season) {
+  const observedAt = new Date().toISOString();
   const payload = await nbaApiBridgeRequest({ op: "live_scoreboard" });
   const games = (payload?.scoreboard?.games || [])
-    .map((game) => normalizeLiveScoreboardGame(game, season))
+    .map((game) => ({ ...normalizeLiveScoreboardGame(game, season), observed_at: observedAt }))
     .filter((row) => row.game_id && row.home_team_id !== null && row.away_team_id !== null);
   return games;
 }
@@ -2184,9 +2205,10 @@ async function fetchGamesFromStats(season, { dateFrom, dateTo } = {}) {
   Object.entries(params).forEach(([key, value]) => {
     url.searchParams.set(key, String(value ?? ""));
   });
+  const observedAt = new Date().toISOString();
   const payload = await statsRequest(url.toString());
   const rows = extractResultSetRows(payload, "LeagueGameFinder");
-  return normalizeGameFinderRows(rows, season);
+  return normalizeGameFinderRows(rows, season).map((game) => ({ ...game, observed_at: observedAt }));
 }
 
 async function fetchGames(season, { dateFrom, dateTo } = {}) {
@@ -2212,7 +2234,7 @@ async function loadStoredGamesForSeason(season) {
   const seasonYear = seasonToYear(season);
   const query = {
     select:
-      "game_id,date,start_time,home_team_id,home_team_name,home_team_score,away_team_id,away_team_name,away_team_score,season",
+      "game_id,observed_at,date,start_time,home_team_id,home_team_name,home_team_score,away_team_id,away_team_name,away_team_score,season",
   };
   if (seasonYear !== null && seasonYear !== undefined) {
     query.season = `eq.${seasonYear}`;
@@ -3355,20 +3377,22 @@ async function fetchBoxscoreFromCdn(gameId) {
 }
 
 async function fetchBoxscore(gameId) {
+  const observedAt = new Date().toISOString();
   try {
-    return await fetchBoxscoreFromStats(gameId);
+    return { ...await fetchBoxscoreFromStats(gameId), observed_at: observedAt };
   } catch (error) {
     log("Stats boxscore fetch failed; falling back to CDN", {
       game_id: gameId,
       ...formatErrorForLog(error),
     });
-    return fetchBoxscoreFromCdn(gameId);
+    return { ...await fetchBoxscoreFromCdn(gameId), observed_at: observedAt };
   }
 }
 
 function toBoxscoreRow(boxscore) {
   return {
     game_id: boxscore.game_id,
+    observed_at: boxscore.observed_at ?? null,
     status: boxscore.status || "unknown",
     game_date: toText(boxscore.game_date),
     start_time: toText(boxscore.start_time),
@@ -3488,6 +3512,7 @@ function buildGameSnapshotGameRow(boxscore) {
   const gameDate = toDateText(boxscore?.game_date ?? boxscore?.start_time);
   return compactObject({
     game_id: cleanText(boxscore?.game_id),
+    observed_at: boxscore?.observed_at ?? null,
     date: gameDate,
     start_time: toText(boxscore?.start_time),
     home_team_id: toInteger(homeTeam.team_id),
@@ -3508,35 +3533,6 @@ function buildGameSnapshotPayload(boxscore) {
   };
 }
 
-async function upsertBoxscore(boxscore) {
-  await supabaseUpsert("boxscores", [toBoxscoreRow(boxscore)], "game_id");
-  const players = toBoxscorePlayers(boxscore);
-  if (players.length) {
-    try {
-      const chunks = chunkArray(players, CONFIG.upsertChunkSize);
-      for (const chunk of chunks) {
-        await supabaseUpsert("boxscore_players", chunk, "game_id,player_id");
-      }
-    } catch (error) {
-      if (!isNoUniqueConstraintError(error)) {
-        throw error;
-      }
-      log("boxscore_players missing unique constraint; replacing rows instead", {
-        game_id: boxscore.game_id,
-        count: players.length,
-      });
-      await supabaseDelete("boxscore_players", {
-        game_id: `eq.${boxscore.game_id}`,
-      });
-      const chunks = chunkArray(players, CONFIG.upsertChunkSize);
-      for (const chunk of chunks) {
-        await supabaseInsert("boxscore_players", chunk);
-      }
-    }
-  }
-  return players.length;
-}
-
 async function publishGameSnapshot(boxscore) {
   const payload = buildGameSnapshotPayload(boxscore);
   try {
@@ -3549,15 +3545,10 @@ async function publishGameSnapshot(boxscore) {
     if (!isMissingRpcFunctionError(error)) {
       throw error;
     }
-    log("publish_game_snapshot RPC unavailable; falling back to legacy writes", {
-      game_id: boxscore.game_id,
-      ...formatErrorForLog(error),
-    });
-    if (payload.p_game && Object.keys(payload.p_game).length > 1) {
-      await supabaseUpsert("games", [payload.p_game], "game_id", { recordState: false });
-    }
-    const playersCount = await upsertBoxscore(boxscore);
-    return playersCount;
+    throw new Error(
+      "publish_game_snapshot RPC unavailable; apply the database ingestion migration before running the worker",
+      { cause: error }
+    );
   }
 }
 
@@ -3671,7 +3662,7 @@ async function refreshActiveGames() {
   }, { active: Array.from(activeGameIds) });
 }
 
-async function runWithConcurrency(items, limit, fn, { strict = false } = {}) {
+async function runWithConcurrency(items, limit, fn, { strict = CONFIG.workerMode === "cron" } = {}) {
   const queue = [...items];
   const errors = [];
   let circuitOpen = false;
@@ -3742,14 +3733,21 @@ function startWorker() {
   });
 }
 
-async function runCronTask(entity, intervalMs, fn) {
-  if (!(await shouldRun(entity, intervalMs, { logSkip: true }))) {
-    return;
-  }
-  throwIfCronBudgetExceeded(`cron_task:${entity}`);
+async function runCronTask(entity, intervalMs, fn, outcomes) {
+  const outcome = outcomes.find((task) => task.entity === entity);
+  outcome.status = "running";
   try {
+    if (!(await shouldRun(entity, intervalMs, { logSkip: true }))) {
+      outcome.status = "skipped";
+      outcome.reason = "interval";
+      return;
+    }
+    throwIfCronBudgetExceeded(`cron_task:${entity}`);
     await fn();
+    outcome.status = "ok";
   } catch (error) {
+    outcome.status = "failed";
+    outcome.error = error instanceof Error ? error.message : String(error);
     if (isCronBudgetError(error)) {
       throw error;
     }
@@ -3758,6 +3756,25 @@ async function runCronTask(entity, intervalMs, fn) {
 }
 
 async function runCron() {
+  // Lock before reading the scheduling cursor so check/update is serialized.
+  const databaseUrl = new URL(CONFIG.databaseUrl);
+  const databaseIdentity = `${databaseUrl.hostname}${databaseUrl.pathname}`;
+  const lease = await acquireCronLease(
+    cache,
+    `nba:ingest:cron:${databaseIdentity}:${CONFIG.databaseSchema}`
+  );
+  if (!lease) {
+    log("Cron lease held by another worker; skipping run");
+    return;
+  }
+  try {
+    return await runCronWithLease();
+  } finally {
+    await lease.release();
+  }
+}
+
+async function runCronWithLease() {
   const gate = await shouldStartCronRun();
   if (!gate.allowed) {
     return;
@@ -3774,16 +3791,32 @@ async function runCron() {
   await recordCronRunState("running", gate.date, runNumber, cronCursor, null);
   initCronBudget();
 
+  const taskOutcomes = [
+    "scoreboard", "boxscores_live", "games_recent", "boxscores", "games",
+    "league_standings", "teams", "players", "players_bio", "player_info",
+    "player_season_stats", "player_awards", "league_leader_rows", "team_details",
+    "team_season_history", "team_advanced_stats",
+  ].map((entity) => ({ entity, status: "not_started" }));
+  cronCursor.task_outcomes = taskOutcomes;
+  const runMaintenance = (entity) => {
+    if (shouldRunMaintenanceTask(entity)) return true;
+    Object.assign(taskOutcomes.find((task) => task.entity === entity), {
+      status: "skipped", reason: "maintenance_budget",
+    });
+    return false;
+  };
+  const runTask = (entity, intervalMs, fn) =>
+    runCronTask(entity, intervalMs, fn, taskOutcomes);
   let finalStatus = "ok";
   let errorMessage = null;
   try {
-    await runCronTask("scoreboard", CONFIG.scoreboardIntervalMs, () =>
+    await runTask("scoreboard", CONFIG.scoreboardIntervalMs, () =>
       refreshScoreboard({ mode: "cron" })
     );
     const liveBoxscoreIntervalMs = gate.inWindow
       ? CONFIG.cronLiveBoxscoreIntervalMs
       : CONFIG.cronOffWindowLiveBoxscoreIntervalMs;
-    await runCronTask("boxscores_live", liveBoxscoreIntervalMs, () =>
+    await runTask("boxscores_live", liveBoxscoreIntervalMs, () =>
       refreshRecentBoxscores({
         lookbackDays: CONFIG.cronLiveBoxscoreLookbackDays,
         entity: "boxscores_live",
@@ -3792,67 +3825,84 @@ async function runCron() {
     const liveGamesIntervalMs = gate.inWindow
       ? CONFIG.cronLiveGamesIntervalMs
       : CONFIG.cronOffWindowLiveGamesIntervalMs;
-    await runCronTask("games_recent", liveGamesIntervalMs, () =>
+    await runTask("games_recent", liveGamesIntervalMs, () =>
       refreshRecentGames({
         lookbackDays: CONFIG.cronLiveGamesLookbackDays,
         entity: "games_recent",
       })
     );
-    if (shouldRunMaintenanceTask("boxscores_backfill")) {
-      await runCronTask("boxscores", CONFIG.boxscoreBackfillIntervalMs, () =>
+    if (runMaintenance("boxscores")) {
+      await runTask("boxscores", CONFIG.boxscoreBackfillIntervalMs, () =>
         refreshRecentBoxscores({
           lookbackDays: CONFIG.boxscoreLookbackDays,
           entity: "boxscores",
         })
       );
     }
-    if (shouldRunMaintenanceTask("games")) {
-      await runCronTask("games", CONFIG.gamesIntervalMs, refreshGames);
+    if (runMaintenance("games")) {
+      await runTask("games", CONFIG.gamesIntervalMs, refreshGames);
     }
-    await runCronTask("league_standings", CONFIG.standingsIntervalMs, refreshStandings);
-    await runCronTask("teams", CONFIG.teamsIntervalMs, refreshTeams);
-    if (shouldRunMaintenanceTask("players")) {
-      await runCronTask("players", CONFIG.playersIntervalMs, refreshPlayers);
+    await runTask("league_standings", CONFIG.standingsIntervalMs, refreshStandings);
+    await runTask("teams", CONFIG.teamsIntervalMs, refreshTeams);
+    if (runMaintenance("players")) {
+      await runTask("players", CONFIG.playersIntervalMs, refreshPlayers);
     }
-    if (shouldRunMaintenanceTask("players_bio")) {
-      await runCronTask("players_bio", CONFIG.playersIntervalMs, refreshPlayerBioStats);
+    if (runMaintenance("players_bio")) {
+      await runTask("players_bio", CONFIG.playersIntervalMs, refreshPlayerBioStats);
     }
-    if (shouldRunMaintenanceTask("player_info")) {
-      await runCronTask("player_info", CONFIG.playersIntervalMs, refreshPlayerInfo);
+    if (runMaintenance("player_info")) {
+      await runTask("player_info", CONFIG.playersIntervalMs, refreshPlayerInfo);
     }
-    if (shouldRunMaintenanceTask("player_season_stats")) {
-      await runCronTask("player_season_stats", CONFIG.playerStatsIntervalMs, refreshPlayerSeasonStats);
+    if (runMaintenance("player_season_stats")) {
+      await runTask("player_season_stats", CONFIG.playerStatsIntervalMs, refreshPlayerSeasonStats);
     }
-    if (shouldRunMaintenanceTask("player_awards")) {
-      await runCronTask("player_awards", CONFIG.playerAwardsIntervalMs, refreshPlayerAwards);
+    if (runMaintenance("player_awards")) {
+      await runTask("player_awards", CONFIG.playerAwardsIntervalMs, refreshPlayerAwards);
     }
-    if (shouldRunMaintenanceTask("league_leader_rows")) {
-      await runCronTask("league_leader_rows", CONFIG.teamStatsIntervalMs, refreshLeagueLeaders);
+    if (runMaintenance("league_leader_rows")) {
+      await runTask("league_leader_rows", CONFIG.teamStatsIntervalMs, refreshLeagueLeaders);
     }
-    if (shouldRunMaintenanceTask("team_details")) {
-      await runCronTask("team_details", CONFIG.teamDetailsIntervalMs, refreshTeamDetails);
+    if (runMaintenance("team_details")) {
+      await runTask("team_details", CONFIG.teamDetailsIntervalMs, refreshTeamDetails);
     }
-    if (shouldRunMaintenanceTask("team_season_history")) {
-      await runCronTask("team_season_history", CONFIG.teamDetailsIntervalMs, refreshTeamHistory);
+    if (runMaintenance("team_season_history")) {
+      await runTask("team_season_history", CONFIG.teamDetailsIntervalMs, refreshTeamHistory);
     }
-    if (shouldRunMaintenanceTask("team_advanced_stats")) {
-      await runCronTask("team_advanced_stats", CONFIG.teamStatsIntervalMs, refreshTeamStats);
+    if (runMaintenance("team_advanced_stats")) {
+      await runTask("team_advanced_stats", CONFIG.teamStatsIntervalMs, refreshTeamStats);
     }
   } catch (error) {
     finalStatus = "failed";
     errorMessage = error instanceof Error ? error.message : String(error);
+    for (const outcome of taskOutcomes) {
+      if (outcome.status === "not_started") {
+        outcome.reason = isCronBudgetError(error) ? "budget_exhausted" : "run_aborted";
+      }
+    }
     if (isCronBudgetError(error)) {
       log("Cron budget exceeded; stopping remaining tasks");
     } else {
       log("Cron run failed", formatErrorForLog(error, { includeStack: true }));
     }
   } finally {
+    const failures = taskOutcomes.filter((outcome) => outcome.status === "failed");
+    if (failures.length) {
+      finalStatus = "failed";
+      const taskErrors = failures.map(({ entity, error }) => `${entity}: ${error}`).join("; ");
+      errorMessage = errorMessage ? `${errorMessage}; ${taskErrors}` : taskErrors;
+    }
     if (cronBudget?.exceeded && finalStatus === "ok") {
       finalStatus = "failed";
       errorMessage = "Cron runtime budget exceeded";
     }
-    await recordCronRunState(finalStatus, gate.date, runNumber, cronCursor, errorMessage);
-    clearCronBudget();
+    try {
+      await recordCronRunState(finalStatus, gate.date, runNumber, cronCursor, errorMessage);
+    } finally {
+      clearCronBudget();
+    }
+  }
+  if (finalStatus === "failed") {
+    throw new Error(`Cron run failed: ${errorMessage}`);
   }
 }
 
@@ -3885,7 +3935,8 @@ if (require.main === module) {
       .catch((error) => {
         console.error("Cron run failed", formatErrorForLog(error, { includeStack: true }));
         process.exitCode = 1;
-      });
+      })
+      .finally(() => databasePool?.end());
   }
 }
 
@@ -3936,7 +3987,12 @@ module.exports = {
   parseCursor,
   parseCronBudgetCursor,
   chunkArray,
+  sourceObservedAt,
   buildGameSnapshotGameRow,
   buildGameSnapshotPayload,
+  publishGameSnapshot,
   fetchGames,
+  setDatabaseQueryForTests(query) {
+    databaseQuery = query;
+  },
 };
