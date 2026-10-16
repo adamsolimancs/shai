@@ -1,11 +1,6 @@
 #!/usr/bin/env python3
-"""Render the tracked schema export and migrations as executable PostgreSQL SQL.
-
-Supabase supplies auth.users and the API roles. Tests supply small local stubs.
-Never run this empty-database baseline against an existing database.
-"""
+"""Render the tracked schema and migrations for an empty PostgreSQL database."""
 from pathlib import Path
-import re
 
 from compare_schema_exports import _statement_blocks
 
@@ -27,19 +22,17 @@ def render() -> str:
         "BEGIN;",
         "CREATE SCHEMA IF NOT EXISTS extensions;",
         "CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA extensions;",
-        *tables, *constraints, *indexes,
-        "GRANT USAGE ON SCHEMA public, extensions TO service_role;",
+        *tables,
+        *constraints,
+        *indexes,
     ]
-    for statement in tables:
-        table = re.match(r"CREATE TABLE (public\.\w+)", statement).group(1)
-        chunks.extend([
-            f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY;",
-            f"REVOKE ALL ON TABLE {table} FROM PUBLIC, anon, authenticated;",
-            f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {table} TO service_role;",
-            f"CREATE POLICY service_access ON {table} TO service_role USING (true) WITH CHECK (true);",
-        ])
     for migration in sorted((ROOT / "supabase/migrations").glob("*.sql")):
-        chunks.extend([f"-- Migration: {migration.name}", migration.read_text()])
+        sql = "\n".join(
+            line
+            for line in migration.read_text().splitlines()
+            if not line.lstrip().upper().startswith(("GRANT ", "REVOKE "))
+        )
+        chunks.extend([f"-- Migration: {migration.name}", sql])
     chunks.append("COMMIT;")
     return "\n\n".join(chunks) + "\n"
 

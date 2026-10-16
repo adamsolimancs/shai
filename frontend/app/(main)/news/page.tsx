@@ -1,7 +1,15 @@
 /* eslint-disable @next/next/no-img-element */
 import Link from "next/link";
+import type { Metadata } from "next";
 
 import { nbaFetch } from "@/lib/nbaApi";
+
+export const metadata: Metadata = {
+  title: "NBA News",
+  description: "Read recent NBA news and data-backed updates from around the league.",
+  alternates: { canonical: "/news" },
+  openGraph: { url: "/news" },
+};
 
 type StoryAccent = "highlight" | "neutral" | "alert";
 

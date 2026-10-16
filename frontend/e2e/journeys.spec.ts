@@ -41,6 +41,19 @@ async function checkPage(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
 }
 
+test('offseason homepage → in-season toggle', async ({ page }) => {
+  await page.goto('/?offseason=1');
+  await expect(page.getByRole('heading', { name: '2025-2026 NBA Season Recap' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'NBA Finals' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'LeBron James' }).first()).toBeVisible();
+  await checkPage(page);
+
+  await page.getByRole('button', { name: 'Dev: offseason' }).click();
+  await expect(page).toHaveURL(/offseason=0/);
+  await expect(page.getByRole('heading', { name: 'Recent Games' })).toBeVisible();
+  await checkPage(page);
+});
+
 for (const mode of ['fresh', 'empty', 'partial', 'stale', 'unknown', 'failed']) {
   test(`scores → box score: ${mode}`, async ({ page, request }, testInfo) => {
     const errors: string[] = [];
@@ -73,6 +86,7 @@ for (const mode of ['fresh', 'empty', 'partial', 'stale', 'unknown', 'failed']) 
         await page.screenshot({ path: `/tmp/shai-boxscore-stale-${testInfo.project.name}.png`, fullPage: true });
       }
       if (mode === 'unknown') await expect(page.getByText(/Source observation time is unknown/)).toBeVisible();
+      await checkPage(page);
       await page.getByRole('link', { name: 'Back to scores' }).click();
       await expect(page).toHaveURL(/\/scores$/);
     }

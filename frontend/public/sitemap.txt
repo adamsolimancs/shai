@@ -1,5 +1,0 @@
-https://shaistats.vercel.app/
-https://shaistats.vercel.app/players
-https://shaistats.vercel.app/teams
-https://shaistats.vercel.app/scores
-https://shaistats.vercel.app/news

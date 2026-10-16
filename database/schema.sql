@@ -147,7 +147,7 @@
   draft_pick text,
   country text,
   college text\n);\n                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| CREATE TABLE public.user_accounts (\n  auth_user_id uuid NOT NULL,
+| CREATE TABLE public.user_accounts (\n  auth_user_id text NOT NULL,
   name text,
   username text,
   email text NOT NULL,
@@ -248,7 +248,6 @@
 | ALTER TABLE public.player_season_stats ADD CONSTRAINT player_season_stats_team_id_fkey FOREIGN KEY (team_id) REFERENCES teams(team_id) ON UPDATE RESTRICT ON DELETE RESTRICT;\n         |
 | ALTER TABLE public.players ADD CONSTRAINT players_pkey PRIMARY KEY (player_id);\n                                                                                                       |
 | ALTER TABLE public.user_accounts ADD CONSTRAINT user_accounts_pkey PRIMARY KEY (auth_user_id);\n                                                                                       |
-| ALTER TABLE public.user_accounts ADD CONSTRAINT user_accounts_auth_user_id_fkey FOREIGN KEY (auth_user_id) REFERENCES auth.users(id) ON UPDATE CASCADE ON DELETE CASCADE;\n            |
 | ALTER TABLE public.user_accounts ADD CONSTRAINT user_accounts_email_key UNIQUE (email);\n                                                                                              |
 | ALTER TABLE public.user_accounts ADD CONSTRAINT user_accounts_username_key UNIQUE (username);\n                                                                                        |
 | ALTER TABLE public.team_season_history ADD CONSTRAINT team_season_history_pkey PRIMARY KEY (season, team_id, season_type, per_mode);\n                                                   |

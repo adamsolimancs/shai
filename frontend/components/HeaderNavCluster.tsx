@@ -86,7 +86,7 @@ export function HeaderSearchBar() {
   }
 
   return (
-    <div className="flex w-full justify-center px-2 md:px-0">
+    <div className="content-reveal flex w-full justify-center px-2 md:px-0">
       <SearchCombobox
         id="header-search"
         initialValue={initialQuery}

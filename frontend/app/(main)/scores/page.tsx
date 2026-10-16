@@ -1,8 +1,16 @@
+import type { Metadata } from "next";
 import DataFreshness from "@/components/DataFreshness";
 import LocalGameTime from "@/components/LocalGameTime";
 import ScoreCard from "@/components/ScoreCard";
 import { buildTimeFallback, isFinalGame, parseGameDate, toDateKey } from "@/lib/gameUtils";
 import { DEFAULT_SEASON, nbaFetchEnvelope } from "@/lib/nbaApi";
+
+export const metadata: Metadata = {
+  title: "NBA Scores and Results",
+  description: "Follow the latest NBA scores, game status, schedules, and recent results.",
+  alternates: { canonical: "/scores" },
+  openGraph: { url: "/scores" },
+};
 
 type Game = {
   game_id: string;

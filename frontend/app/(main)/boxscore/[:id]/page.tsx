@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import type { Metadata } from "next";
 
 import DataFreshness from "@/components/DataFreshness";
 import { nbaFetchEnvelope, NbaApiError, type Envelope } from "@/lib/nbaApi";
@@ -158,6 +159,20 @@ type BoxScoreParams = {
   id?: string | string[];
   ":id"?: string | string[];
 };
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<BoxScoreParams>;
+}): Promise<Metadata> {
+  const resolved = await params;
+  const gameId = getParamValue(resolved.id) ?? getParamValue(resolved[":id"]);
+  return {
+    title: "NBA Game Box Score",
+    description: "View the game summary, team totals, player statistics, and advanced box score.",
+    ...(gameId ? { alternates: { canonical: `/boxscore/${encodeURIComponent(gameId)}` } } : {}),
+  };
+}
 
 type TopPerformer = {
   playerId: number | null;

@@ -22,6 +22,18 @@ const server = createServer(async (req, res) => {
   // Auxiliary homepage requests made while Next collects build-time page data.
   if (path === '/v1/news' || path === '/v1/players/stats') return envelope([], 'fresh');
   if (path === '/v1/meta') return envelope({ supported_seasons: ['2025-26'] }, 'fresh');
+  if (path === '/v1/league/leaders') {
+    const category = url.searchParams.get('stat_category') ?? 'PTS';
+    const values = { PTS: 28.4, REB: 12.1, AST: 10.3, STL: 2.2, BLK: 3.1 };
+    return envelope([{
+      player_id: 2544,
+      rank: 1,
+      player_name: 'LeBron James',
+      team_abbreviation: 'LAL',
+      stat_value: values[category] ?? 1,
+      stat_category: category,
+    }], 'fresh');
+  }
   if (path === '/v1/search/suggestions') return envelope(state.search === 'empty' ? [] : suggestions, state.search);
   if (path === '/v1/games') {
     const mode = url.searchParams.has('date_from') ? (state.tonight ?? state.scores) : state.scores;

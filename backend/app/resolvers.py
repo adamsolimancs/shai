@@ -12,7 +12,7 @@ from typing import Any
 from rapidfuzz import fuzz, process
 
 from .cache import CacheBackend
-from .supabase import SupabaseClient
+from .database import DatabaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ class NameResolver:
     def __init__(
         self,
         cache: CacheBackend,
-        supabase: SupabaseClient | None = None,
+        supabase: DatabaseClient | None = None,
         *,
         allow_upstream: bool = True,
     ):

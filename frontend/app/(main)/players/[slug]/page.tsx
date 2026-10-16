@@ -882,6 +882,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
     description: name
       ? `Stats, awards, and scouting summary for ${name}.`
       : "Stats, awards, and scouting summaries for NBA players.",
+    alternates: { canonical: `/players/${encodeURIComponent(resolvedParams.slug)}` },
   };
 }
 
@@ -1103,7 +1104,9 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
                 <p className="mt-2 text-sm text-[color:var(--color-app-foreground-muted)]">No official league awards recorded.</p>
               ) : (
                 <Suspense fallback={<AwardsAccordionSkeleton />}>
-                  <AwardsAccordion awards={profile.awards} />
+                  <div className="content-reveal">
+                    <AwardsAccordion awards={profile.awards} />
+                  </div>
                 </Suspense>
               )}
             </div>
@@ -1184,11 +1187,13 @@ export default async function PlayerPage({ params }: PlayerPageParams) {
       </div>
 
       <Suspense fallback={<CareerResumeSkeleton />}>
-        <PlayerCareerResume
-          regularSeasons={profile.careerSeasons}
-          playoffSeasons={profile.careerSeasonsPlayoffs}
-          allStarSeasons={[...allStarSeasons]}
-        />
+        <div className="content-reveal">
+          <PlayerCareerResume
+            regularSeasons={profile.careerSeasons}
+            playoffSeasons={profile.careerSeasonsPlayoffs}
+            allStarSeasons={[...allStarSeasons]}
+          />
+        </div>
       </Suspense>
     </>
   );

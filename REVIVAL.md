@@ -1,51 +1,48 @@
-# ShAI revival review — 2026-09-07
+# ShAI revival review — 2026-09-14
 
-Prioritize trustworthy ingestion and freshness before adding new product features. The current app already has useful player, team, scores, box-score, news, search, and account journeys. Its main reliability risks lie between successful worker execution, persisted snapshots, and what the UI tells users about those snapshots.
+Ship the PostgreSQL/auth transition as an explicit migration before deploying the current worktree. The application is substantially healthier than the previous revival snapshot: ingestion now has an exclusive renewable lease and aggregate failure state, game snapshots publish transactionally, source-observation metadata reaches the UI, and fixture-driven desktop/mobile journeys cover the primary read paths. The remaining release blocker is operational continuity for the database and existing accounts.
 
-## Implemented
+## Instant wins completed in this pass
 
-Preserved HTTP exception headers in `backend/app/main.py`. The rate limiter already supplies `Retry-After`, but the application's JSON error handler discarded it. A new HTTP regression test in `backend/tests/test_http_errors.py` exercises the real application's authentication/rate-limit dependency chain with isolated dependencies: it failed on the missing header before the fix and passed afterward. Error status and JSON envelope remain covered. This is a small, reversible fix with no infrastructure or authentication-policy change.
+- Fixed a mobile box-score overflow caused by the global content-reveal animation overriding Tailwind's horizontal `translate` utility. On a 390px viewport, the page expanded to roughly 573px and shifted the main content to the right. The reveal remains as a fade, and the box-score journey now checks page width before navigating away.
+- Added league-leader responses to the isolated browser fixture. The new offseason homepage and the players page had begun calling these endpoints, causing one of the recovery journeys to fail the fixture's strict unknown-route assertion.
+- Added an explicit offseason-homepage to in-season-toggle journey for desktop and mobile. It verifies the seasonal recap, fixture leader data, the development toggle, route state, and the in-season result.
 
-Fixed Next.js page prop contracts in the player index, player detail/metadata, team index, and team detail pages. The production build exposed synchronous `params` union types incompatible with its generated promise-only contract. The teams index also read asynchronous `searchParams` synchronously; it now awaits them before selecting a season. A focused page-level test verifies the requested supported season and invalid-season fallback in backend requests. These changes preserve presentation and existing data flow, with no dependency upgrade.
+These changes are small, reversible, limited to shared animation behavior and test coverage, and require no architecture, dependency, schema, or external-system change.
 
-The standalone TypeScript check also exposed an assertion indexing the empty argument tuple inferred for an existing search fetch mock. Replaced it with a mock-call matcher that preserves the query-string assertion without tuple indexing; existing search test behavior was retained.
+## Current health
 
-## Recommended work, in order
+- Backend: Ruff, Black, and strict mypy pass. Pytest passes 120 tests with 1 opt-in integration test skipped; measured aggregate coverage is 54%. The locally installed test interpreter is Python 3.13.2 rather than the repository target of Python 3.11. `asyncpg` was supplied only through a temporary `/tmp` target because the host environment had not installed the newly declared dependency.
+- Frontend: ESLint passes, all 36 Vitest tests pass, and the production Next.js build passes. The full Playwright suite passes 42 journeys across Chromium desktop (1440×1000) and mobile (390×844), including fresh, empty, partial, stale, unknown-observation-time, and failed states. The Browser plugin was unavailable, so repository Playwright was used.
+- Workers: all 48 Node tests pass, including lease ownership/renewal/loss, cron outcome aggregation and exit status, runtime-budget exhaustion, and transactional snapshot requirements.
+- Database: all 6 disposable-PostgreSQL reconstruction tests pass, including idempotence and rollback after failure or cancellation.
+- `git diff --check` passes. No live NBA, Redis, Neon, OAuth, scheduled ingestion, deployment, commit, or push was performed.
 
-### Now: make ingestion success meaningful
+The first sandboxed E2E run exposed the missing league-leader fixture (39 passed, 1 failed). The first sandboxed database run could not allocate SysV shared memory. Turbopack also failed once when its helper process could not bind a sandboxed port. Re-running the affected checks with local-only sandbox exceptions passed; these were environment restrictions, not suppressed failures.
 
-- `workers/worker-live.js:3745`: `runCronTask` catches ordinary task failures and only logs them. `runCron` starts with `finalStatus = "ok"`, so caught failures can still result in an aggregate successful state and process exit. Track per-task outcomes, preserve independent task execution, and define which failures make the run unsuccessful. Validate with a simulated failed refresh and assert both persisted status and exit behavior.
-- `.github/workflows/ingest.yml` schedules every ten minutes, allows an hour of worker runtime, and defines no workflow concurrency group. The worker checks and records run state in separate operations. Add a deliberate concurrency/lease policy and test simultaneous starts before relying on the gate to prevent overlapping work.
-- `workers/worker-live.js:3540` expects `publish_game_snapshot`; its definition is absent from the inspected database files. When unavailable, it falls back to separate game, box-score, and player writes. Preserve an executable database baseline including this transaction, grants, and policies, then validate reconstruction in an empty local database and rollback on an interrupted snapshot write. This is a repository reproducibility gap; the deployed database was not inspected.
+## Prioritized roadmap
 
-### Next: make freshness and degraded states visible
+### Now — make the database/auth cutover deployable
 
-- `frontend/lib/nbaApi.ts:121` returns only `body.data`, discarding `meta.source`, `meta.as_of`, and `meta.stale`. `frontend/app/(main)/scores/page.tsx:96` converts request failures into empty arrays. Preserve metadata and distinguish “no games” from “data unavailable”; show an update time when serving stale results.
-- Validate what `as_of` actually measures. `backend/app/cache_helpers.py` stamps successful fetch/cache time, while `backend/app/api/routes.py:134` defaults source timestamps to request time. These are not necessarily ingestion timestamps. Carry source observation time from the worker/database rather than presenting request time as evidence that basketball data is current.
-- Add fixture-driven browser journeys for search → player/team and scores → box score, covering empty, partial, stale, and failed responses at desktop and mobile sizes. Existing passing component tests do not establish those end-to-end contracts.
+- Add and rehearse an existing-database migration for `user_accounts`. `database/schema.sql` changes `auth_user_id` from `uuid` to `text` and removes the `auth.users` foreign key, while the tracked migrations contain no equivalent alteration. The current baseline only reconstructs an empty database and explicitly must not be applied to an existing one. Define how current password-auth users map, whether they retain accounts after the Google-only switch, and test the migration with representative existing rows before deployment.
+- Validate the new `DatabaseClient` against real PostgreSQL in CI. Its current unit coverage checks configuration, identifier rejection, and filter rendering, but does not execute `select`, paginated reads, upserts, JSON/timestamp handling, RPC calls, pool startup, or shutdown. Reuse the disposable cluster already created by the database suite and run the backend adapter against it on Python 3.11.
+- Resolve the box-score read contract. `fetch_boxscore` calls `get_boxscore_snapshot`, but no definition exists in the tracked schema or migrations; every database-backed box-score request can pay for a failed RPC before falling back to separate reads. Either track and test the function or deliberately remove the probe and document the consistency tradeoff.
 
-### Next: harden availability and production boundaries
+### Next — harden production boundaries and degraded behavior
 
-- `backend/app/cache_helpers.py:72`: a caller that loses the lock waits only 100 ms, then may fetch anyway; lock release precedes cache publication. Locks use a constant value, a two-second lifetime, and unconditional deletion, so a slow owner can delete a successor's lock. Design ownership-safe release and bounded waiting/stale serving, with concurrent slow-fetch and expired-lock tests. This needs more than a mechanical patch.
-- `backend/app/main.py:99`: readiness always returns HTTP 200 and tests only a cache read. Define required versus optional dependencies and return an appropriate readiness status when the service cannot serve its essential data.
-- `frontend/lib/userAccountsApi.ts:52` and Supabase auth fetches have no explicit application timeout. Add bounded request lifetimes and recovery tests for sign-in/account sync.
-- `backend/app/config.py:17` supplies a development API key even in production; rate limiting is keyed to the shared API key in `backend/app/api/routes.py:114`. Add production configuration validation and deliberately separate end-user abuse controls from the shared service budget. Review auth changes separately; this pass did not alter them or establish a deployed vulnerability.
+- Fail closed on production secrets and readiness. `Settings.api_key` still defaults to `dev-secret-key`, and `/readiness` always returns HTTP 200 after checking only the optional cache. Require an explicit non-development key in production, define which dependencies are essential, and return a non-200 readiness status when the service cannot serve its required data path.
+- Bound account-service requests. `frontend/lib/userAccountsApi.ts` has no application timeout, so sign-in synchronization and profile operations can wait on the backend indefinitely. Add an abort deadline and exercise database unavailable, timeout, conflict, and retry behavior through the real NextAuth/profile boundary.
+- Make the offseason recap source-authoritative. `fetchFinalsSummary` infers the Finals matchup from the latest repeated June pairing rather than an explicit playoff round or series record. Persist series identity and outcome, or label the UI as inferred, before treating this as a trustworthy historical recap.
+- Reduce database amplification on cache misses. Several store helpers load entire dimension tables, and `fetch_player_stats` reads all players, player-info rows, and teams for one leaderboard request. Move joins and limits into typed SQL queries, then measure latency and query counts under cold-cache traffic.
 
-### Later: reduce maintenance cost and expand the product
+### Later — lower maintenance and operability cost
 
-- Split by behavior once route-level tests protect the boundaries: the worker is 3,942 lines, the NBA service 2,224, and the player page 1,208. Prefer extracting ingestion tasks and presentation/data adapters as they change, rather than a broad rewrite.
-- CI currently filters backend, frontend, and worker paths, but database-only changes do not trigger a schema contract job. Add reproducible schema/RPC checks and targeted cross-layer fixtures. Measured backend coverage is 53% overall and 26% in routes; prioritize untested fallback behavior over a blanket percentage target.
-- If an assistant is desired, start with a narrow question-to-answer journey using typed tools over these existing cached services and expose source/freshness with each answer. Unstructured retrieval can follow when there are actual document sources. The experimental ML folder is not connected to production; no model, pricing, or vendor recommendation was evaluated here.
+- Extract modules along tested behavior boundaries as they change. Current hotspots remain `workers/worker-live.js` (about 4,000 lines), `backend/app/services/nba.py` (about 2,200), `backend/app/api/routes.py` (about 1,675), and the player profile page (about 1,220). Avoid a broad rewrite; separate ingestion tasks, route groups, and presentation adapters behind the existing tests.
+- Add production-facing telemetry for ingestion age, task failures, stale-cache service, database fallback latency, and lease loss. The worker now records useful per-task outcomes, but those signals still need alerts and a user-visible operational view.
+- Clean up provider-specific naming after the cutover is proven. Backend route and store code still uses `SupabaseDep`, `SupabaseClient`, `supabase`, and Supabase-specific log text even though the implementation is generic PostgreSQL; this increases the chance of confusing future migrations and incidents.
 
-## Validation and coverage limits
+## Coverage limits and preserved work
 
-- Baseline: backend 103 passed / 1 skipped; frontend 32 passed; workers 35 passed. Ruff, Black, and frontend ESLint passed.
-- After the fixes: backend 104 passed / 1 skipped; frontend 34 passed; Ruff, Black, frontend ESLint, and standalone `tsc --noEmit` passed. The new HTTP regression was observed failing before implementation. `git diff --check` passed.
-- Backend tests ran with the installed Python 3.13.2, not CI's Python 3.11. The opt-in integration test remained disabled. No live NBA, Redis, Supabase, OAuth, migrations, ingestion, deployment, commit, or push was performed.
-- Frontend production build: ordinary `npm run build` stalled in Turbopack compilation and was stopped; `npm run build -- --webpack` then exposed the page prop error, and passed after the fixes, including TypeScript and prerendering. This does not establish that the default Turbopack build passes. Build requests used an intentionally unavailable local backend (`127.0.0.1:9`), producing expected caught fetch errors for homepage sections; no real-data rendering was validated.
-- No browser/responsive visual inspection was performed: the Browser plugin and repository Playwright installation were unavailable. Page identity, browser console, overlays, screenshots, and interactive mobile/desktop behavior remain unverified. Mypy was not run; backend interfaces were unchanged.
-- This was a representative review of entrypoints, configuration, CI, auth/account boundaries, caches, routes, worker orchestration, database exports, and major page data flows, not an exhaustive line-by-line audit. ML training was not validated.
+This was a representative pass over entrypoints, setup, CI, configuration, auth/account boundaries, backend storage, cache/freshness handling, database reconstruction, worker orchestration, the offseason homepage, and the primary browser journeys. It was not an exhaustive line-by-line review. The experimental `ml/` pipeline was inspected only for repository placement and was not executed.
 
-## Existing work preserved
-
-The starting worktree contained 37 modified tracked files plus untracked search service/routes/components/tests, box-score tests, and a search migration directory. They cover search, box scores, cache metadata, documentation, CI, SEO, and test setup. Existing work was preserved. In the already-modified `backend/app/main.py`, this pass only added forwarding of exception headers; in the existing untracked search component test, it only changed the one assertion described above. This pass also changed four previously clean frontend page files and added the HTTP regression test, teams-page test, and this report. Earlier edits are not attributed to this revival.
+The starting worktree already contained a large uncommitted cross-layer change set: 59 tracked-file changes plus 8 untracked files spanning PostgreSQL migration, auth simplification, local Docker setup, ingestion, offseason UI, loading animation, tests, and documentation. All were treated as user work. This pass changed only `frontend/app/globals.css`, `frontend/e2e/backend.mjs`, `frontend/e2e/journeys.spec.ts`, and this report. No unrelated change was reverted.

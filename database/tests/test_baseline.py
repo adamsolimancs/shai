@@ -3,6 +3,7 @@
 
 Requires initdb, pg_ctl and psql on PATH. Never accepts a database URL.
 """
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 from build_baseline import render
 
 
@@ -29,13 +31,6 @@ class BaselineTest(unittest.TestCase):
         cls.command(["initdb", "-D", cls.data, "-A", "trust", "-U", "postgres", "--no-locale"])
         cls.command(["pg_ctl", "-D", cls.data, "-l", str(Path(cls.tmp.name) / "postgres.log"), "-o", f"-h '' -k {cls.tmp.name}", "-w", "start"])
         cls.addClassCleanup(cls.cleanup)
-        cls.sql("""
-            CREATE ROLE anon NOLOGIN;
-            CREATE ROLE authenticated NOLOGIN;
-            CREATE ROLE service_role NOLOGIN;
-            CREATE SCHEMA auth;
-            CREATE TABLE auth.users (id uuid PRIMARY KEY);
-        """)
         cls.sql(render())
 
     @classmethod
@@ -71,15 +66,50 @@ class BaselineTest(unittest.TestCase):
     def state(self):
         return self.sql("SELECT jsonb_build_array((SELECT jsonb_agg(g) FROM games g), (SELECT jsonb_agg(b) FROM boxscores b), (SELECT jsonb_agg(p ORDER BY player_id) FROM boxscore_players p));")
 
-    def test_reconstruction_and_least_privilege(self):
+    def test_reconstruction_and_functions(self):
         self.assertEqual(int(self.sql("SELECT count(*) FROM pg_tables WHERE schemaname='public';")), render().count("CREATE TABLE public."))
-        self.assertEqual(self.sql("SELECT bool_and(rowsecurity) FROM pg_tables WHERE schemaname='public';"), "t")
-        for role in ("anon", "authenticated"):
-            self.assertEqual(self.sql(f"SELECT has_function_privilege('{role}', 'public.publish_game_snapshot(jsonb,jsonb,jsonb)', 'EXECUTE');"), "f")
-            self.sql(f"SET ROLE {role}; SELECT * FROM public.user_accounts;", succeeds=False)
-        output = self.sql("SET ROLE service_role; " + self.publish())
+        self.assertEqual(self.sql("SELECT bool_and(NOT rowsecurity) FROM pg_tables WHERE schemaname='public';"), "t")
+        output = self.sql(self.publish())
         self.assertIn('"players_upserted": 1', output)
-        self.sql("SET ROLE service_role; SELECT * FROM public.search_suggestions('test', 8);")
+        self.sql("SELECT * FROM public.search_suggestions('test', 8);")
+
+    def test_application_adapter_preserves_ids_and_writes_timestamps(self):
+        from app.config import Settings
+        from app.database import DatabaseClient
+
+        async def exercise():
+            client = DatabaseClient(Settings(
+                _env_file=None,
+                database_url=f"postgresql://postgres@/postgres?host={self.tmp.name}",
+            ))
+            try:
+                await client.upsert("user_accounts", [{
+                    "auth_user_id": "001234567890123456789",
+                    "email": "adapter@example.test",
+                    "name": "true",
+                    "updated_at": "2026-10-16T00:00:00+00:00",
+                }], on_conflict="auth_user_id")
+                account = await client.select_one("user_accounts", filters={
+                    "auth_user_id": "eq.001234567890123456789",
+                })
+                self.assertEqual(account["auth_user_id"], "001234567890123456789")
+                self.assertEqual(account["name"], "true")
+                self.assertEqual(account["updated_at"], "2026-10-16T00:00:00+00:00")
+                self.assertIsNotNone(account["created_at"])
+                await client.upsert("api_snapshots", [{
+                    "cache_key": "adapter-test", "payload": '{"ok": true}',
+                    "updated_at": "2026-10-16T00:00:00+00:00",
+                    "observed_at": "2026-10-15T23:00:00+00:00",
+                }], on_conflict="cache_key")
+                snapshot = await client.select_one("api_snapshots", filters={
+                    "cache_key": "eq.adapter-test",
+                })
+                self.assertEqual(json.loads(snapshot["payload"]), {"ok": True})
+                self.assertEqual(snapshot["observed_at"], "2026-10-15T23:00:00+00:00")
+            finally:
+                await client.close()
+
+        asyncio.run(exercise())
 
     def test_replacement_idempotence_and_empty_players(self):
         self.sql(self.publish())

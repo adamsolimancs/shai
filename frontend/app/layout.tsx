@@ -19,13 +19,9 @@ export const metadata: Metadata = {
   authors: [{ name: "ShAI Team" }],
   creator: "ShAI",
   publisher: "ShAI",
-  alternates: {
-    canonical: "https://shaistats.vercel.app",
-  },
   openGraph: {
     title: "ShAI – NBA Scores, Stats, and Player Insights",
     description: "Explore NBA scores, player and team profiles, standings, and advanced stats.",
-    url: "https://shaistats.vercel.app",
     siteName: "ShAI",
     images: [
       {
@@ -49,6 +45,13 @@ export const metadata: Metadata = {
   robots: {
     index: true,
     follow: true,
+    googleBot: {
+      index: true,
+      follow: true,
+      "max-image-preview": "large",
+      "max-snippet": -1,
+      "max-video-preview": -1,
+    },
   },
   other: {
     "google-adsense-account": "ca-pub-2936132092849787",
@@ -56,7 +59,7 @@ export const metadata: Metadata = {
 };
 
 const HeaderSearchFallback = () => (
-  <div className="mx-auto h-12 w-full max-w-[30rem] animate-pulse rounded-full border border-white/10 bg-white/5" aria-hidden="true" />
+  <div className="skeleton-block mx-auto h-12 w-full max-w-[30rem] rounded-full border border-white/10 bg-white/5" aria-hidden="true" />
 );
 
 export default function RootLayout({
@@ -69,7 +72,7 @@ export default function RootLayout({
       <body className="antialiased">
         <main className="app-shell">
           <SiteHeader />
-          <div className="mx-auto max-w-6xl px-5 pb-16 pt-12 md:pb-24">
+          <div className="app-content mx-auto max-w-6xl px-5 pb-16 pt-12 md:pb-24">
             {children}
           </div>
           <SiteFooter />

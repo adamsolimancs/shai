@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from ..cache_helpers import ObservedData, source_observed_at
-from ..supabase import SupabaseClient
+from ..database import DatabaseClient as SupabaseClient
 
 
 def _season_year(season: str) -> int | None:

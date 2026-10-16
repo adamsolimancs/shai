@@ -8,6 +8,7 @@
     "test:lease-integration": "node integration/cron-lease.cjs"
   },
   "dependencies": {
-    "@upstash/redis": "^1.37.0"
+    "@upstash/redis": "^1.37.0",
+    "pg": "^8.16.3"
   }
 }

@@ -1,30 +1,27 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 
-process.env.SUPABASE_URL = "https://snapshot-test.invalid";
-process.env.SUPABASE_SECRET_KEY = "test-only";
-const { publishGameSnapshot } = require("../worker-live");
+const { publishGameSnapshot, setDatabaseQueryForTests } = require("../worker-live");
 
-test("missing snapshot transaction fails without issuing partial table writes", async (t) => {
+test("missing snapshot transaction fails without issuing partial table writes", async () => {
   const requests = [];
-  t.mock.method(global, "fetch", async (url, options) => {
-    requests.push({ url, options });
-    return new Response(JSON.stringify({ code: "PGRST202", message: "Could not find the function" }), {
-      status: 404,
-    });
+  setDatabaseQueryForTests(async (sql, values) => {
+    requests.push({ sql, values });
+    const error = new Error('function public.publish_game_snapshot does not exist');
+    error.code = "42883";
+    throw error;
   });
   await assert.rejects(publishGameSnapshot({ game_id: "game-1" }), (error) => {
     assert.match(error.message, /apply the database ingestion migration/);
-    assert.match(error.cause.message, /PGRST202/);
+    assert.match(error.cause.message, /does not exist/);
     return true;
   });
   assert.equal(requests.length, 1);
-  assert.equal(new URL(requests[0].url).pathname, "/rest/v1/rpc/publish_game_snapshot");
+  assert.match(requests[0].sql, /publish_game_snapshot/);
+  assert.equal(requests[0].values.length, 3);
 });
 
-test("snapshot publish returns committed RPC player count", async (t) => {
-  t.mock.method(global, "fetch", async () =>
-    Response.json({ players_upserted: 12 })
-  );
+test("snapshot publish returns committed RPC player count", async () => {
+  setDatabaseQueryForTests(async () => ({ rows: [{ result: { players_upserted: 12 } }] }));
   assert.equal(await publishGameSnapshot({ game_id: "game-1" }), 12);
 });

@@ -18,9 +18,9 @@ from fastapi import HTTPException, status
 from ..cache import CacheBackend
 from ..cache_helpers import read_cache_as_of, write_cache_as_of
 from ..config import Settings
+from ..database import DatabaseClient
 from ..schemas import CacheMeta, NewsArticle
 from ..services.store import fetch_news_articles
-from ..supabase import SupabaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +70,7 @@ class NewsService:
         self,
         settings: Settings,
         cache: CacheBackend,
-        supabase: SupabaseClient | None = None,
+        supabase: DatabaseClient | None = None,
     ):
         self.settings = settings
         self.cache = cache

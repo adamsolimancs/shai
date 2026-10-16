@@ -12,7 +12,7 @@ Successful fallback reads remain successful. Optional advanced-boxscore enrichme
 
 ## Cron concurrency
 
-GitHub Actions uses the `production-ingestion` concurrency group with `cancel-in-progress: false`. The worker also requires shared Upstash Redis in cron mode and acquires a lease before reading its scheduling cursor. Every cron writer targeting the same database must use the same Redis instance and normalized `SUPABASE_URL` / `SUPABASE_SCHEMA`; the key is `nba:ingest:cron:<SUPABASE_URL>:<SUPABASE_SCHEMA>`.
+GitHub Actions uses the `production-ingestion` concurrency group with `cancel-in-progress: false`. The worker also requires shared Upstash Redis in cron mode and acquires a lease before reading its scheduling cursor. Every cron writer targeting the same database must use the same Redis instance and `DATABASE_SCHEMA`; the lease key is derived from the database host, database name, and schema without including credentials.
 
 Acquisition uses atomic Redis `SET NX PX` with a 120-second expiry. An owner token is checked by Lua on renewal (every 40 seconds) and release, so a previous owner cannot renew or release a successor's lease. A held lease skips the run. Missing Redis or acquisition errors fail closed. Renewal errors, ownership loss, or a hung renewal exceeding the 108-second watchdog terminate the process with failure. Such abrupt exits can leave ingestion status `running`; the lease expires within 120 seconds of its last successful renewal and a later run can proceed.
 

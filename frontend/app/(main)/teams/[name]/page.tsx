@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import type { Metadata } from "next";
 
 import DataFreshness from "@/components/DataFreshness";
 import { DEFAULT_SEASON, createObservedFetcher, combineFreshness, type Envelope } from "@/lib/nbaApi";
@@ -213,6 +214,27 @@ const resolveTeamBySlug = (teams: Team[], slug: string): Team | null => {
 
 const isNotFoundError = (error: unknown): boolean =>
   error instanceof Error && (/404/.test(error.message) || /Not Found/i.test(error.message));
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ name: string }>;
+}): Promise<Metadata> {
+  const { name } = await params;
+  const readableName = name
+    .split("-")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+
+  return {
+    title: readableName ? `${readableName} Team Profile` : "NBA Team Profile",
+    description: readableName
+      ? `View ${readableName} standings, season results, team details, and franchise history.`
+      : "View NBA team standings, season results, details, and franchise history.",
+    alternates: { canonical: `/teams/${encodeURIComponent(name)}` },
+  };
+}
 
 
 async function fetchTeamContext(slug: string): Promise<TeamContext | null> {

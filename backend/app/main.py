@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from .api.routes import router as v1_router
 from .cache import CacheBackend, init_cache
 from .config import get_settings
+from .database import DatabaseClient
 from .logging import configure_logging
 from .middleware import RequestContextMiddleware
 from .rate_limit import RateLimiter
@@ -22,7 +23,6 @@ from .resolvers import NameResolver
 from .schemas import ErrorDetail, ErrorEnvelope
 from .services.nba import NBAStatsClient
 from .services.news import NewsService
-from .supabase import SupabaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -32,19 +32,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     configure_logging(settings.log_level, settings.log_format, settings.environment)
     cache, redis_client = await init_cache(settings)
-    supabase = None
-    if settings.supabase_url and settings.supabase_key:
-        supabase = SupabaseClient(settings)
-    resolver = NameResolver(cache, supabase, allow_upstream=settings.nba_api_calls_allowed)
+    database = DatabaseClient(settings) if settings.database_url else None
+    resolver = NameResolver(cache, database, allow_upstream=settings.nba_api_calls_allowed)
     await resolver.initialize()
     nba_client = NBAStatsClient(settings, cache, resolver)
-    news_client = NewsService(settings, cache, supabase)
+    news_client = NewsService(settings, cache, database)
     rate_limiter = RateLimiter(settings.rate_limit_requests_per_minute, redis_client)
 
     app.state.settings = settings
     app.state.cache = cache
     app.state.redis = redis_client
-    app.state.supabase = supabase
+    app.state.database = database
     app.state.resolver = resolver
     app.state.nba_client = nba_client
     app.state.news_client = news_client
@@ -60,8 +58,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         for task in getattr(app.state, "background_tasks", []):
             task.cancel()
         await cache.close()
-        if supabase:
-            await supabase.close()
+        if database:
+            await database.close()
         await news_client.close()
 
 

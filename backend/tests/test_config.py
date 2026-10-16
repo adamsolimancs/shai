@@ -19,11 +19,9 @@ def test_docs_origins_split():
 
 
 def test_supabase_aliases(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
-    monkeypatch.setenv("SUPABASE_SECRET_KEY", "service-key")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@host/db")
     settings = Settings()
-    assert settings.supabase_url == "https://example.supabase.co"
-    assert settings.supabase_key == "service-key"
+    assert settings.database_url == "postgresql://user:pass@host/db"
 
 
 def test_hot_cache_refresh_disabled_by_default():

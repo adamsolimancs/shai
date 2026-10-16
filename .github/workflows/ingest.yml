@@ -67,9 +67,8 @@ jobs:
           PLAYERS_HISTORIC_SEASONS_BACK: 2
           API_MIN_INTERVAL_MS: 1500
           STATS_TRANSPORT: nba_api
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
-          SUPABASE_SCHEMA: public
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_SCHEMA: public
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
           CACHE_KEY_PREFIX: nba:serve

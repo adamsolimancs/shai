@@ -1,17 +1,8 @@
 import NextAuth from "next-auth";
-import Credentials from "next-auth/providers/credentials";
 import Google from "next-auth/providers/google";
 import type { Session } from "next-auth";
 
-import {
-  hasSupabasePasswordConfigured,
-  verifySupabasePasswordUser,
-} from "@/lib/supabaseAuth";
-import {
-  findUserAccountByAuthUserId,
-  findUserAccountByUsername,
-  syncUserAccount,
-} from "@/lib/userAccountsApi";
+import { syncUserAccount } from "@/lib/userAccountsApi";
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
@@ -22,59 +13,6 @@ if (!AUTH_SECRET) {
 }
 
 export const hasGoogleOAuthConfigured = Boolean(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
-
-const normalizeIdentifier = (value: string) => value.trim().toLowerCase();
-
-const isEmailIdentifier = (value: string) => value.includes("@");
-
-async function resolvePasswordSignInIdentifier(identifier: string) {
-  const normalizedIdentifier = normalizeIdentifier(identifier);
-  if (!normalizedIdentifier) {
-    return null;
-  }
-
-  if (isEmailIdentifier(normalizedIdentifier)) {
-    return normalizedIdentifier;
-  }
-
-  const account = await findUserAccountByUsername(normalizedIdentifier);
-  return account?.email ?? null;
-}
-
-async function hydratePasswordUserAccount(user: {
-  id: string;
-  email: string;
-  name: string;
-  username: string | null;
-}) {
-  try {
-    const existingAccount = await findUserAccountByAuthUserId(user.id);
-    if (existingAccount) {
-      return {
-        ...user,
-        email: existingAccount.email || user.email,
-        name: existingAccount.name || user.name,
-        username: existingAccount.username ?? user.username,
-      };
-    }
-
-    const syncedAccount = await syncUserAccount({
-      auth_user_id: user.id,
-      email: user.email,
-      name: user.name,
-      username: user.username,
-    });
-
-    return {
-      ...user,
-      email: syncedAccount.email || user.email,
-      name: syncedAccount.name || user.name,
-      username: syncedAccount.username ?? user.username,
-    };
-  } catch {
-    return user;
-  }
-}
 
 const sessionUserUpdateSchema = (value: unknown): Partial<Session["user"]> => {
   if (!value || typeof value !== "object" || !("user" in value)) {
@@ -97,44 +35,6 @@ if (hasGoogleOAuthConfigured) {
 } else {
   console.warn(
     "[ShAI] Google OAuth environment variables are missing. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to enable Google auth.",
-  );
-}
-
-if (hasSupabasePasswordConfigured) {
-  providers.push(
-    Credentials({
-      name: "Email and Password",
-      credentials: {
-        identifier: { label: "Email or Username", type: "text" },
-        password: { label: "Password", type: "password" },
-      },
-      async authorize(credentials) {
-        const identifier = typeof credentials.identifier === "string" ? credentials.identifier : "";
-        const password = typeof credentials.password === "string" ? credentials.password : "";
-        if (!identifier || !password) {
-          return null;
-        }
-
-        try {
-          const resolvedEmail = await resolvePasswordSignInIdentifier(identifier);
-          if (!resolvedEmail) {
-            return null;
-          }
-
-          const user = await verifySupabasePasswordUser(resolvedEmail, password);
-          const hydratedUser = await hydratePasswordUserAccount(user);
-          return {
-            id: hydratedUser.id,
-            email: hydratedUser.email,
-            name: hydratedUser.name,
-            username: hydratedUser.username,
-            provider: "credentials",
-          };
-        } catch {
-          return null;
-        }
-      },
-    }),
   );
 }
 

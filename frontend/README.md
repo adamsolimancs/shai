@@ -1,6 +1,6 @@
 # ShAI Frontend
 
-Next.js App Router UI for ShAI. It consumes the backend API and supports NextAuth Google OAuth plus optional Supabase-backed email/password accounts.
+Next.js App Router UI for ShAI. It consumes the backend API and uses NextAuth with Google OAuth.
 
 ## Stack
 - Next.js 16 (App Router), React 19, TypeScript
@@ -10,7 +10,7 @@ Next.js App Router UI for ShAI. It consumes the backend API and supports NextAut
 
 ## Architecture
 - App Router pages/components fetch data via `frontend/lib/nbaApi.ts`.
-- Auth is handled by NextAuth for Google and a Supabase-backed credentials flow for email/password.
+- Auth is handled by NextAuth with Google OAuth; account profiles are stored through the backend in Neon.
 
 ## Setup & run
 ```bash
@@ -33,12 +33,6 @@ Optional (for Google OAuth):
 GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
 ```
-Optional (for Supabase email/password auth):
-```
-NEXT_PUBLIC_SUPABASE_URL=...
-NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY=...
-```
-
 Run the dev server:
 ```bash
 npm run dev

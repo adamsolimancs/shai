@@ -1,6 +1,6 @@
 export default function Loading() {
   return (
-    <div className="space-y-12" aria-hidden="true">
+    <div className="loading-shell space-y-12" aria-hidden="true">
       <div className="grid items-stretch gap-6 lg:grid-cols-[minmax(0,1.5fr)_minmax(0,1fr)]">
         <section className="w-full rounded-2xl border border-[color:var(--color-app-border)] bg-[color:var(--color-app-surface)] px-5 py-5 shadow-lg shadow-[rgba(10,31,68,0.08)]">
           <div className="flex h-full flex-col gap-4 text-[color:var(--color-app-foreground)]">

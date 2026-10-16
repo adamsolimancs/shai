@@ -2,6 +2,12 @@
 
 Repository-specific instructions for ShAI. Follow them unless the user gives a conflicting instruction.
 
+## OpenAI documentation
+
+- For questions or changes involving OpenAI products, APIs, models, Codex, ChatGPT Work, prompting, agents, or evals, invoke and follow the `$openai-docs` skill.
+- Before inspecting repository files or answering from memory, search for the user's exact topic in the official OpenAI documentation and open the relevant page. Use only `developers.openai.com`, `platform.openai.com`, or `learn.chatgpt.com` as documentation sources.
+- Preserve any model the user explicitly names. Cite the official page supporting current product behavior, availability, or implementation guidance, and state when the documentation does not establish an answer.
+
 ## Project map
 
 - `frontend/`: Next.js 16 App Router, React 19, TypeScript, Tailwind CSS, Vitest.

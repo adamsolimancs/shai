@@ -6,9 +6,8 @@ import logging
 import re
 from datetime import date
 from typing import Annotated, Any, Literal, cast
-from uuid import UUID
 
-import httpx
+import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from ..auth import require_api_key
@@ -20,14 +19,15 @@ from ..cache_helpers import (
     source_observed_at,
 )
 from ..config import Settings
+from ..database import DatabaseClient as SupabaseClient
 from ..dependencies import (
     get_cache_backend,
+    get_database_client,
     get_nba_client,
     get_news_client,
     get_rate_limiter,
     get_resolver,
     get_settings_dependency,
-    get_supabase_client,
 )
 from ..rate_limit import RateLimiter
 from ..resolvers import NameResolver
@@ -102,7 +102,6 @@ from ..serving_cache import (
     team_stats_key,
     teams_key,
 )
-from ..supabase import SupabaseClient
 from ..utils import paginate, parse_date, validate_date_range, validate_season
 from .responses import success
 
@@ -112,7 +111,7 @@ NBAClientDep = Annotated[NBAStatsClient, Depends(get_nba_client)]
 NewsClientDep = Annotated[NewsService, Depends(get_news_client)]
 SettingsDep = Annotated[Settings, Depends(get_settings_dependency)]
 CacheDep = Annotated[CacheBackend, Depends(get_cache_backend)]
-SupabaseDep = Annotated[SupabaseClient | None, Depends(get_supabase_client)]
+SupabaseDep = Annotated[SupabaseClient | None, Depends(get_database_client)]
 ResolverDep = Annotated[NameResolver, Depends(get_resolver)]
 
 
@@ -253,50 +252,14 @@ def _normalize_email(value: Any) -> str | None:
     return text.lower() if text else None
 
 
-def _is_uuid(value: Any) -> bool:
-    text = _first_non_empty_text(value)
-    if not text:
-        return False
-    try:
-        UUID(text)
-    except ValueError:
-        return False
-    return True
-
-
 async def _resolve_user_account_auth_user_id(
     supabase: SupabaseClient,
     payload: UserAccountSyncRequest,
 ) -> str:
-    if _is_uuid(payload.auth_user_id):
-        return payload.auth_user_id.strip()
-
-    normalized_email = _normalize_email(payload.email)
-    if not normalized_email:
-        raise ValueError("email is required")
-
-    user_metadata = {
-        key: value
-        for key, value in {
-            "name": _first_non_empty_text(payload.name),
-            "username": _first_non_empty_text(payload.username),
-        }.items()
-        if value is not None
-    }
-    auth_user = await supabase.ensure_auth_user(
-        email=normalized_email,
-        user_metadata=user_metadata or None,
-    )
-    auth_user_id = _first_non_empty_text(auth_user.get("id"))
-    if auth_user_id is None or not _is_uuid(auth_user_id):
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={
-                "code": "ACCOUNT_SYNC_FAILED",
-                "message": "We couldn't sync the account right now.",
-                "retryable": True,
-            },
-        )
+    del supabase
+    auth_user_id = _first_non_empty_text(payload.auth_user_id)
+    if not auth_user_id:
+        raise ValueError("auth_user_id is required")
     return auth_user_id
 
 
@@ -573,22 +536,13 @@ async def sync_user_account(
                 "retryable": False,
             },
         ) from error
-    except httpx.HTTPStatusError as error:
-        if error.response.status_code == status.HTTP_409_CONFLICT:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail={
-                    "code": "CONFLICT",
-                    "message": "That username is already in use.",
-                    "retryable": False,
-                },
-            ) from error
+    except asyncpg.UniqueViolationError as error:
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
+            status_code=status.HTTP_409_CONFLICT,
             detail={
-                "code": "ACCOUNT_SYNC_FAILED",
-                "message": "We couldn't sync the account right now.",
-                "retryable": True,
+                "code": "CONFLICT",
+                "message": "That username or email is already in use.",
+                "retryable": False,
             },
         ) from error
     return success(request, UserAccount(**account))

@@ -40,7 +40,7 @@ export default function HeroSearch() {
   return (
     <SearchCombobox
       id="global-search"
-      formClassName="mx-auto w-full max-w-3xl"
+      formClassName="content-reveal mx-auto w-full max-w-3xl"
       fieldClassName="surface-card--elevated flex items-center gap-3 rounded-full px-6 py-3 focus-within:border-[color:var(--color-app-primary)] focus-within:ring-2 focus-within:ring-[var(--color-app-primary-soft)]"
       inputWrapperClassName="flex-1"
       inputClassName="h-10 w-full bg-transparent text-base text-[var(--color-app-foreground)] focus:outline-none"

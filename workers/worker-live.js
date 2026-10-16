@@ -7,6 +7,7 @@ if (typeof fetch !== "function") {
 }
 
 const { spawn } = require("child_process");
+const { Pool } = require("pg");
 const { cache } = require("./cache");
 const { acquireCronLease } = require("./cron-lease");
 const dns = require("dns");
@@ -130,9 +131,8 @@ function buildSupportedSeasons({
 
 const CONFIG = {
   workerMode: process.env.WORKER_MODE || "cron",
-  supabaseUrl: process.env.SUPABASE_URL,
-  supabaseKey: process.env.SUPABASE_SECRET_KEY,
-  supabaseSchema: process.env.SUPABASE_SCHEMA || "public",
+  databaseUrl: process.env.DATABASE_URL,
+  databaseSchema: process.env.DATABASE_SCHEMA || "public",
   supportedSeasonStartYear: Number(process.env.SUPPORTED_SEASON_START_YEAR || 1996),
   seasonOverride: process.env.NBA_SEASON,
   historicSeasons: process.env.HISTORIC_SEASONS || "",
@@ -218,10 +218,18 @@ const CONFIG = {
 };
 
 function validateConfig() {
-  if (!CONFIG.supabaseUrl || !CONFIG.supabaseKey) {
-    throw new Error("SUPABASE_URL and SUPABASE_SECRET_KEY are required.");
+  if (!CONFIG.databaseUrl) {
+    throw new Error("DATABASE_URL is required.");
   }
 }
+
+const databasePool = CONFIG.databaseUrl
+  ? new Pool({ connectionString: CONFIG.databaseUrl, max: 5 })
+  : null;
+let databaseQuery = (...args) => {
+  if (!databasePool) throw new Error("DATABASE_URL is required.");
+  return databasePool.query(...args);
+};
 
 const NBA_STATS_HEADERS = {
   Accept: "application/json, text/plain, */*",
@@ -1360,24 +1368,65 @@ function shouldRecordIngestionState(table) {
   return Boolean(table && table !== "ingestion_state");
 }
 
-async function supabaseInsertRaw(table, rows) {
-  if (!rows || rows.length === 0) return;
-  const url = new URL(`${CONFIG.supabaseUrl}/rest/v1/${table}`);
-  const response = await fetch(url.toString(), {
-    method: "POST",
-    headers: {
-      apikey: CONFIG.supabaseKey,
-      Authorization: `Bearer ${CONFIG.supabaseKey}`,
-      "Content-Type": "application/json",
-      "Content-Profile": CONFIG.supabaseSchema,
-      Prefer: "return=minimal",
-    },
-    body: JSON.stringify(rows),
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Supabase ${table} insert failed: ${response.status} ${body}`);
+function sqlIdentifier(value) {
+  if (!/^[a-z_][a-z0-9_]*$/.test(value || "")) {
+    throw new Error(`Invalid SQL identifier: ${String(value)}`);
   }
+  return `"${value}"`;
+}
+
+function sqlTable(table) {
+  return `${sqlIdentifier(CONFIG.databaseSchema)}.${sqlIdentifier(table)}`;
+}
+
+function buildWhere(filters = {}, values = []) {
+  const clauses = [];
+  for (const [column, expression] of Object.entries(filters)) {
+    if (["select", "order", "limit", "offset"].includes(column)) continue;
+    const [operator, ...rest] = String(expression).split(".");
+    const rawValue = rest.join(".");
+    const operators = { eq: "=", neq: "<>", gt: ">", gte: ">=", lt: "<", lte: "<=" };
+    if (!operators[operator]) throw new Error(`Unsupported database filter: ${expression}`);
+    values.push(rawValue);
+    clauses.push(`${sqlIdentifier(column)}::text ${operators[operator]} $${values.length}`);
+  }
+  return clauses.length ? ` WHERE ${clauses.join(" AND ")}` : "";
+}
+
+async function insertRows(table, rows, onConflict = null) {
+  if (!databasePool || !rows || rows.length === 0) return;
+  const client = await databasePool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const row of rows) {
+      const columns = Object.keys(row);
+      const columnSql = columns.map(sqlIdentifier).join(", ");
+      const placeholders = columns.map((_, index) => `$${index + 1}`).join(", ");
+      let conflictSql = "";
+      if (onConflict) {
+        const conflictColumns = onConflict.split(",").map((column) => column.trim());
+        const updates = columns.filter((column) => !conflictColumns.includes(column));
+        const action = updates.length
+          ? `DO UPDATE SET ${updates.map((column) => `${sqlIdentifier(column)} = EXCLUDED.${sqlIdentifier(column)}`).join(", ")}`
+          : "DO NOTHING";
+        conflictSql = ` ON CONFLICT (${conflictColumns.map(sqlIdentifier).join(", ")}) ${action}`;
+      }
+      await client.query(
+        `INSERT INTO ${sqlTable(table)} (${columnSql}) VALUES (${placeholders})${conflictSql}`,
+        columns.map((column) => row[column])
+      );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function supabaseInsertRaw(table, rows) {
+  await insertRows(table, rows);
   logDbWrite("insert", table, { count: rows.length });
 }
 
@@ -1393,7 +1442,7 @@ async function supabaseInsert(table, rows, options = {}) {
       await updateIngestionState(table, "ok", cursor, null);
     }
   } catch (error) {
-    log("Supabase insert failed", {
+    log("Database insert failed", {
       table,
       count: Array.isArray(rows) ? rows.length : 0,
       ...formatErrorForLog(error),
@@ -1406,25 +1455,11 @@ async function supabaseInsert(table, rows, options = {}) {
 }
 
 async function supabaseDeleteRaw(table, filters) {
-  const url = new URL(`${CONFIG.supabaseUrl}/rest/v1/${table}`);
-  Object.entries(filters || {}).forEach(([key, value]) => {
-    if (value !== undefined && value !== null) {
-      url.searchParams.set(key, String(value));
-    }
-  });
-  const response = await fetch(url.toString(), {
-    method: "DELETE",
-    headers: {
-      apikey: CONFIG.supabaseKey,
-      Authorization: `Bearer ${CONFIG.supabaseKey}`,
-      "Content-Profile": CONFIG.supabaseSchema,
-      Prefer: "return=minimal",
-    },
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Supabase ${table} delete failed: ${response.status} ${body}`);
-  }
+  if (!databasePool) throw new Error("DATABASE_URL is required.");
+  const values = [];
+  const where = buildWhere(filters, values);
+  if (!where) throw new Error("Refusing to delete without filters.");
+  await databasePool.query(`DELETE FROM ${sqlTable(table)}${where}`, values);
   logDbWrite("delete", table, { filters: filters || {} });
 }
 
@@ -1440,7 +1475,7 @@ async function supabaseDelete(table, filters, options = {}) {
       await updateIngestionState(table, "ok", cursor, null);
     }
   } catch (error) {
-    log("Supabase delete failed", {
+    log("Database delete failed", {
       table,
       filters,
       ...formatErrorForLog(error),
@@ -1455,9 +1490,9 @@ async function supabaseDelete(table, filters, options = {}) {
 function isMissingRpcFunctionError(error) {
   const message = String(error || "");
   return (
-    message.includes("\"code\":\"PGRST202\"") ||
-    message.includes("Could not find the function") ||
-    message.includes("Searched for the function")
+    message.includes("does not exist") ||
+    message.includes("undefined_function") ||
+    message.includes("PGRST202")
   );
 }
 
@@ -1465,25 +1500,7 @@ async function supabaseUpsertRaw(table, rows, onConflict) {
   if (!rows || rows.length === 0) return;
   const payload = dedupeRowsForConflict(rows, onConflict);
   if (!payload || payload.length === 0) return;
-  const url = new URL(`${CONFIG.supabaseUrl}/rest/v1/${table}`);
-  if (onConflict) {
-    url.searchParams.set("on_conflict", onConflict);
-  }
-  const response = await fetch(url.toString(), {
-    method: "POST",
-    headers: {
-      apikey: CONFIG.supabaseKey,
-      Authorization: `Bearer ${CONFIG.supabaseKey}`,
-      "Content-Type": "application/json",
-      Prefer: "resolution=merge-duplicates",
-      "Content-Profile": CONFIG.supabaseSchema,
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Supabase ${table} upsert failed: ${response.status} ${body}`);
-  }
+  await insertRows(table, payload, onConflict);
   logDbWrite("upsert", table, {
     count: payload.length,
     on_conflict: onConflict || null,
@@ -1491,29 +1508,20 @@ async function supabaseUpsertRaw(table, rows, onConflict) {
 }
 
 async function supabaseRpc(functionName, payload = {}) {
-  const url = new URL(`${CONFIG.supabaseUrl}/rest/v1/rpc/${functionName}`);
-  const response = await fetch(url.toString(), {
-    method: "POST",
-    headers: {
-      apikey: CONFIG.supabaseKey,
-      Authorization: `Bearer ${CONFIG.supabaseKey}`,
-      "Content-Type": "application/json",
-      "Accept-Profile": CONFIG.supabaseSchema,
-      "Content-Profile": CONFIG.supabaseSchema,
-    },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Supabase rpc ${functionName} failed: ${response.status} ${body}`);
-  }
+  sqlIdentifier(functionName);
+  const entries = Object.entries(payload);
+  const argumentsSql = entries
+    .map(([name], index) => `${sqlIdentifier(name)} => $${index + 1}::jsonb`)
+    .join(", ");
+  const values = entries.map(([, value]) => JSON.stringify(value));
+  const response = await databaseQuery(
+    `SELECT ${sqlIdentifier(CONFIG.databaseSchema)}.${sqlIdentifier(functionName)}(${argumentsSql}) AS result`,
+    values
+  );
   logDbWrite("rpc", functionName, {
     keys: Object.keys(payload || {}),
   });
-  if (response.status === 204) {
-    return null;
-  }
-  return response.json();
+  return response.rows[0]?.result ?? null;
 }
 
 async function supabaseUpsert(table, rows, onConflict, options = {}) {
@@ -1533,7 +1541,7 @@ async function supabaseUpsert(table, rows, onConflict, options = {}) {
       message.includes("\"code\":\"21000\"") ||
       message.includes("ON CONFLICT DO UPDATE command cannot affect row a second time");
     if (isDuplicateConflict && Array.isArray(rows) && rows.length > 1) {
-      log("Supabase upsert conflict detected; retrying rows individually", {
+      log("Database upsert conflict detected; retrying rows individually", {
         table,
         count: rows.length,
       });
@@ -1545,7 +1553,7 @@ async function supabaseUpsert(table, rows, onConflict, options = {}) {
       }
       return;
     }
-    log("Supabase upsert failed", {
+    log("Database upsert failed", {
       table,
       on_conflict: onConflict || null,
       count: Array.isArray(rows) ? rows.length : 0,
@@ -1575,24 +1583,29 @@ async function writeApiSnapshot(cacheKeyValue, payload) {
 }
 
 async function supabaseSelect(table, query) {
-  const url = new URL(`${CONFIG.supabaseUrl}/rest/v1/${table}`);
-  Object.entries(query).forEach(([key, value]) => {
-    if (value !== undefined && value !== null) {
-      url.searchParams.set(key, String(value));
-    }
-  });
-  const response = await fetch(url.toString(), {
-    headers: {
-      apikey: CONFIG.supabaseKey,
-      Authorization: `Bearer ${CONFIG.supabaseKey}`,
-      "Accept-Profile": CONFIG.supabaseSchema,
-    },
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Supabase ${table} select failed: ${response.status} ${body}`);
+  if (!databasePool) throw new Error("DATABASE_URL is required.");
+  const columns = String(query.select || "*")
+    .split(",")
+    .map((column) => column.trim())
+    .filter(Boolean);
+  const selectSql = columns.length === 1 && columns[0] === "*"
+    ? "*"
+    : columns.map(sqlIdentifier).join(", ");
+  const values = [];
+  let sql = `SELECT ${selectSql} FROM ${sqlTable(table)}${buildWhere(query, values)}`;
+  if (query.order) {
+    const [column, direction] = String(query.order).split(".");
+    sql += ` ORDER BY ${sqlIdentifier(column)} ${direction === "desc" ? "DESC" : "ASC"}`;
   }
-  return response.json();
+  if (query.limit !== undefined) {
+    values.push(Number(query.limit));
+    sql += ` LIMIT $${values.length}`;
+  }
+  if (query.offset !== undefined) {
+    values.push(Number(query.offset));
+    sql += ` OFFSET $${values.length}`;
+  }
+  return (await databasePool.query(sql, values)).rows;
 }
 
 async function supabaseSelectAll(table, query, pageSize = 1000) {
@@ -3744,9 +3757,11 @@ async function runCronTask(entity, intervalMs, fn, outcomes) {
 
 async function runCron() {
   // Lock before reading the scheduling cursor so check/update is serialized.
+  const databaseUrl = new URL(CONFIG.databaseUrl);
+  const databaseIdentity = `${databaseUrl.hostname}${databaseUrl.pathname}`;
   const lease = await acquireCronLease(
     cache,
-    `nba:ingest:cron:${normalizeBaseUrl(CONFIG.supabaseUrl)}:${CONFIG.supabaseSchema}`
+    `nba:ingest:cron:${databaseIdentity}:${CONFIG.databaseSchema}`
   );
   if (!lease) {
     log("Cron lease held by another worker; skipping run");
@@ -3920,7 +3935,8 @@ if (require.main === module) {
       .catch((error) => {
         console.error("Cron run failed", formatErrorForLog(error, { includeStack: true }));
         process.exitCode = 1;
-      });
+      })
+      .finally(() => databasePool?.end());
   }
 }
 
@@ -3976,4 +3992,7 @@ module.exports = {
   buildGameSnapshotPayload,
   publishGameSnapshot,
   fetchGames,
+  setDatabaseQueryForTests(query) {
+    databaseQuery = query;
+  },
 };

@@ -1,30 +1,29 @@
-# Database reconstruction and migrations
+# PostgreSQL reconstruction and migrations
 
 `schema.sql` remains the source of truth for table columns, keys, and indexes. It
 is the existing SQL-editor Markdown export, including current local additions.
 `build_baseline.py` converts that export to executable SQL, orders referenced keys
-before foreign keys, enables RLS, applies API permissions, and includes migrations
+before foreign keys and includes migrations
 in filename order. This avoids maintaining a second copy of table definitions.
 
-For an **empty Supabase database**, generate and review the complete baseline:
+For an **empty PostgreSQL database**, generate and review the complete baseline:
 
 ```sh
 python3 database/build_baseline.py > /tmp/shai-baseline.sql
 # Apply /tmp/shai-baseline.sql using your normal database migration process.
 ```
 
-The output wraps reconstruction in a transaction. Supabase must already provide
-`auth.users`, `anon`, `authenticated`, and `service_role`. Do not apply this baseline
-to an existing database. Existing databases receive individual unapplied migration
-files through the usual migration process; deploy the snapshot migration before
-workers that require it. These files describe the intended repository baseline,
-not a verified export of deployed permissions, triggers, or functions.
+The output wraps reconstruction in a transaction. Do not apply this baseline to an
+existing database. Existing databases receive individual unapplied migration files
+through the usual migration process; deploy the snapshot migration before workers
+that require it.
 
-All reconstructed public tables have RLS enabled. Only `service_role` receives
-read/write access and a matching policy. Browser `anon` and `authenticated` roles
-have no direct table privileges; account access stays behind the backend. Both
-search and snapshot RPCs grant execution only to `service_role`. The snapshot RPC
-uses invoker permissions and an explicit search path, rather than owner elevation.
+The application and worker connect with a private PostgreSQL role. Browser clients
+never receive database credentials; account and data access stay behind the backend.
+
+Apply `202610160001_oauth_account_ids.sql` to existing databases before deploying
+the direct PostgreSQL adapter. It preserves existing UUID account IDs as text and
+allows OAuth provider subjects. Fresh baselines already use text IDs.
 
 `publish_game_snapshot(jsonb, jsonb, jsonb)` writes a game, its boxscore, and its
 complete player set atomically. Player rows absent from the new snapshot are
@@ -35,18 +34,18 @@ data must be ingested first. Same-game publishers serialize on a transaction-sco
 advisory lock. Any failure or cancellation rolls back all writes. There is no
 nontransactional publication fallback in the worker.
 
-Run the isolated integration suite (PostgreSQL binaries must be on `PATH`):
+Run the isolated integration suite (PostgreSQL binaries must be on `PATH`, and
+use a Python environment with `backend/` installed, including its dependencies):
 
 ```sh
 python3 database/tests/test_baseline.py
 ```
 
-It creates a disposable local cluster using a Unix socket with TCP disabled, supplies
-minimal Supabase role/auth stubs, reconstructs from empty, and checks service-role
-access, denied browser access, successful/idempotent publication, player replacement,
+It creates a disposable local cluster using a Unix socket with TCP disabled,
+reconstructs from empty, and checks successful/idempotent publication, player replacement,
 invalid identifiers, foreign-key rollback, and statement cancellation after game and
 boxscore updates. It deliberately accepts no database URL and never contacts deployed
-services. This validates PostgreSQL contracts, not Supabase Auth or PostgREST hosting.
+services. This validates PostgreSQL contracts independently of the hosting provider.
 
 The source-observation migration adds nullable `observed_at` columns to games,
 boxscores, and API snapshots, and updates atomic game publication to carry them.

@@ -16,18 +16,20 @@ Client -> Backend API -> Redis (hot) -> DB (warm fallback) -> NBA API (rare; mos
 - ML: pandas + scikit-learn training pipeline in `ml/` (experimental)
 
 ## Setup
-Prereqs: Node 20+, Python 3.11+. Redis is optional but recommended.
+Root dev prerequisites: Node 20+ and Docker Desktop (or another
+Docker-compatible engine with Compose).
 
-Install the frontend and backend dependencies using the setup steps below. Then,
-from the repository root, start the complete local app with:
+From the repository root, start the complete local app with:
 ```bash
 npm install
 npm run dev
 ```
-This starts the API at http://localhost:8080 and the frontend at
-http://localhost:3000. The command automatically uses `backend/.venv/bin/python`
-when that virtual environment exists; otherwise it uses `python` or `python3` from
-your shell.
+This starts Docker Compose services for the API and Redis, plus the frontend at
+http://localhost:3000. The API is available at http://localhost:8080 and reloads
+when files under `backend/` change. Docker Desktop (or another Docker-compatible
+engine with Compose) is required; on macOS, the command opens Docker Desktop and
+waits for it automatically. No host Python virtual environment is needed.
+Press Ctrl-C to stop the app, and use `npm run dev:down` to remove its containers.
 
 ### Backend API
 ```bash

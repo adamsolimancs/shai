@@ -1,6 +1,6 @@
 export default function Loading() {
   return (
-    <div className="space-y-12" aria-hidden="true">
+    <div className="loading-shell space-y-12" aria-hidden="true">
       <section className="space-y-6">
         <div className="space-y-3">
           <div className="skeleton-block h-4 w-48 rounded-full bg-white/10" />

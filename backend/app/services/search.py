@@ -8,9 +8,9 @@ from typing import Any, Literal
 
 from rapidfuzz import fuzz
 
+from ..database import DatabaseClient
 from ..resolvers import NameResolver
 from ..schemas import SearchSuggestion
-from ..supabase import SupabaseClient
 
 SearchEntity = Literal["player", "team"]
 
@@ -52,7 +52,7 @@ def _suggestion(
 
 
 async def fetch_search_suggestions(
-    supabase: SupabaseClient,
+    supabase: DatabaseClient,
     *,
     query: str,
     limit: int,

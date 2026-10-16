@@ -12,10 +12,10 @@ from app.cache_helpers import ObservedData, get_or_set_cache, source_observed_at
 from app.config import Settings
 from app.dependencies import (
     get_cache_backend,
+    get_database_client,
     get_nba_client,
     get_rate_limiter,
     get_settings_dependency,
-    get_supabase_client,
 )
 from app.rate_limit import RateLimiter
 from app.schemas import CacheMeta
@@ -125,7 +125,7 @@ async def test_games_http_distinguishes_empty_stale_and_unavailable(monkeypatch,
     app.dependency_overrides[get_rate_limiter] = lambda: RateLimiter(requests_per_minute=1000)
     app.dependency_overrides[get_settings_dependency] = lambda: settings
     app.dependency_overrides[get_cache_backend] = lambda: cache
-    app.dependency_overrides[get_supabase_client] = lambda: None if mode == "missing" else object()
+    app.dependency_overrides[get_database_client] = lambda: None if mode == "missing" else object()
     app.dependency_overrides[get_nba_client] = lambda: object()
 
     async def fetch_games(*_args, **_kwargs):

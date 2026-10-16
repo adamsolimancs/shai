@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes import authenticate_and_rate_limit, router
-from app.dependencies import get_resolver, get_supabase_client
+from app.dependencies import get_database_client, get_resolver
 from app.services.search import fetch_search_suggestions, search_resolver_catalog
 
 
@@ -85,7 +85,7 @@ def test_search_suggestions_endpoint_enforces_minimum_and_returns_envelope():
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[authenticate_and_rate_limit] = lambda: None
-    app.dependency_overrides[get_supabase_client] = lambda: None
+    app.dependency_overrides[get_database_client] = lambda: None
     app.dependency_overrides[get_resolver] = DummyResolver
 
     client = TestClient(app)

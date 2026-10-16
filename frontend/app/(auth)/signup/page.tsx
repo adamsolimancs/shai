@@ -1,8 +1,6 @@
 import Link from "next/link";
 
 import { auth, signIn, hasGoogleOAuthConfigured } from "@/auth";
-import { EmailSignUpForm } from "@/components/PasswordAuthForms";
-import { hasSupabasePasswordConfigured } from "@/lib/supabaseAuth";
 
 export default async function SignUpPage() {
   const session = await auth();
@@ -20,7 +18,7 @@ export default async function SignUpPage() {
         </p>
         <h1 className="mt-3 text-3xl font-semibold">Create your ShAI profile</h1>
         <p className="mt-2 text-sm text-[color:var(--color-app-foreground-muted)]">
-          Secure your spot for advanced scouting tools, alerting, and shared workspaces. Sign up with Google or create an email/password account.
+          Secure your spot for advanced scouting tools, alerting, and shared workspaces with Google.
         </p>
       </div>
 
@@ -49,13 +47,6 @@ export default async function SignUpPage() {
               to enable Google onboarding.
             </p>
           )}
-          <div className="relative py-4">
-            <span className="absolute inset-x-0 top-1/2 h-px bg-[var(--color-app-border)]" aria-hidden="true" />
-            <span className="relative mx-auto block w-max bg-[var(--color-app-background)] px-3 text-xs uppercase tracking-[0.3em] text-[color:var(--color-app-foreground-muted)]">
-              or
-            </span>
-          </div>
-          <EmailSignUpForm enabled={hasSupabasePasswordConfigured} />
         </div>
       )}
 

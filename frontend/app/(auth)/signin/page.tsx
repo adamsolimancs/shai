@@ -1,8 +1,6 @@
 import Link from "next/link";
 
 import { auth, signIn, hasGoogleOAuthConfigured } from "@/auth";
-import { EmailSignInForm } from "@/components/PasswordAuthForms";
-import { hasSupabasePasswordConfigured } from "@/lib/supabaseAuth";
 
 export default async function SignInPage() {
   const session = await auth();
@@ -20,7 +18,7 @@ export default async function SignInPage() {
         </p>
         <h1 className="mt-3 text-3xl font-semibold">Sign in to your locker room</h1>
         <p className="mt-2 text-sm text-[color:var(--color-app-foreground-muted)]">
-          Use Google OAuth or your email/password account with your email or username to sync watchlists, custom dashboards, and nightly alerts across devices.
+          Use Google to sync watchlists, custom dashboards, and nightly alerts across devices.
         </p>
       </div>
 
@@ -33,7 +31,7 @@ export default async function SignInPage() {
           .
         </div>
       ) : (
-        <div className="space-y-3">
+        <div>
           <form action={googleSignIn}>
             <button
               type="submit"
@@ -50,13 +48,6 @@ export default async function SignInPage() {
               <code className="text-[11px]">GOOGLE_CLIENT_SECRET</code> in <code className="text-[11px]">.env.local</code>.
             </p>
           )}
-          <div className="relative py-4">
-            <span className="absolute inset-x-0 top-1/2 h-px bg-[var(--color-app-border)]" aria-hidden="true" />
-            <span className="relative mx-auto block w-max bg-[var(--color-app-background)] px-3 text-xs uppercase tracking-[0.3em] text-[color:var(--color-app-foreground-muted)]">
-              or
-            </span>
-          </div>
-          <EmailSignInForm enabled={hasSupabasePasswordConfigured} />
         </div>
       )}
 
