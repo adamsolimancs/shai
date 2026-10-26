@@ -17,7 +17,7 @@ export default defineConfig({
     {
       command: 'npm run dev -- --hostname 127.0.0.1 --port 3100',
       url: 'http://127.0.0.1:3100/scores', reuseExistingServer: false, timeout: 120_000,
-      env: { NEXT_DIST_DIR: '.next-e2e', BACKEND_API_BASE_URL: 'http://127.0.0.1:18080', BACKEND_API_KEY: 'fixture-key', NBA_DEFAULT_SEASON: '2025-26', AUTH_SECRET: 'fixture-only-auth-secret', AUTH_TRUST_HOST: 'true' },
+      env: { NEXT_DIST_DIR: '.next-e2e', BACKEND_API_BASE_URL: 'http://127.0.0.1:18080', BACKEND_API_KEY: 'fixture-key', NBA_DEFAULT_SEASON: '2025-26', AUTH_SECRET: 'fixture-only-auth-secret', AUTH_TRUST_HOST: 'true', VERCEL: '', TRUSTED_CLIENT_IP_HEADER: 'x-fixture-client-ip' },
     },
   ],
 });

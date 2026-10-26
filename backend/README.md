@@ -50,7 +50,53 @@ ruff check .
 black --check .
 mypy app
 pytest
+python -m integration.rate_limit_redis  # disposable local Redis; requires redis-server/redis-cli
 ```
+
+## Production startup, health, and rate limits
+
+Set `BACKEND_ENV=production`, `DATABASE_URL`, and an explicit randomly generated
+`API_KEY` with at least 32 characters. The development key and missing database
+configuration fail validation before the API starts. Keep the frontend's
+`BACKEND_API_KEY` equal to this private service credential. Direct NBA requests
+remain disabled by default in production.
+
+Apply `202610250001_boxscore_snapshot_read.sql` **before** deploying this API.
+The private application role needs SELECT on the read tables and EXECUTE on
+`public.get_boxscore_snapshot(text)`. The function uses caller privileges; it does
+not grant access to anonymous/browser roles. If migrations and the app use
+different roles, grant EXECUTE explicitly to the app role. Missing functions or
+read permissions fail readiness. Do not run an empty-database baseline on an
+existing database.
+
+`/healthz` is process liveness. `/readiness` checks the database read schema,
+snapshot function, and cache concurrently, with a `READINESS_TIMEOUT_SECONDS`
+deadline per dependency (default 2). Production requires a working database read
+path and returns 503 when it fails. Redis failure is a 200 `degraded` response
+when the database works; startup fallback is labeled `memory_fallback`.
+Responses are not cacheable and never expose connection/error details. This is
+infrastructure readiness, not a claim that ingestion populated the tables or
+that every feed is fresh. Development can run without a configured database.
+
+Redis REST operations have a configurable `CACHE_REDIS_TIMEOUT_SECONDS` timeout
+(default 0.5) so an unavailable optional cache cannot consume the entire frontend
+deadline. Cache-first stats helpers tolerate read, stampede-lock, fill, and release
+errors and continue to the database; existing stale-cache fallback is preserved.
+
+`RATE_LIMIT_REQUESTS_PER_MINUTE` is the per-visitor budget (default 240; the example
+env uses 60). `RATE_LIMIT_SERVICE_REQUESTS_PER_MINUTE` is a separate aggregate
+budget per service key (default 6000). A rejected visitor does not spend the service
+budget. Redis counters/expiry are atomic, namespace-separated, and hashed so raw
+service credentials and peer IPs are not stored in counter keys.
+
+Authenticated service callers may supply `x-shai-visitor-id` as a 64-character
+lowercase hex digest. The Next frontend derives it from a trusted ingress IP and
+replaces caller-supplied identities. Without that header, the API limits the direct
+peer; raw forwarded-IP headers are ignored. API keys therefore remain trusted
+server credentials, never browser credentials. Visitors sharing a public IP share
+a budget. On Redis failure, limits fall back to per-process memory with expiring
+entries; this degraded mode cannot enforce a fleet-wide hard cap and resets across
+process restarts. Use shared Redis for normal multi-replica enforcement.
 
 ## Source observation contract
 

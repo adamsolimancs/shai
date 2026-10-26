@@ -1,7 +1,12 @@
 import "server-only";
 
+import { backendHeaders } from "@/lib/backendHeaders";
+
 const API_BASE_URL = process.env.BACKEND_API_BASE_URL || "http://localhost:8080";
 const API_KEY = process.env.BACKEND_API_KEY;
+const configuredTimeout = Number(process.env.BACKEND_API_TIMEOUT_MS);
+const TIMEOUT_MS =
+  Number.isFinite(configuredTimeout) && configuredTimeout > 0 ? configuredTimeout : 10_000;
 
 type Envelope<T> = {
   ok: true;
@@ -54,26 +59,46 @@ async function accountApiRequest<T>(path: string, init?: RequestInit): Promise<T
     throw buildApiError("BACKEND_API_KEY must be set to manage account records.");
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    ...init,
-    cache: "no-store",
-    headers: {
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
-      "x-api-key": API_KEY,
-      ...(init?.headers || {}),
-    },
-  });
+  const requestHeaders = await backendHeaders(init?.headers);
+  if (init?.body) requestHeaders.set("Content-Type", "application/json");
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort();
+  if (init?.signal?.aborted) controller.abort();
+  else init?.signal?.addEventListener("abort", abortFromCaller, { once: true });
+  let didTimeout = false;
+  const timeout = setTimeout(() => {
+    didTimeout = true;
+    controller.abort();
+  }, TIMEOUT_MS);
 
-  const payload = await response.json().catch(() => null);
-  if (!response.ok) {
-    throw buildApiError(readErrorMessage(payload), response.status);
+  try {
+    const response = await fetch(`${API_BASE_URL}${path}`, {
+      ...init,
+      signal: controller.signal,
+      cache: "no-store",
+      headers: requestHeaders,
+    });
+
+    const payload = await response.json().catch((error: unknown) => {
+      if (controller.signal.aborted) throw error;
+      return null;
+    });
+    if (!response.ok) {
+      throw buildApiError(readErrorMessage(payload), response.status);
+    }
+
+    if (payload && typeof payload === "object" && "ok" in payload) {
+      return (payload as Envelope<T>).data;
+    }
+
+    return payload as T;
+  } catch (error) {
+    if (didTimeout) throw buildApiError("Account request timed out. Please try again.");
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    init?.signal?.removeEventListener("abort", abortFromCaller);
   }
-
-  if (payload && typeof payload === "object" && "ok" in payload) {
-    return (payload as Envelope<T>).data;
-  }
-
-  return payload as T;
 }
 
 export async function findUserAccountByUsername(username: string): Promise<UserAccountRecord | null> {

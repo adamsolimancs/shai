@@ -15,6 +15,7 @@ from app.dependencies import (
     get_database_client,
     get_nba_client,
     get_rate_limiter,
+    get_service_rate_limiter,
     get_settings_dependency,
 )
 from app.rate_limit import RateLimiter
@@ -116,13 +117,22 @@ async def test_upstream_stale_flag_is_not_laundered_by_outer_cache():
 @pytest.mark.parametrize("single_day", [False, True])
 @pytest.mark.parametrize("mode", ["empty", "old", "failed", "missing"])
 async def test_games_http_distinguishes_empty_stale_and_unavailable(monkeypatch, single_day, mode):
-    settings = Settings(_env_file=None, environment="production", allow_nba_api_in_production=False)
+    settings = Settings(
+        _env_file=None,
+        environment="production",
+        api_key="a" * 32,
+        database_url="postgresql://localhost/test",
+        allow_nba_api_in_production=False,
+    )
     cache = InMemoryCacheBackend(settings)
     app = FastAPI()
     app.state.redis = None
     app.include_router(routes.router)
     app.dependency_overrides[routes.require_api_key] = lambda: "fixture-key"
     app.dependency_overrides[get_rate_limiter] = lambda: RateLimiter(requests_per_minute=1000)
+    app.dependency_overrides[get_service_rate_limiter] = lambda: RateLimiter(
+        requests_per_minute=1000
+    )
     app.dependency_overrides[get_settings_dependency] = lambda: settings
     app.dependency_overrides[get_cache_backend] = lambda: cache
     app.dependency_overrides[get_database_client] = lambda: None if mode == "missing" else object()

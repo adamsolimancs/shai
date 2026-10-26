@@ -746,7 +746,7 @@ async def fetch_games(
         filters["date"] = f"gte.{date_from.isoformat()}"
     elif date_to:
         filters["date"] = f"lte.{date_to.isoformat()}"
-    rows = await supabase.select("games", filters=filters, order="date.asc")
+    rows = await supabase.select_games(filters=filters)
     if date_from or date_to:
         filtered_rows: list[dict[str, Any]] = []
         for row in rows:
@@ -965,23 +965,15 @@ def _build_boxscore_payload(
 
 
 async def fetch_boxscore(supabase: SupabaseClient, game_id: str) -> dict[str, Any] | None:
-    try:
-        snapshot = await supabase.rpc("get_boxscore_snapshot", {"p_game_id": game_id})
-    except Exception:
-        snapshot = None
-    if isinstance(snapshot, dict):
-        row = snapshot.get("boxscore")
-        if isinstance(row, dict):
-            players = snapshot.get("players")
-            return _build_boxscore_payload(
-                row,
-                players if isinstance(players, list) else [],
-            )
-
-    row = await supabase.select_one("boxscores", filters={"game_id": f"eq.{game_id}"})
-    if not row:
+    snapshot = await supabase.rpc("get_boxscore_snapshot", {"p_game_id": game_id})
+    if snapshot is None:
         return None
-    players = await supabase.select("boxscore_players", filters={"game_id": f"eq.{game_id}"})
+    if not isinstance(snapshot, dict) or not isinstance(snapshot.get("boxscore"), dict):
+        raise ValueError("Invalid boxscore snapshot response")
+    row = snapshot["boxscore"]
+    players = snapshot.get("players")
+    if not isinstance(players, list):
+        raise ValueError("Invalid boxscore snapshot players")
     return _build_boxscore_payload(row, players)
 
 

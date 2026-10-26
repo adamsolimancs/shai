@@ -3,18 +3,21 @@ import { boxscore, career, game, observedAt, suggestions, team } from './fixture
 
 let state = {};
 let unknown = [];
+let visitors = [];
 const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1:18080');
-  const send = (status, value) => {
-    res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+  const send = (status, value, headers = {}) => {
+    res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers });
     res.end(JSON.stringify(value));
   };
   if (url.pathname === '/health') return send(200, { ok: true });
   if (url.pathname === '/__scenario' && req.method === 'POST') {
     let body = ''; for await (const chunk of req) body += chunk;
-    state = JSON.parse(body); unknown = []; return send(200, state);
+    state = JSON.parse(body); unknown = []; visitors = []; return send(200, state);
   }
   if (url.pathname === '/__unknown') return send(200, unknown);
+  if (url.pathname === '/__visitors') return send(200, visitors);
+  visitors.push({ path: url.pathname, visitor: req.headers['x-shai-visitor-id'] ?? null });
   const envelope = (data, mode) => mode === 'failed'
     ? send(503, { ok: false, error: { code: 'UNAVAILABLE', message: 'Fixture source unavailable' } })
     : send(200, { ok: true, data, meta: { source: 'db', as_of: mode === 'unknown' ? null : observedAt, stale: mode === 'stale' || mode === 'unknown' } });
@@ -34,10 +37,24 @@ const server = createServer(async (req, res) => {
       stat_category: category,
     }], 'fresh');
   }
-  if (path === '/v1/search/suggestions') return envelope(state.search === 'empty' ? [] : suggestions, state.search);
+  if (path === '/v1/search/suggestions') {
+    if (state.search === 'limited') return send(429, { ok: false, error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many requests.' } }, { 'Retry-After': '30' });
+    if (state.search === 'stalled') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.flushHeaders();
+      const timer = setTimeout(() => res.end(JSON.stringify({ ok: true, data: suggestions })), 6500);
+      res.on('close', () => clearTimeout(timer));
+      return;
+    }
+    return envelope(state.search === 'empty' ? [] : suggestions, state.search);
+  }
   if (path === '/v1/games') {
     const mode = url.searchParams.has('date_from') ? (state.tonight ?? state.scores) : state.scores;
     const data = mode === 'empty' ? [] : [{ ...game, ...(url.searchParams.has('date_from') ? { date: url.searchParams.get('date_from'), start_time: `${url.searchParams.get('date_from')}T23:30:00Z`, status: 'Scheduled', home_team_score: 0, away_team_score: 0 } : {}) }];
+    if (mode === 'live') {
+      data[0].date = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+      data[0].status = 'Q3 04:12';
+    }
     return envelope(data, mode);
   }
   if (path.startsWith('/v1/boxscores/')) {

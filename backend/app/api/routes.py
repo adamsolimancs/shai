@@ -27,6 +27,7 @@ from ..dependencies import (
     get_news_client,
     get_rate_limiter,
     get_resolver,
+    get_service_rate_limiter,
     get_settings_dependency,
 )
 from ..rate_limit import RateLimiter
@@ -108,6 +109,7 @@ from ..utils import paginate, parse_date, validate_date_range, validate_season
 from .responses import success
 
 RateLimiterDep = Annotated[RateLimiter, Depends(get_rate_limiter)]
+ServiceRateLimiterDep = Annotated[RateLimiter, Depends(get_service_rate_limiter)]
 ApiKeyDep = Annotated[str, Depends(require_api_key)]
 NBAClientDep = Annotated[NBAStatsClient, Depends(get_nba_client)]
 NewsClientDep = Annotated[NewsService, Depends(get_news_client)]
@@ -121,9 +123,18 @@ async def authenticate_and_rate_limit(
     request: Request,
     rate_limiter: RateLimiterDep,
     api_key: ApiKeyDep,
+    service_rate_limiter: ServiceRateLimiterDep,
 ) -> None:
-    identifier = api_key or (request.client.host if request.client else "anonymous")
+    # Only authenticated service callers can supply this opaque identity. The
+    # frontend replaces client input with an HMAC of a trusted ingress IP.
+    visitor = request.headers.get("x-shai-visitor-id", "")
+    identifier = (
+        f"visitor:{visitor}"
+        if re.fullmatch(r"[0-9a-f]{64}", visitor)
+        else f"peer:{request.client.host if request.client else 'unknown'}"
+    )
     await rate_limiter.check(identifier)
+    await service_rate_limiter.check(api_key)
 
 
 router = APIRouter(prefix="/v1", dependencies=[Depends(authenticate_and_rate_limit)])

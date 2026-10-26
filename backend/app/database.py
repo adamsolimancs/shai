@@ -182,6 +182,17 @@ class DatabaseClient:
         rows = await self.select(table, filters=filters, limit=1)
         return rows[0] if rows else None
 
+    async def select_games(self, *, filters: dict[str, str]) -> list[dict[str, Any]]:
+        """Read scores and their published status from one statement snapshot."""
+        args: list[Any] = []
+        query = (
+            f"SELECT g.*, (SELECT b.status FROM {self._table('boxscores')} b "
+            f"WHERE b.game_id=g.game_id) AS status FROM {self._table('games')} g"
+        )
+        query += self._where(filters, args) + ' ORDER BY "date" ASC'
+        pool = await self._get_pool()
+        return [_row_dict(row) for row in await pool.fetch(query, *args)]
+
     async def select_all(
         self,
         table: str,
@@ -276,3 +287,10 @@ class DatabaseClient:
         if self._pool is not None:
             await self._pool.close()
             self._pool = None
+
+    async def check_readiness(self) -> None:
+        """Check read privileges/schema and the required snapshot function without scanning data."""
+        pool = await self._get_pool()
+        tables = ("teams", "players", "games", "api_snapshots", "user_accounts")
+        await pool.fetch("SELECT 1 FROM " + ", ".join(self._table(t) for t in tables) + " LIMIT 0")
+        await pool.fetchval(f'SELECT "{self._schema}".get_boxscore_snapshot(NULL::text)')

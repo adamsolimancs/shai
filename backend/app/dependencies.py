@@ -45,3 +45,7 @@ def get_resolver(request: Request) -> NameResolver:
 
 def get_rate_limiter(request: Request) -> RateLimiter:
     return cast(RateLimiter, request.app.state.rate_limiter)
+
+
+def get_service_rate_limiter(request: Request) -> RateLimiter:
+    return cast(RateLimiter, request.app.state.service_rate_limiter)

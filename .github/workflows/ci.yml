@@ -34,6 +34,7 @@ jobs:
               - '.github/workflows/ci.yml'
             workers:
               - 'workers/**'
+              - '.github/workflows/ingest.yml'
               - '.github/workflows/ci.yml'
 
   backend:
@@ -65,6 +66,12 @@ jobs:
 
       - name: Pytest
         run: pytest
+
+      - name: Install local Redis for rate-limit integration
+        run: sudo apt-get update && sudo apt-get install -y redis-server redis-tools
+
+      - name: Atomic Redis visitor and service rate limits
+        run: python -m integration.rate_limit_redis
 
   frontend:
     needs: changes
@@ -102,7 +109,7 @@ jobs:
           BACKEND_API_BASE_URL: http://localhost:8080
           BACKEND_API_KEY: test-key
           BACKEND_API_TIMEOUT_MS: 10000
-          NBA_DEFAULT_SEASON: 2025-26
+          NBA_DEFAULT_SEASON: 2026-27
           AUTH_SECRET: test-auth-secret
         run: npm run build
 
@@ -128,8 +135,13 @@ jobs:
       - name: Worker tests
         run: npm run test
 
-      - name: Install local Redis for lease integration
-        run: sudo apt-get update && sudo apt-get install -y redis-server redis-tools
+      - name: Install local services for worker integration
+        run: sudo apt-get update && sudo apt-get install -y redis-server redis-tools postgresql postgresql-contrib
 
       - name: Real Redis lease integration
         run: npm run test:lease-integration
+
+      - name: Empty-database resumable bootstrap integration
+        run: |
+          export PATH="$(pg_config --bindir):$PATH"
+          npm run test:bootstrap-integration

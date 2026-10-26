@@ -66,3 +66,14 @@ freshness. New payloads without observation evidence clear that evidence rather
 than attaching an old timestamp to different data. The local integration tests
 also verify observation preservation across repeated publication and nulls for
 legacy payloads.
+
+Apply `202610250001_boxscore_snapshot_read.sql` before deploying the API's
+consistent box-score reader. `get_boxscore_snapshot(text)` uses a single STABLE SQL
+statement to return the parent and ordered players from the same MVCC snapshot,
+including an empty player array or SQL NULL for an absent box score. The API has
+no separate-table read fallback. The function is SECURITY INVOKER with PUBLIC
+execution revoked; grant EXECUTE to your private app role if it differs from the
+migration owner (`service_role` is granted when present). Readiness exercises this
+function and table SELECT privileges without requiring populated data. The local
+suite tests reads during uncommitted and concurrent publication, empty/missing
+snapshots, and a missing required function.

@@ -184,7 +184,12 @@ async def test_get_latest_prefers_db_before_upstream(monkeypatch: pytest.MonkeyP
 
 @pytest.mark.asyncio
 async def test_get_latest_returns_empty_in_production_without_cache_or_db():
-    settings = Settings(environment="production")
+    settings = Settings(
+        _env_file=None,
+        environment="production",
+        api_key="a" * 32,
+        database_url="postgresql://localhost/test",
+    )
     service, _ = _service(settings)
 
     articles, meta = await service.get_latest()

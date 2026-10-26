@@ -5,6 +5,9 @@
   "type": "commonjs",
   "scripts": {
     "test": "node --test",
+    "bootstrap": "node bootstrap.js",
+    "check:sources": "node bootstrap.js --check-sources",
+    "test:bootstrap-integration": "python3 integration/bootstrap_db.py",
     "test:lease-integration": "node integration/cron-lease.cjs"
   },
   "dependencies": {

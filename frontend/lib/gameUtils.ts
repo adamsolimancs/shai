@@ -13,6 +13,7 @@ export function isFinalGame(
   awayScore?: number | null,
 ): boolean {
   if (isFinalStatus(status)) return true;
+  if (status?.trim()) return false;
   if (!dateValue) return false;
   const safeHome = typeof homeScore === "number" ? homeScore : 0;
   const safeAway = typeof awayScore === "number" ? awayScore : 0;

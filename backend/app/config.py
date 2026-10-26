@@ -5,14 +5,16 @@ from __future__ import annotations
 from collections.abc import Sequence
 from functools import lru_cache
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Central configuration for the NBA data API."""
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", hide_input_in_errors=True
+    )
 
     api_key: str = Field(
         "dev-secret-key",
@@ -37,6 +39,9 @@ class Settings(BaseSettings):
         description="How long stale cache copies live.",
     )
     rate_limit_requests_per_minute: int = Field(240, ge=1)
+    rate_limit_service_requests_per_minute: int = Field(6000, ge=1)
+    readiness_timeout_seconds: float = Field(2.0, ge=0.1, le=30)
+    cache_redis_timeout_seconds: float = Field(0.5, ge=0.05, le=5)
     cors_allow_origins: str = Field(
         "*",
         description="Comma-separated origins or * for all.",
@@ -98,6 +103,25 @@ class Settings(BaseSettings):
     cache_key_prefix: str = Field("nba:serve")
     admin_api_key: str | None = None
     log_format: str = Field("pretty", validation_alias=AliasChoices("LOG_FORMAT"))
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment.strip().lower() in {"production", "prod"}
+
+    @model_validator(mode="after")
+    def validate_production(self) -> Settings:
+        if self.is_production:
+            if len(self.api_key.strip()) < 32 or self.api_key.strip().lower() in {
+                "dev-secret-key",
+                "replace-me",
+                "change-me",
+            }:
+                raise ValueError(
+                    "Production API_KEY must be an explicit secret of at least 32 characters"
+                )
+            if not self.database_url or not self.database_url.strip():
+                raise ValueError("Production DATABASE_URL is required")
+        return self
 
     @property
     def nba_api_calls_allowed(self) -> bool:

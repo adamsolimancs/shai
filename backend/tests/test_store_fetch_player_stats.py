@@ -52,10 +52,15 @@ class DummySupabase:
 
 
 class DummySupabaseGames:
-    def __init__(self, *, games, teams=None):
+    def __init__(self, *, games, teams=None, statuses=None):
         self._games = games
         self._teams = teams or {}
         self.last_games_filters = None
+        self._statuses = statuses or {}
+
+    async def select_games(self, *, filters):
+        rows = await self.select("games", filters=filters)
+        return [{**row, "status": self._statuses.get(row["game_id"])} for row in rows]
 
     async def select(self, table: str, **kwargs):
         if table == "games":
@@ -217,6 +222,24 @@ async def test_fetch_games_team_filter_handles_string_team_ids():
     )
 
     assert [row["game_id"] for row in rows] == ["game_1"]
+
+
+@pytest.mark.asyncio
+async def test_games_preserve_explicit_published_live_status():
+    database = DummySupabaseGames(
+        games=[{"game_id": "live", "date": "2026-10-25"}],
+        statuses={"live": "Q3 04:12"},
+    )
+    rows = await fetch_games(
+        database,
+        season="2026-27",
+        date_from=None,
+        date_to=None,
+        team_id=None,
+        team_abbr=None,
+        per_team=False,
+    )
+    assert rows[0]["status"] == "Q3 04:12"
 
 
 @pytest.mark.asyncio

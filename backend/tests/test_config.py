@@ -31,7 +31,9 @@ def test_hot_cache_refresh_disabled_by_default():
 
 def test_backend_env_alias_controls_environment(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("BACKEND_ENV", "production")
-    settings = Settings()
+    settings = Settings(
+        _env_file=None, api_key="a" * 32, database_url="postgresql://localhost/test"
+    )
     assert settings.environment == "production"
 
 
@@ -44,7 +46,12 @@ def test_upstash_redis_aliases(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_nba_api_calls_disabled_in_production_by_default():
-    settings = Settings(environment="production")
+    settings = Settings(
+        _env_file=None,
+        environment="production",
+        api_key="a" * 32,
+        database_url="postgresql://localhost/test",
+    )
     assert settings.nba_api_calls_allowed is False
 
 
@@ -58,3 +65,33 @@ def test_get_settings_cached():
     first = get_settings()
     second = get_settings()
     assert first is second
+
+
+@pytest.mark.parametrize("environment", ["production", "prod", " Production "])
+@pytest.mark.parametrize("key", ["", "dev-secret-key", "replace-me", "short"])
+def test_production_rejects_unsafe_keys(environment, key):
+    with pytest.raises(ValueError, match="Production API_KEY"):
+        Settings(
+            _env_file=None, environment=environment, api_key=key, database_url="postgresql://db/app"
+        )
+
+
+def test_production_rejects_implicit_development_key():
+    with pytest.raises(ValueError, match="Production API_KEY"):
+        Settings(_env_file=None, environment="production", database_url="postgresql://db/app")
+
+
+def test_production_requires_database():
+    with pytest.raises(ValueError, match="Production DATABASE_URL"):
+        Settings(_env_file=None, environment="production", api_key="a" * 32, database_url=None)
+
+
+def test_production_validation_messages_do_not_log_credentials():
+    with pytest.raises(ValueError) as error:
+        Settings(
+            _env_file=None,
+            environment="production",
+            api_key="never-log-this",
+            database_url="postgresql://user:never-log-password@db/app",
+        )
+    assert "never-log" not in str(error.value)

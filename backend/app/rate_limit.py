@@ -3,11 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import math
 import time
 
 from fastapi import HTTPException, status
 
 from .cache import RedisClientProtocol
+
+WINDOW_SCRIPT = """
+local count = redis.call('INCR', KEYS[1])
+local ttl = redis.call('TTL', KEYS[1])
+if ttl < 0 then
+  redis.call('EXPIRE', KEYS[1], 60)
+  ttl = 60
+end
+return {count, ttl}
+"""
 
 
 class RateLimitExceeded(HTTPException):
@@ -26,13 +38,24 @@ class RateLimitExceeded(HTTPException):
 
 
 class RateLimiter:
-    """Performs per-API-key rate limiting using Redis when available."""
+    """Fixed-window budgets with atomic Redis updates and a local outage fallback."""
 
-    def __init__(self, requests_per_minute: int, redis_client: RedisClientProtocol | None = None):
+    def __init__(
+        self,
+        requests_per_minute: int,
+        redis_client: RedisClientProtocol | None = None,
+        *,
+        namespace: str = "nba:rl",
+    ):
         self.requests_per_minute = requests_per_minute
         self.redis = redis_client
         self._hits: dict[str, tuple[int, float]] = {}
         self._lock = asyncio.Lock()
+        self.namespace = namespace
+        self._last_cleanup = 0.0
+
+    def _key(self, identifier: str) -> str:
+        return f"{self.namespace}:{hashlib.sha256(identifier.encode()).hexdigest()}"
 
     async def check(self, identifier: str) -> None:
         """Raise if the identifier exceeded the limit."""
@@ -45,15 +68,11 @@ class RateLimiter:
     async def _check_redis(self, identifier: str) -> None:
         if not self.redis:  # pragma: no cover - guarded at runtime
             return
-        key = f"rl:{identifier}"
+        key = self._key(identifier)
         ttl_seconds = 60
         try:
-            count = await self.redis.incr(key)
-            if count == 1:
-                await self.redis.expire(key, ttl_seconds)
-            else:
-                ttl = await self.redis.ttl(key)
-                ttl_seconds = ttl if ttl > 0 else ttl_seconds
+            count, ttl = await self.redis.eval(WINDOW_SCRIPT, 1, key)
+            ttl_seconds = max(int(ttl), 1)
         except Exception:
             # fallback to in-memory tracking if redis hiccups
             await self._check_memory(identifier)
@@ -64,13 +83,17 @@ class RateLimiter:
     async def _check_memory(self, identifier: str) -> None:
         ttl_seconds = 60
         async with self._lock:
-            count, reset_at = self._hits.get(identifier, (0, time.time() + ttl_seconds))
-            now = time.time()
-            if now > reset_at:
+            now = time.monotonic()
+            if now - self._last_cleanup >= ttl_seconds:
+                self._hits = {key: hit for key, hit in self._hits.items() if hit[1] > now}
+                self._last_cleanup = now
+            key = self._key(identifier)
+            count, reset_at = self._hits.get(key, (0, now + ttl_seconds))
+            if now >= reset_at:
                 count = 0
                 reset_at = now + ttl_seconds
             count += 1
-            self._hits[identifier] = (count, reset_at)
+            self._hits[key] = (count, reset_at)
             if count > self.requests_per_minute:
-                retry_after = max(int(reset_at - now), 1)
+                retry_after = max(math.ceil(reset_at - now), 1)
                 raise RateLimitExceeded(retry_after)

@@ -41,8 +41,16 @@ async def read_cache_as_of(
     stale: bool = False,
 ) -> datetime | None:
     metadata_key = f"{key}{CACHE_METADATA_SUFFIX}"
-    payload = await (cache.get_stale(metadata_key) if stale else cache.get(metadata_key))
+    payload = await _read_optional_cache(cache, metadata_key, stale=stale)
     return source_observed_at(payload)
+
+
+async def _read_optional_cache(cache: CacheBackend, key: str, *, stale: bool = False) -> Any:
+    try:
+        return await (cache.get_stale(key) if stale else cache.get(key))
+    except Exception:
+        logger.warning("cache read unavailable; continuing to primary data source")
+        return None
 
 
 def source_observed_at(data: Any) -> datetime | None:
@@ -81,14 +89,21 @@ async def _acquire_lock(
 ) -> bool:
     if not redis_client:
         return True
-    result = await redis_client.set(key, "1", nx=True, px=ttl_ms)
-    return bool(result)
+    try:
+        result = await redis_client.set(key, "1", nx=True, px=ttl_ms)
+        return bool(result)
+    except Exception:
+        logger.warning("cache lock unavailable; continuing without stampede protection")
+        return False
 
 
 async def _release_lock(redis_client: RedisClientProtocol | None, key: str) -> None:
     if not redis_client:
         return
-    await redis_client.delete(key)
+    try:
+        await redis_client.delete(key)
+    except Exception:
+        logger.warning("cache lock release unavailable; allowing lock to expire")
 
 
 async def get_or_set_cache(
@@ -104,7 +119,7 @@ async def get_or_set_cache(
 ) -> tuple[Any, CacheMeta]:
     start = time.perf_counter()
     if not nocache:
-        cached = await cache.get(key)
+        cached = await _read_optional_cache(cache, key)
         if cached is not None:
             logger.info("cache download", extra={"result": "hit"})
             as_of = await read_cache_as_of(cache, key) or source_observed_at(cached)
@@ -118,7 +133,7 @@ async def get_or_set_cache(
     acquired = await _acquire_lock(redis_client, lock_key, lock_ttl_ms)
     if not acquired:
         await asyncio.sleep(0.1)
-        cached = await cache.get(key)
+        cached = await _read_optional_cache(cache, key)
         if cached is not None:
             logger.info("cache download", extra={"result": "hit_after_wait"})
             as_of = await read_cache_as_of(cache, key) or source_observed_at(cached)
@@ -132,7 +147,7 @@ async def get_or_set_cache(
         data = await fetcher()
     except Exception:
         if allow_stale and not nocache:
-            stale = await cache.get_stale(key)
+            stale = await _read_optional_cache(cache, key, stale=True)
             if stale is not None:
                 logger.warning("cache download", extra={"result": "stale"})
                 return stale, CacheMeta(
@@ -153,8 +168,11 @@ async def get_or_set_cache(
         as_of = source_observed_at(data)
     resolved_ttl = _resolve_ttl(ttl, data)
     if not nocache and not source_stale:
-        await cache.set(key, data, resolved_ttl)
-        await write_cache_as_of(cache, key, as_of=as_of, ttl=resolved_ttl)
+        try:
+            await cache.set(key, data, resolved_ttl)
+            await write_cache_as_of(cache, key, as_of=as_of, ttl=resolved_ttl)
+        except Exception:
+            logger.warning("cache fill unavailable; returning primary data")
     elapsed_ms = int((time.perf_counter() - start) * 1000)
     logger.info("cache upload", extra={"result": "miss", "latency_ms": elapsed_ms})
     return data, CacheMeta(

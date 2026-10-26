@@ -159,7 +159,13 @@ async def test_missing_boxscore_is_distinct_from_database_failure(
 ):
     from fastapi import HTTPException
 
-    settings = Settings(_env_file=None, environment="production", allow_nba_api_in_production=False)
+    settings = Settings(
+        _env_file=None,
+        environment="production",
+        api_key="a" * 32,
+        database_url="postgresql://localhost/test",
+        allow_nba_api_in_production=False,
+    )
 
     async def fetch_database(_supabase, _game_id):
         if database_failed:

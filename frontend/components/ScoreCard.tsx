@@ -52,6 +52,7 @@ export default function ScoreCard({
       <span className={`${isCompact ? "text-xs sm:text-sm" : "text-sm sm:text-base"} font-semibold normal-case tracking-normal text-[color:var(--color-app-foreground)]`}>
         {timeLabel ?? "Tipoff TBA"}
       </span>
+      {status ? <span className="font-semibold text-[color:var(--color-app-foreground)]">{status}</span> : null}
       {locationLabel ? (
         <p
           className={`${isCompact ? "text-[0.55rem] sm:text-[0.6rem]" : "text-[0.6rem] sm:text-[0.65rem]"} max-w-[12rem] truncate font-medium uppercase tracking-[0.2em] text-[color:var(--color-app-foreground-muted)] sm:max-w-[16rem]`}
