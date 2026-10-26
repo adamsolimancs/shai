@@ -104,12 +104,12 @@ def main():
     import sys
     if sys.argv[1:] not in ([], ["--network-only"]):
         raise ValueError("Usage: check-live-sources.py [--network-only]")
-    network_ok = check_network()
     if "--network-only" in sys.argv:
-        return 0 if network_ok else 1
+        return 0 if check_network() else 1
     game_id = os.environ.get("NBA_PROBE_GAME_ID", "0022600118")
     if not game_id.isdigit() or len(game_id) != 10 or not game_id.startswith("00226"):
         raise ValueError("NBA_PROBE_GAME_ID must identify a 2026-27 regular-season game")
+    check_network()
     results = {}
     for name, fetch, validate in [
         ("live_scoreboard", lambda: scoreboard.ScoreBoard(timeout=15).get_dict(),

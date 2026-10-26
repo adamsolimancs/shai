@@ -14,6 +14,14 @@ spec.loader.exec_module(module)
 
 
 class SourceNetworkTest(unittest.TestCase):
+    def test_invalid_game_id_is_rejected_before_network_requests(self):
+        with mock.patch.dict(module.os.environ, {"NBA_PROBE_GAME_ID": "invalid"}), \
+                mock.patch("sys.argv", ["check-live-sources.py"]), \
+                mock.patch.object(module, "check_network") as network:
+            with self.assertRaises(ValueError):
+                module.main()
+            network.assert_not_called()
+
     def test_completed_tls_with_no_http_response_is_distinct_from_dns_failure(self):
         result = module.summarize_network(
             {"time_namelookup": .01, "time_connect": .03, "time_appconnect": .08,
