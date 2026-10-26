@@ -3,7 +3,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { probe } = require("../check-hosted-backend");
 
-async function run({ healthStatus = 200, source = "api", hit = false, stale = false, observed = "2026-10-26T18:00:00Z", baseUrl = "https://backend.example.test" } = {}) {
+async function run({ healthStatus = 200, gamesStatus = 200, source = "api", hit = false, stale = false, observed = "2026-10-26T18:00:00Z", baseUrl = "https://backend.example.test" } = {}) {
   const calls = [], logs = [];
   const result = await probe({ baseUrl, apiKey: "private-key", now: () => Date.parse("2026-10-26T18:00:00Z"),
     log: row => logs.push(structuredClone(row)), fetchImpl: async (url, options) => {
@@ -11,6 +11,7 @@ async function run({ healthStatus = 200, source = "api", hit = false, stale = fa
       if (url.pathname === "/healthz") return Response.json({ status: "ok" }, { status: healthStatus });
       if (url.pathname === "/v1/meta") return Response.json({ ok: true, data: { service: "nba-data-api" } });
       assert.equal(url.pathname, "/v1/games");
+      if (gamesStatus !== 200) return Response.json({ error: { code: "UPSTREAM_ERROR", message: "private-key" } }, { status: gamesStatus });
       return Response.json({ ok: true, data: [{ game_id: "0022600001", team_id: 1610612737 }],
         meta: { source, stale, as_of: observed, cache: { hit, stale } } });
     } });
@@ -33,6 +34,13 @@ test("unavailable backend stops before authenticated requests", async () => {
   assert.equal(result.error, "http_404");
   assert.equal(calls.length, 1);
   assert.equal(result.fresh_nba_verified, false);
+});
+
+test("retains a known upstream error code without logging arbitrary error details", async () => {
+  const { result, logs } = await run({ gamesStatus: 502 });
+  assert.equal(result.error, "http_502");
+  assert.equal(result.checks.at(-1).backend_error_code, "UPSTREAM_ERROR");
+  assert.ok(!JSON.stringify({ result, logs }).includes("private-key"));
 });
 
 for (const options of [{ source: "db" }, { source: "redis" }, { hit: true }, { stale: true }, { observed: null }, { observed: "2026-10-25T18:00:00Z" }]) {

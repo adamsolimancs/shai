@@ -25,7 +25,15 @@ async function probe({ baseUrl, apiKey, fetchImpl = fetch, now = () => Date.now(
           headers: authenticated ? { "x-api-key": apiKey.trim() } : {},
         });
         row.http_status = response.status;
-        if (!response.ok) fail(`http_${response.status}`);
+        if (!response.ok) {
+          // Retain only known service error codes; never echo arbitrary response text.
+          try {
+            const errorBody = await readJson(response);
+            const code = errorBody?.error?.code ?? errorBody?.detail?.code;
+            if (["UPSTREAM_ERROR", "UNAUTHORIZED", "CONFIG_ERROR", "DB_UNAVAILABLE", "RATE_LIMITED"].includes(code)) row.backend_error_code = code;
+          } catch { /* HTTP failure is still conclusive without a JSON error body. */ }
+          fail(`http_${response.status}`);
+        }
         const body = await readJson(response);
         row.status = "passed";
         return body;
