@@ -79,6 +79,18 @@ The tracked GitHub workflow invokes the bootstrap every five minutes during
 which stages actually fetch. This is periodic refresh, not second-by-second live
 streaming. Workflow changes affect production scheduling only after publication.
 
+Manual runs always bypass the clock gate. Set the boolean `refresh` input to
+force every stage, or `probe_only` to check NBA access without touching Neon.
+Manual diagnostics include nba_api's live CDN scoreboard/box score and a stats
+scoreboard probe with a 60-second deadline. Source-check failures fail the run;
+successful static directory writes do not imply live data access.
+
+On October 26, 2026, GitHub-hosted stats requests timed out while the same sources
+worked locally. The new workflow is pushed to `adam`; recurring runs still use
+`main`. See [PIPELINE.md](../PIPELINE.md) for run links and actual database freshness.
+Choose an ingestion host with confirmed source access or a supported data feed
+before relying on this schedule. Adding workers does not fix source reachability.
+
 ## Bootstrap validation
 
 ```sh

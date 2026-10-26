@@ -42,13 +42,51 @@ required Scope parameter documented by nba_api. The default pipeline excludes
 that optional enrichment; `--include-leaders` retains explicit failure reporting.
 No synthetic/derived official rankings were inserted.
 
-These checks establish access from this machine, not from every cloud network or
-GitHub-hosted runner. The scheduled host must still be observed after publication;
-source access remains best effort. [nba_api request guidance](https://github.com/swar/nba_api/blob/master/docs/nba_api/stats/examples.md)
+These local checks do not establish access from a cloud network. GitHub-hosted
+runner verification is recorded below. [nba_api request guidance](https://github.com/swar/nba_api/blob/master/docs/nba_api/stats/examples.md)
+
+## GitHub Actions verification
+
+The implementation was committed and pushed to `adam` (`b92f50d`, with source
+diagnostics added in `0e46274` and `4fa491a`). Manual runs bypass the time gate;
+the `refresh` boolean forces publication attempts despite recent checkpoints.
+The `probe_only` boolean performs read-only source checks without database writes.
+
+- [Forced refresh run](https://github.com/adamsolimancs/shai/actions/runs/40267945509)
+  reached the correct production Neon branch, published 30 static teams and 530
+  active directory identities, then failed every requested network-backed stage.
+  Games, scoreboard, standings, player/team stats and all seven due recent
+  box-score requests timed out after ten seconds. The separate source probe also
+  failed. Static directory success is not evidence of live NBA HTTP access.
+- [Resume/CDN verification run](https://github.com/adamsolimancs/shai/actions/runs/40268166280)
+  retried the failed stages and tested nba_api's separate live CDN clients.
+  It also failed: both live scoreboard and box score returned responses that
+  nba_api could not parse as JSON (`Expecting value: line 1 column 1`).
+- [Read-only longer-timeout probe](https://github.com/adamsolimancs/shai/actions/runs/40268413092)
+  also failed. Both live CDN sources again returned non-JSON responses; the
+  stats scoreboard request timed out after 60 seconds (60,193 ms measured).
+  The worker step was skipped and this probe did not modify the database.
+
+After the write attempts, counts remained 30 teams, 5,184 player identities,
+52 games, 15 box scores, 523 player lines, 30 standings rows and 400 player-stat
+rows. Game observations remained at `2026-10-26T04:01:07.945Z` and box-score
+observations at `2026-10-26T03:52:52.773Z`, from the earlier successful local
+import. Failed requests did not advance those observations or replace good data.
+Actual local API HTTP requests against Neon still returned 200 for games,
+standings, player/team stats and a recent box score, with NBA fetching disabled.
+
+GitHub-hosted NBA access is currently an operational blocker, not a database or
+checkpoint failure. The nba_api maintainers document that stats.nba.com often
+does not respond to cloud-hosting IP ranges. More worker concurrency will not
+fix this and can add request pressure. Before enabling the new recurring runner,
+use an ingestion host with confirmed upstream access or a supported data feed.
+[nba_api hosting guidance](https://github.com/swar/nba_api#rate-limits-and-hosting)
 
 ## Validation completed
 
-- 59 worker tests passed.
+- 59 worker tests passed, including a regression requiring scoreboard availability
+  for a successful source check. Worker tests and the empty-database integration
+  were rerun after the dispatch/source-check changes.
 - Empty disposable PostgreSQL integration passed: dependency order, atomic
   publication/checkpoint rollback, interruption/retry/resume, idempotence,
   optional leaderboard replacement, and current-season isolation.
@@ -67,20 +105,23 @@ statement snapshot. This avoids losing Final/live status when serving games from
 PostgreSQL. Explicit non-final states take precedence over the frontend's
 date-based fallback after midnight, and the default score cards render the status
 label. These changes were checked with component, browser and actual-database API
-tests. They are local source changes until deployed.
+tests. These source changes are pushed to `adam` and await application deployment.
 
 ## Running and scheduling
 
 See `workers/README.md` for commands and checkpoint windows. The tracked ingestion
-workflow now invokes the focused runner every five minutes in the evening/late
+workflow invokes the focused runner every five minutes in the evening/late
 night and every three hours otherwise, without historical sweeps. Those edits
-remain local: no commit, push, deployment, or workflow dispatch was performed.
-Existing production scheduling still uses the published revision until updated.
+are pushed to `adam`, and the manual production verification runs are linked
+above. The default branch is `main`; it has not been updated, so existing
+production scheduling still uses its previous runner. No application deployment
+was performed. Automatic live updates have not been verified working.
 
 Keep direct NBA fetching disabled in the production API. An unavailable source
 should delay ingestion and leave honest stale/unavailable UI states, rather than
 turning visitor requests into upstream traffic.
 
-Next operational improvements are source/coverage monitoring and checking the
-scheduled host's source access. Broader historical enrichment, raw-response
-archiving and more frequent active-game polling remain separate work.
+The next required step is a source/host decision based on the failed cloud probes,
+then publication to `main` and observation of repeated successful scheduled runs.
+Source/coverage monitoring, broader historical enrichment, raw-response archiving
+and more frequent active-game polling remain separate work.
