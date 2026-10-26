@@ -18,14 +18,28 @@ async def test_games_use_maintained_headers_and_isolate_date_ranges(monkeypatch)
     cache = InMemoryCacheBackend(settings)
     client = NBAStatsClient(settings, cache, NameResolver(cache))
     calls = []
+    queries = []
 
     class Endpoint:
+        def get_request(self):
+            queries.append(dict(self.parameters))
+
         def get_data_frames(self):
             return [pd.DataFrame()]
 
     def endpoint(**kwargs):
         calls.append(kwargs)
-        return Endpoint()
+        instance = Endpoint()
+        instance.parameters = {
+            "LeagueID": kwargs["league_id_nullable"],
+            "PlayerOrTeam": "T",
+            "Season": kwargs["season_nullable"],
+            "SeasonType": kwargs["season_type_nullable"],
+            "DateFrom": kwargs["date_from_nullable"],
+            "DateTo": kwargs["date_to_nullable"],
+            "UnusedOptionalFilter": "",
+        }
+        return instance
 
     monkeypatch.setattr("app.services.nba.leaguegamefinder.LeagueGameFinder", endpoint)
 
@@ -48,3 +62,10 @@ async def test_games_use_maintained_headers_and_isolate_date_ranges(monkeypatch)
     assert calls[0]["date_from_nullable"] == ""
     assert calls[1]["date_from_nullable"] == "2026-10-25"
     assert calls[1]["date_to_nullable"] == "2026-10-25"
+
+    assert len(queries) == 2
+    assert all(len(query) == 6 for query in queries)
+    assert all("UnusedOptionalFilter" not in query for query in queries)
+    assert queries[0]["DateFrom"] == ""
+    assert queries[1]["DateFrom"] == "2026-10-25"
+    assert all(call["get_request"] is False for call in calls)

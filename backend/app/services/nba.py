@@ -264,7 +264,21 @@ class NBAStatsClient:
                 date_to_nullable=date_to.isoformat() if date_to else "",
                 headers=NBA_STATS_HEADERS,
                 timeout=self._stats_timeout,
+                get_request=False,
             )
+            # Match the worker's bounded query instead of sending 88 optional filters.
+            game_parameters = {
+                "LeagueID",
+                "PlayerOrTeam",
+                "Season",
+                "SeasonType",
+                "DateFrom",
+                "DateTo",
+            }
+            endpoint.parameters = {
+                key: value for key, value in endpoint.parameters.items() if key in game_parameters
+            }
+            endpoint.get_request()
             df = endpoint.get_data_frames()[0]
             return cast(list[dict[str, Any]], df.to_dict("records"))
 
