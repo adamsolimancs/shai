@@ -40,3 +40,72 @@ source test.
 The reusable `backend_probe=true` manual workflow dispatch is committed on
 `adam`. Local validation: 114 worker tests passed, including ten hosted-backend
 probe tests; workflow YAML and credential isolation checks passed.
+
+## Current Mac worker state
+
+At the user's request on 2026-10-26, the Mac worker was paused with
+`launchctl disable gui/501/com.shai.ingestion` and
+`launchctl bootout gui/501/com.shai.ingestion`. Verification showed the service
+disabled and absent from the launchd domain. The plist, private credentials,
+runtime release and ingestion checkpoints were preserved. Do not resume it
+automatically during the Render investigation.
+
+## Render investigation and deployed fixes
+
+Render service `srv-d4a64o75r7bs73e7ms80` runs the `prod` branch on a free Oregon
+instance. Its initial deployed revision was `c1df59e`. Render logs for the first
+Actions test confirm `requests.exceptions.ReadTimeout` from `stats.nba.com`
+with a 10-second read timeout; the application ultimately returned `UPSTREAM_ERROR`
+and HTTP 502 after three attempts. Health, service authentication and Redis worked.
+
+A controlled local comparison found a separate reproducible client defect:
+the backend's obsolete custom headers timed out, while the same query using
+`nba_api`'s maintained headers returned data. The backend now imports the maintained
+headers, pins the tested `nba_api==1.11.4`, scopes games to the regular season,
+includes date ranges in its internal game-cache key, and sends the same six game
+parameters used by the worker. Empty optional filters no longer inflate the game
+request to 88 parameters. A regression test covers headers, scope, parameter
+selection, and separation of full-season and date-filtered cache entries.
+
+These changes were deployed to `prod` as `8cef259` and `38d1c8a`, and preserved
+on `adam` as `f704735` and `04cebea`. Existing formatting/import failures in the
+older production checkout were also corrected mechanically.
+
+The fixes do **not** restore Render's current NBA access:
+
+- [Post-header-fix Actions test](https://github.com/adamsolimancs/shai/actions/runs/40380499717):
+  HTTP 502 with `UPSTREAM_ERROR` after about 36 seconds; Render recorded the same
+  10-second NBA read timeout.
+- [Final controlled Actions test](https://github.com/adamsolimancs/shai/actions/runs/40381914194):
+  the six-parameter request still returned HTTP 502 after a single 60-second
+  attempt; Render explicitly recorded `read timeout=60.0`.
+- The exact final backend client returned **86 current-season team-game rows**
+  from this Mac in **99 ms**, with a cache miss and no out-of-season game IDs.
+- A separate Render startup traceback on the same deployed instance shows
+  `conn.getresponse()` → `http.client._read_status()` → SSL socket read timing
+  out. This places the failure after connection/TLS establishment, waiting for
+  the HTTP status line. The independent `CommonAllPlayers` endpoint also timed out.
+- No user-configured HTTP/HTTPS/ALL/NBA API proxy variables were present in the
+  Render environment settings.
+
+The evidence supports network-dependent NBA edge filtering of Render traffic,
+consistent with the [client's hosting guidance](https://github.com/swar/nba_api#rate-limits-and-hosting).
+The exact NBA-side rule cannot be established from application logs. It is not
+an Actions-to-backend authentication failure or a database ingestion failure.
+Longer timeouts, maintained headers and the smaller game query did not solve
+the Render-specific failure. There is no successful production source check
+justifying an ingestion cutover.
+
+Normal Render upstream settings were restored to `UPSTREAM_TIMEOUT_SECONDS=10`
+and `UPSTREAM_RETRY_ATTEMPTS=3` after the controlled test. The Mac worker remains
+disabled/unloaded and recurring GitHub ingestion remains disabled. No paid plan,
+proxy or new host was provisioned, and no ingestion data was published by these
+failed diagnostic jobs.
+
+Validation: current `adam` backend **169 passed, 1 optional integration skipped**;
+Ruff, Black and mypy passed. Workers **120 passed**. The isolated production
+hotfix backend had **84 passed, 1 optional integration skipped**, with Ruff/Black
+passing. Strict mypy still reports **37 pre-existing errors** on the legacy
+production backend; the same count was reproduced on its unmodified deployed
+revision with the same strict configuration. Those legacy type errors were not
+claimed fixed or used to explain the NBA network timeout.
