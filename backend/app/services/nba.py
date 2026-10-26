@@ -35,6 +35,7 @@ from nba_api.stats.endpoints import (
     teamdetails,
     teamyearbyyearstats,
 )
+from nba_api.stats.library.http import STATS_HEADERS as NBA_STATS_HEADERS
 from pydantic import ValidationError
 
 from ..cache import CacheBackend
@@ -68,22 +69,7 @@ from ..utils import paginate, validate_season
 
 logger = logging.getLogger(__name__)
 
-# Headers passed through nba_api stats endpoints to avoid CDN blocks.
-NBA_STATS_HEADERS = {
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Origin": "https://www.nba.com",
-    "Referer": "https://www.nba.com/",
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0 Safari/537.36"
-    ),
-    "x-nba-stats-origin": "stats",
-    "x-nba-stats-token": "true",
-}
-
-
+# Use nba_api's maintained transport headers; stale overrides can stall NBA responses.
 DIRECTORY_TTL = 60 * 60 * 24
 AGGREGATE_TTL = 60 * 60 * 6
 GAMES_TTL = 60 * 60 * 2
@@ -268,11 +254,12 @@ class NBAStatsClient:
                     extra={"season": season, "date": date_from.isoformat()},
                 )
 
-        key = f"games:{season}"
+        key = f"games:{season}:Regular Season:{date_from}:{date_to}"
 
         def fetch() -> list[dict[str, Any]]:
             endpoint = leaguegamefinder.LeagueGameFinder(
                 season_nullable=season,
+                season_type_nullable="Regular Season",
                 league_id_nullable="00",
                 date_from_nullable=date_from.isoformat() if date_from else "",
                 date_to_nullable=date_to.isoformat() if date_to else "",

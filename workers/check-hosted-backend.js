@@ -54,16 +54,33 @@ async function probe({ baseUrl, apiKey, fetchImpl = fetch, now = () => Date.now(
     // per_team bypasses the database-backed /games branch in this repository.
     // Query the whole season to avoid filling the service's season cache with a date subset.
     const result = await get("nba_game_fetch", "/v1/games?season=2026-27&per_team=true&page_size=200", true, 90000);
-    const observation = Date.parse(result?.meta?.as_of ?? result?.meta?.cache?.as_of);
+    let observation = Date.parse(result?.meta?.as_of ?? result?.meta?.cache?.as_of);
     report.source = ["api", "db", "redis", "service"].includes(result?.meta?.source) ? result.meta.source : "unknown";
     report.cache_hit = result?.meta?.cache?.hit ?? null;
     report.stale = result?.meta?.stale ?? result?.meta?.cache?.stale ?? null;
     report.rows = Array.isArray(result?.data) ? result.data.length : 0;
     if (result?.ok !== true || !report.rows) fail("no_current_season_game_rows");
+    // The deployed legacy backend exposes successful upstream observations through
+    // /meta rather than per-response as_of. Require a newly advanced timestamp;
+    // neither a warm cache nor a DB response can satisfy this fallback.
+    if (report.cache_hit === false && report.stale === false
+      && [undefined, "api"].includes(result?.meta?.source) && !Number.isFinite(observation)) {
+      const after = await get("upstream_refresh_confirmation", "/v1/meta", true);
+      const refreshes = Object.entries(after?.data?.last_cache_refresh ?? {})
+        .filter(([key]) => key === "games:2026-27" || key.startsWith("games:2026-27:"))
+        .filter(([key, value]) => Date.parse(value) > (Date.parse(meta?.data?.last_cache_refresh?.[key]) || 0))
+        .map(([, value]) => Date.parse(value)).filter(Number.isFinite);
+      if (refreshes.length) {
+        observation = Math.max(...refreshes);
+        report.source = "api";
+        report.evidence = "advanced_service_upstream_refresh";
+      }
+    }
     if (report.source !== "api" || report.cache_hit !== false || report.stale !== false
       || !Number.isFinite(observation) || observation < started - 1000 || observation > now() + 1000) fail("fresh_upstream_fetch_not_proven");
     if (!result.data.every(row => /^00226\d{5}$/.test(String(row.game_id)) && Number.isInteger(row.team_id))) fail("unexpected_game_scope");
     report.fresh_nba_verified = true;
+    report.evidence ??= "response_source_observation";
     report.status = "passed";
   } catch (error) {
     const safe = /^(missing_backend_configuration|invalid_backend_url|unsafe_backend_url|http_\d{3}|unexpected_health_response|unexpected_backend_service|no_current_season_game_rows|fresh_upstream_fetch_not_proven|unexpected_game_scope|backend_network_error|invalid_json|response_too_large|missing_response_body|request_timeout)$/.test(error.message);
