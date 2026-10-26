@@ -203,7 +203,7 @@ async function checkSources(source, season = SEASON) {
     try { const box = await source.boxscore(latest.game_id); result.boxscore = { reachable: true, game_id: box.game_id, players: box.traditional_players.length }; }
     catch (error) { result.boxscore = { reachable: false, error: error.message }; }
   }
-  return { ok: Boolean(result.games?.reachable && result.player_stats?.reachable && result.boxscore?.reachable), sources: result };
+  return { ok: Boolean(result.games?.reachable && result.player_stats?.reachable && result.scoreboard?.reachable && result.boxscore?.reachable), sources: result };
 }
 
 async function main() {

@@ -93,6 +93,9 @@ test("source checks require actual season and boxscore access", async () => {
   assert.equal((await checkSources(fixtureSource())).ok, true);
   const source = fixtureSource(); source.boxscore = async () => { throw new Error("blocked"); };
   assert.equal((await checkSources(source)).ok, false);
+  const unavailableScoreboard = fixtureSource();
+  unavailableScoreboard.scoreboard = async () => { throw new Error("scoreboard timeout"); };
+  assert.equal((await checkSources(unavailableScoreboard)).ok, false);
 });
 
 test("league leader requests include nba_api's required Scope parameter", async () => {

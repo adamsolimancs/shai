@@ -9,6 +9,10 @@ on:
         description: Refresh all stages, including recently completed checkpoints
         type: boolean
         default: false
+      probe_only:
+        description: Test NBA source access without writing to the database
+        type: boolean
+        default: false
 
 # Scheduled and manual runs share one writer; never cancel an active ingestion.
 concurrency:
@@ -51,7 +55,7 @@ jobs:
         if: steps.schedule.outputs.run_worker == 'true'
         run: python -m pip install nba_api==1.11.4
       - name: Run worker
-        if: steps.schedule.outputs.run_worker == 'true'
+        if: steps.schedule.outputs.run_worker == 'true' && !inputs.probe_only
         env:
           REFRESH: ${{ inputs.refresh }}
           HISTORIC_SEASONS_BACK: 0
@@ -71,12 +75,12 @@ jobs:
           if [ "$REFRESH" = true ]; then args+=(--refresh); fi
           node workers/bootstrap.js "${args[@]}"
       - name: Verify NBA source access
-        if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' && steps.schedule.outputs.run_worker == 'true' }}
+        if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' && !inputs.probe_only && steps.schedule.outputs.run_worker == 'true' }}
         env:
           NBA_SEASON: "2026-27"
           API_MIN_INTERVAL_MS: 1500
           STATS_TRANSPORT: nba_api
         run: node workers/bootstrap.js --check-sources
-      - name: Verify NBA live CDN access
+      - name: Verify NBA CDN and longer-timeout stats access
         if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' && steps.schedule.outputs.run_worker == 'true' }}
         run: python workers/check-live-sources.py

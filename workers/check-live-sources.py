@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Read-only probes of nba_api's public live CDN, with bounded requests."""
+"""Read-only probes of nba_api's public sources, with bounded requests."""
 
+from datetime import datetime
 import json
 import os
 import time
+from zoneinfo import ZoneInfo
 
 from nba_api.live.nba.endpoints import boxscore, scoreboard
+from nba_api.stats.endpoints import scoreboardv3
 
 
 def main():
@@ -18,6 +21,10 @@ def main():
          lambda data: isinstance(data.get("scoreboard", {}).get("games"), list)),
         ("live_boxscore", lambda: boxscore.BoxScore(game_id, timeout=15).get_dict(),
          lambda data: data.get("game", {}).get("gameId") == game_id),
+        ("stats_scoreboard_60s", lambda: scoreboardv3.ScoreboardV3(
+            game_date=datetime.now(ZoneInfo("America/New_York")).date().isoformat(),
+            timeout=60,
+        ).get_dict(), lambda data: isinstance(data.get("scoreboard", {}).get("games"), list)),
     ]:
         started = time.monotonic()
         try:
