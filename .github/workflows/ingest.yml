@@ -13,6 +13,10 @@ on:
         description: Test NBA source access without writing to the database
         type: boolean
         default: false
+      api_nba_probe:
+        description: Read-only API-NBA free-plan qualification (at most 10 requests)
+        type: boolean
+        default: false
 
 # Scheduled and manual runs share one writer; never cancel an active ingestion.
 concurrency:
@@ -21,6 +25,7 @@ concurrency:
 
 jobs:
   ingest:
+    if: ${{ !inputs.api_nba_probe }}
     runs-on: ubuntu-latest
     timeout-minutes: 70
     steps:
@@ -84,3 +89,20 @@ jobs:
       - name: Verify NBA CDN and longer-timeout stats access
         if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' && steps.schedule.outputs.run_worker == 'true' }}
         run: python workers/check-live-sources.py
+  api-nba-probe:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.api_nba_probe }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Check API-NBA free-plan current-season coverage
+        env:
+          API_SPORTS_KEY: ${{ secrets.API_SPORTS_KEY }}
+        run: node workers/check-api-nba.js
