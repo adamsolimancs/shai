@@ -77,3 +77,6 @@ jobs:
           API_MIN_INTERVAL_MS: 1500
           STATS_TRANSPORT: nba_api
         run: node workers/bootstrap.js --check-sources
+      - name: Verify NBA live CDN access
+        if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' && steps.schedule.outputs.run_worker == 'true' }}
+        run: python workers/check-live-sources.py
