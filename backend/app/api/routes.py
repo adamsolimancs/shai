@@ -416,9 +416,7 @@ async def league_standings(
 ) -> Envelope[list[LeagueStanding]]:
     validate_season(season)
     use_table_fallback = (
-        supabase
-        and league_id == "00"
-        and season_type.strip().lower() == "regular season"
+        supabase and league_id == "00" and season_type.strip().lower() == "regular season"
     )
     if use_table_fallback:
         nocache_allowed = _allow_nocache(request, settings, nocache)
@@ -1156,9 +1154,11 @@ async def _build_team_stats_response(
                 ttl=TTLS.team_stats,
             )
             if data or not settings.nba_api_calls_allowed:
-                filtered = data if team_filter is None else [
-                    row for row in (data or []) if _row_value(row, "team_id") == team_filter
-                ]
+                filtered = (
+                    data
+                    if team_filter is None
+                    else [row for row in (data or []) if _row_value(row, "team_id") == team_filter]
+                )
                 _log_data_source(request, _source_from_cache(cache_meta, "db"), cache_meta)
                 return success(request, filtered, cache=cache_meta)
         except Exception:
@@ -1257,11 +1257,7 @@ async def player_stats(
         per_mode,
         None,
     )
-    use_db = (
-        supabase is not None
-        and measure == "Base"
-        and per_mode == "PerGame"
-    )
+    use_db = supabase is not None and measure == "Base" and per_mode == "PerGame"
     if use_db:
         try:
             data, cache_meta = await get_or_set_cache(
@@ -1310,9 +1306,7 @@ async def player_stats(
                 filtered = (
                     data
                     if team_id is None
-                    else [
-                        row for row in (data or []) if _row_value(row, "team_id") == team_id
-                    ]
+                    else [row for row in (data or []) if _row_value(row, "team_id") == team_id]
                 )
                 paged, pagination = paginate(filtered or [], page, page_size)
                 pagination_meta = _apply_pagination_links(request, pagination.model_dump())

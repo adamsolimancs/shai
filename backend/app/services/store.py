@@ -653,16 +653,20 @@ async def fetch_games(
             home_result = (
                 "W"
                 if home_score is not None and away_score is not None and home_score > away_score
-                else "L"
-                if home_score is not None and away_score is not None and home_score < away_score
-                else None
+                else (
+                    "L"
+                    if home_score is not None and away_score is not None and home_score < away_score
+                    else None
+                )
             )
             away_result = (
                 "W"
                 if home_score is not None and away_score is not None and away_score > home_score
-                else "L"
-                if home_score is not None and away_score is not None and away_score < home_score
-                else None
+                else (
+                    "L"
+                    if home_score is not None and away_score is not None and away_score < home_score
+                    else None
+                )
             )
             if home_team_id is not None:
                 per_team_rows.append(

@@ -138,9 +138,7 @@ class NewsService:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         aggregated: list[ScrapedArticle] = []
-        for source_name, result in zip(
-            ("espn", "sportscenter", "cbs"), results, strict=True
-        ):
+        for source_name, result in zip(("espn", "sportscenter", "cbs"), results, strict=True):
             if isinstance(result, Exception):
                 logger.warning(
                     "news source failed",
@@ -187,11 +185,7 @@ class NewsService:
 
     def _normalize_espn_article(self, item: dict[str, Any]) -> ScrapedArticle | None:
         headline = item.get("headline") or item.get("title")
-        link = (
-            item.get("links", {})
-            .get("web", {})
-            .get("href")
-        ) or item.get("link")
+        link = (item.get("links", {}).get("web", {}).get("href")) or item.get("link")
         if not headline or not link:
             return None
         description = item.get("description") or item.get("summary") or ""

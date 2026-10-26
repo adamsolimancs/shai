@@ -7,7 +7,7 @@ dependencies = [
     "fastapi>=0.135.3",
     "uvicorn[standard]>=0.44.0",
     "pydantic-settings>=2.13.1",
-    "nba_api>=1.11.4",
+    "nba_api==1.11.4",
     "pandas>=3.0.2",
     "rapidfuzz>=3.14.5",
     "python-dotenv>=1.2.2",
@@ -37,10 +37,11 @@ target-version = ["py311"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-select = ["E", "F", "I", "B", "UP", "N", "ASYNC", "Q"]
-ignore = ["ANN101", "ANN102"]
 
-[tool.ruff.isort]
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "N", "ASYNC", "Q"]
+
+[tool.ruff.lint.isort]
 known-first-party = ["app"]
 
 [tool.pytest.ini_options]

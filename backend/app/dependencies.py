@@ -9,10 +9,10 @@ from fastapi import Request
 from .cache import CacheBackend
 from .config import Settings, get_settings
 from .rate_limit import RateLimiter
-from .supabase import SupabaseClient
 from .resolvers import NameResolver
 from .services.nba import NBAStatsClient
 from .services.news import NewsService
+from .supabase import SupabaseClient
 
 
 def get_app_state(request: Request) -> dict[str, Any]:

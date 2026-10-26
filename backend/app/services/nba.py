@@ -35,6 +35,7 @@ from nba_api.stats.endpoints import (
     teamdetails,
     teamyearbyyearstats,
 )
+from nba_api.stats.library.http import STATS_HEADERS as NBA_STATS_HEADERS
 from pydantic import ValidationError
 
 from ..cache import CacheBackend
@@ -67,22 +68,7 @@ from ..utils import paginate, validate_season
 
 logger = logging.getLogger(__name__)
 
-# Explicit headers for stats.nba.com to avoid CDN blocks.
-NBA_STATS_HEADERS = {
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Origin": "https://www.nba.com",
-    "Referer": "https://www.nba.com/",
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0 Safari/537.36"
-    ),
-    "x-nba-stats-origin": "stats",
-    "x-nba-stats-token": "true",
-}
-
-
+# Use nba_api's maintained transport headers; stale overrides can stall NBA responses.
 DIRECTORY_TTL = 60 * 60 * 24
 AGGREGATE_TTL = 60 * 60 * 6
 GAMES_TTL = 60 * 60 * 2
@@ -267,11 +253,12 @@ class NBAStatsClient:
                     extra={"season": season, "date": date_from.isoformat()},
                 )
 
-        key = f"games:{season}"
+        key = f"games:{season}:Regular Season:{date_from}:{date_to}"
 
         def fetch() -> list[dict[str, Any]]:
             endpoint = leaguegamefinder.LeagueGameFinder(
                 season_nullable=season,
+                season_type_nullable="Regular Season",
                 league_id_nullable="00",
                 date_from_nullable=date_from.isoformat() if date_from else "",
                 date_to_nullable=date_to.isoformat() if date_to else "",
@@ -290,12 +277,7 @@ class NBAStatsClient:
 
         deduped = self._dedupe_games(raw_rows, season)
         filtered = self._filter_game_rows(deduped, team_id, team_abbr, date_from, date_to)
-        if (
-            not filtered
-            and date_from is not None
-            and date_to is not None
-            and date_from == date_to
-        ):
+        if not filtered and date_from is not None and date_to is not None and date_from == date_to:
             scoreboard_result = await self.get_scoreboard_games(date_from, season=season)
             filtered = self._filter_game_rows(
                 scoreboard_result.data,
