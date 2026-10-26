@@ -17,6 +17,10 @@ on:
         description: Read-only API-NBA free-plan qualification (at most 10 requests)
         type: boolean
         default: false
+      backend_probe:
+        description: Check configured backend and require a fresh NBA fetch
+        type: boolean
+        default: false
 
 # Scheduled and manual runs share one writer; never cancel an active ingestion.
 concurrency:
@@ -25,7 +29,7 @@ concurrency:
 
 jobs:
   ingest:
-    if: ${{ !inputs.api_nba_probe }}
+    if: ${{ !inputs.api_nba_probe && !inputs.backend_probe }}
     runs-on: ubuntu-latest
     timeout-minutes: 70
     steps:
@@ -106,3 +110,21 @@ jobs:
         env:
           API_SPORTS_KEY: ${{ secrets.API_SPORTS_KEY }}
         run: node workers/check-api-nba.js
+  backend-probe:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.backend_probe && !inputs.api_nba_probe }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Check hosted backend source access
+        env:
+          BACKEND_API_BASE_URL: ${{ secrets.BACKEND_API_BASE_URL }}
+          BACKEND_API_KEY: ${{ secrets.BACKEND_API_KEY }}
+        run: node workers/check-hosted-backend.js
