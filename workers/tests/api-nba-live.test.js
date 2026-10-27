@@ -15,10 +15,10 @@ const espnGame = (final = false, increment = 0) => ({ id: final ? "999" : "888",
     { homeAway: "away", team: { abbreviation: final ? "WSH" : "GS" }, score: String(final ? 103 : 26) },
   ] }] });
 
-async function run({ blocked = false, http429 = false, key = "private-key" } = {}) {
+async function run({ blocked = false, http429 = false, key = "private-key", sampleCount = 4 } = {}) {
   let current = Date.parse("2026-10-27T02:34:33Z"), liveCalls = 0;
   const calls = [], logs = [];
-  const report = await evaluate({ apiKey: key, now: () => current, sleep: async ms => { current += ms; },
+  const report = await evaluate({ apiKey: key, sampleCount, now: () => current, sleep: async ms => { current += ms; },
     log: row => logs.push(row), fetchImpl: async (raw, options) => {
       const url = new URL(raw);
       calls.push({ url, options, at: current });
@@ -83,6 +83,19 @@ test("a rate limit stops rather than retrying", async () => {
   assert.equal(report.provider_requests, 1);
   assert.equal(calls.length, 1);
   assert.equal(report.quota_remaining, 0);
+});
+
+test("a single-snapshot spot check uses seven calls and cannot claim live changes", async () => {
+  const { report } = await run({ sampleCount: 1 });
+  assert.equal(report.provider_requests, 7);
+  assert.equal(report.samples.length, 1);
+  assert.equal(report.live_updates_observed, false);
+});
+
+test("unsupported sampling settings cannot expand the request budget", async () => {
+  const { report, calls } = await run({ sampleCount: 100 });
+  assert.equal(report.error, "invalid_sample_count");
+  assert.equal(calls.length, 0);
 });
 
 test("normalizes provider aliases and rejects old-season or wrong-day rows", () => {

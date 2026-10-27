@@ -21,6 +21,11 @@ on:
         description: Compare live API-NBA scores with ESPN (at most 10 API requests)
         type: boolean
         default: false
+      api_nba_live_samples:
+        description: Live snapshots (one for a quick box-score spot check)
+        type: choice
+        options: ["4", "1"]
+        default: "4"
       backend_probe:
         description: Check configured backend and require a fresh NBA fetch
         type: boolean
@@ -114,6 +119,7 @@ jobs:
         env:
           API_SPORTS_KEY: ${{ secrets.API_SPORTS_KEY }}
           API_NBA_LIVE_PROBE: ${{ inputs.api_nba_live_probe }}
+          API_NBA_LIVE_SAMPLES: ${{ inputs.api_nba_live_samples || '4' }}
         run: |
           if [ "$API_NBA_LIVE_PROBE" = true ]; then
             node workers/check-api-nba-live.js

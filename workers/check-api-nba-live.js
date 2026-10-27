@@ -60,7 +60,7 @@ function comparisons(provider, before, after) {
   });
 }
 
-async function evaluate({ apiKey, fetchImpl = fetch, sleep = pause, now = () => Date.now(), log = () => {} } = {}) {
+async function evaluate({ apiKey, sampleCount = 4, fetchImpl = fetch, sleep = pause, now = () => Date.now(), log = () => {} } = {}) {
   const date = nyDate(new Date(now()));
   const report = { status: "unavailable", date, checked_at: new Date(now()).toISOString(), provider_requests: 0,
     quota_remaining: null, checks: [], samples: [], live_updates_observed: false,
@@ -123,6 +123,7 @@ async function evaluate({ apiKey, fetchImpl = fetch, sleep = pause, now = () => 
     return games;
   }
   try {
+    if (![1, 4].includes(sampleCount)) throw new Error("invalid_sample_count");
     if (typeof apiKey !== "string" || !apiKey.trim()) throw new Error("missing_api_sports_key");
     apiKey = apiKey.trim();
     const account = await request("/status");
@@ -149,7 +150,7 @@ async function evaluate({ apiKey, fetchImpl = fetch, sleep = pause, now = () => 
     const live = first.find(game => game.status === "in") ?? report.current_day_games.find(game => game.status === "in");
     if (!live) { report.error = "no_accessible_live_game_data"; return report; }
     const path = first.some(game => game.status === "in") ? "/games?live=all" : `/games?id=${live.id}`;
-    for (let i = 0; i < 3; i++) {
+    for (let i = 1; i < sampleCount; i++) {
       const last = Date.parse(report.samples.at(-1).received_at);
       await sleep(Math.max(0, SAMPLE_INTERVAL_MS - (now() - last)));
       await sample(path);
@@ -166,6 +167,9 @@ async function evaluate({ apiKey, fetchImpl = fetch, sleep = pause, now = () => 
     const latest = Array.isArray(finalRows) ? normalizeApi(finalRows, date)[0] : null;
     if (latest && Array.isArray(teamStats) && Array.isArray(playerStats)) {
       report.boxscore = { key: latest.key, status: latest.status, player_rows: playerStats.length,
+        players: playerStats.map(row => ({ team_id: number(row.team?.id), player_id: number(row.player?.id),
+          name: [row.player?.firstname, row.player?.lastname].filter(value => typeof value === "string").join(" ").replaceAll(apiKey, "[redacted]").slice(0, 120),
+          points: number(row.points) })),
         teams: [latest.away_id, latest.home_id].map(team => ({ team_id: team,
           game_points: team === latest.home_id ? latest.home : latest.away,
           team_stat_points: number(teamStats.find(row => Number(row.team?.id) === team)?.statistics?.[0]?.points),
@@ -175,12 +179,13 @@ async function evaluate({ apiKey, fetchImpl = fetch, sleep = pause, now = () => 
     report.comparisons = { total: results.length, score_matches: results.filter(row => row.score_matches_reference_window).length,
       status_matches: results.filter(row => row.status_matches_reference_window).length };
     report.status = results.length ? "measured" : "reference_unavailable";
-  } catch (error) { report.error = /^(missing_api_sports_key|subscription_unavailable|request_budget_exhausted)$/.test(error.message) ? error.message : "evaluation_failed"; }
+  } catch (error) { report.error = /^(missing_api_sports_key|invalid_sample_count|subscription_unavailable|request_budget_exhausted)$/.test(error.message) ? error.message : "evaluation_failed"; }
   return report;
 }
 
 async function main() {
-  const report = await evaluate({ apiKey: process.env.API_SPORTS_KEY, log: row => console.log(JSON.stringify(row)) });
+  const report = await evaluate({ apiKey: process.env.API_SPORTS_KEY,
+    sampleCount: Number(process.env.API_NBA_LIVE_SAMPLES || 4), log: row => console.log(JSON.stringify(row)) });
   console.log(JSON.stringify({ report }));
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY,
     `### API-NBA live evaluation\n\nResult: ${report.status}. API requests: ${report.provider_requests}/${MAX_REQUESTS}. ` +
