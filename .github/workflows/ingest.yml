@@ -17,6 +17,10 @@ on:
         description: Read-only API-NBA free-plan qualification (at most 10 requests)
         type: boolean
         default: false
+      api_nba_live_probe:
+        description: Compare live API-NBA scores with ESPN (at most 10 API requests)
+        type: boolean
+        default: false
       backend_probe:
         description: Check configured backend and require a fresh NBA fetch
         type: boolean
@@ -29,7 +33,7 @@ concurrency:
 
 jobs:
   ingest:
-    if: ${{ !inputs.api_nba_probe && !inputs.backend_probe }}
+    if: ${{ !inputs.api_nba_probe && !inputs.api_nba_live_probe && !inputs.backend_probe }}
     runs-on: ubuntu-latest
     timeout-minutes: 70
     steps:
@@ -94,7 +98,7 @@ jobs:
         if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' && steps.schedule.outputs.run_worker == 'true' }}
         run: python workers/check-live-sources.py
   api-nba-probe:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.api_nba_probe }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.api_nba_probe || inputs.api_nba_live_probe) }}
     runs-on: ubuntu-latest
     timeout-minutes: 6
     permissions:
@@ -109,9 +113,15 @@ jobs:
       - name: Check API-NBA free-plan current-season coverage
         env:
           API_SPORTS_KEY: ${{ secrets.API_SPORTS_KEY }}
-        run: node workers/check-api-nba.js
+          API_NBA_LIVE_PROBE: ${{ inputs.api_nba_live_probe }}
+        run: |
+          if [ "$API_NBA_LIVE_PROBE" = true ]; then
+            node workers/check-api-nba-live.js
+          else
+            node workers/check-api-nba.js
+          fi
   backend-probe:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.backend_probe && !inputs.api_nba_probe }}
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.backend_probe && !inputs.api_nba_probe && !inputs.api_nba_live_probe }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
