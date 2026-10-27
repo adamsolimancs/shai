@@ -14,6 +14,11 @@ const teamCode = value => { const result = aliases[value] ?? value; return codes
 const number = value => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
 const textClock = value => typeof value === "string" && /^(\d{1,2}:)?\d{1,2}(\.\d+)?$/.test(value) ? value : null;
 const nyDate = date => new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).format(date);
+function safeErrors(errors, key) {
+  return JSON.stringify(errors).replaceAll(key, "[redacted]")
+    .replace(/[A-Za-z0-9_-]{24,}/g, "[redacted-token]")
+    .replace(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g, "[redacted-email]").slice(0, 500);
+}
 
 function normalizeApi(rows, date) {
   return rows.filter(row => row && row.league === "standard" && Number(row.season) === 2026
@@ -81,6 +86,7 @@ async function evaluate({ apiKey, fetchImpl = fetch, sleep = pause, now = () => 
       if (!payload || typeof payload !== "object" || !("errors" in payload) || !("response" in payload)) throw new Error("invalid_envelope");
       if (payload.errors && Object.keys(payload.errors).length) {
         row.error = providerError(payload.errors);
+        row.error_detail = safeErrors(payload.errors, apiKey);
         row.error_years_mentioned = [...new Set(JSON.stringify(payload.errors).match(/\b20\d{2}\b/g) ?? [])];
         return null;
       }
@@ -130,7 +136,7 @@ async function evaluate({ apiKey, fetchImpl = fetch, sleep = pause, now = () => 
     report.date_samples = [];
     for (const day of new Set([date, new Date(now()).toISOString().slice(0, 10)])) {
       const before = await reference();
-      const rows = await request(`/games?date=${day}&league=standard`);
+      const rows = await request(`/games?date=${day}`);
       const after = await reference();
       const games = Array.isArray(rows) ? normalizeApi(rows, date) : [];
       for (const game of games) directory.set(game.id, game);

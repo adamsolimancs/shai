@@ -69,6 +69,7 @@ test("tests live and both date filters before reporting a plan restriction witho
   assert.equal(report.live_updates_observed, false);
   assert.ok(report.checks.slice(1).every(row => row.error === "subscription_or_plan_restriction"));
   assert.ok(report.checks.slice(1).every(row => row.error_years_mentioned.includes("2026")));
+  assert.ok(!JSON.stringify(report).includes("private-key"));
 });
 
 test("missing credentials cause no network calls", async () => {
