@@ -1,5 +1,10 @@
 # API-NBA qualification
 
+**Follow-up:** [Live evaluation](API_NBA_LIVE_EVALUATION.md) on October 26 found
+that the free key can retrieve current live games, date-only game lists and
+game-ID statistics. The season-wide rejection below is endpoint/query-specific;
+it must not be read as proof that all 2026–27 data is inaccessible.
+
 Tested from a GitHub-hosted Ubuntu runner on 2026-10-26:
 [Actions run 40371805559](https://github.com/adamsolimancs/shai/actions/runs/40371805559),
 probe commit `96417a059ea00d662fa18d1f93b45ddb888b4eb0`.
