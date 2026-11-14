@@ -68,7 +68,8 @@ jobs:
           python-version: '3.11'
       - name: Install worker deps
         if: steps.schedule.outputs.run_worker == 'true'
-        run: npm ci --prefix workers
+        working-directory: workers
+        run: npm ci
       - name: Install nba_api bridge deps
         if: steps.schedule.outputs.run_worker == 'true'
         run: python -m pip install nba_api==1.11.4

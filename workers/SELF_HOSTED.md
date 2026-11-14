@@ -69,7 +69,7 @@ records the commit, launcher hash and preparation time. Existing release
 directories are never overwritten. Install dependencies:
 
 ```sh
-npm ci --ignore-scripts --prefix /absolute/release/workers
+(cd /absolute/release/workers && npm ci --ignore-scripts)
 ```
 
 Copy the production environment to a private file outside the release and keep
