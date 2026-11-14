@@ -98,6 +98,16 @@ test("source checks require actual season and boxscore access", async () => {
   assert.equal((await checkSources(unavailableScoreboard)).ok, false);
 });
 
+test("source preflight distinguishes a reachable but inconsistent final boxscore", async () => {
+  const source = fixtureSource();
+  source.box.traditional_players[0].points -= 3;
+  const result = await checkSources(source);
+  assert.equal(result.ok, false);
+  assert.equal(result.sources.boxscore.reachable, true);
+  assert.equal(result.sources.boxscore.valid, false);
+  assert.match(result.sources.boxscore.error, /player_points_mismatch/);
+});
+
 test("league leader requests include nba_api's required Scope parameter", async () => {
   const config = { transport: nba.CONFIG.statsTransport, interval: nba.CONFIG.apiMinIntervalMs };
   const original = global.fetch;

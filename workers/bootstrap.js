@@ -10,9 +10,9 @@ const nba = require("./worker-live");
 const { createSource } = require("./bootstrap-source");
 const { cache } = require("./cache");
 const { acquireCronLease } = require("./cron-lease");
+const { tallyPlayerPoints, finalScoreIssue } = require("./boxscore-coverage");
 
-const SEASON = "2026-27";
-const SOURCE = "bootstrap:v1";
+const { SEASON, SOURCE } = require("./bootstrap-config");
 const quote = name => {
   if (!/^[a-z_][a-z0-9_]*$/.test(name)) throw new Error("Invalid SQL identifier");
   return `"${name}"`;
@@ -22,6 +22,16 @@ const requiredRows = (rows, label) => {
   if (!Array.isArray(rows)) throw new Error(`${label} did not return an array`);
   return rows;
 };
+
+function buildBoxscoreSnapshot(payload, gameId) {
+  if (payload.game_id !== gameId || !payload.observed_at) throw new Error("Invalid source boxscore identity/observation");
+  const snapshot = nba.buildGameSnapshotPayload(payload);
+  if (nba.isFinalStatus(payload.status)) {
+    const issue = finalScoreIssue(payload.home_team, payload.away_team, tallyPlayerPoints(snapshot.p_players));
+    if (issue) throw new Error(`Final boxscore cannot reconcile player points: ${issue}`);
+  }
+  return snapshot;
+}
 
 async function upsert(client, schema, table, rows, keys) {
   const groups = new Map();
@@ -178,8 +188,7 @@ async function runBootstrap({ store, source, season = SEASON, date = nba.formatD
   for (const { game_id } of await store.recentGames(season, from, date)) {
     if (!game_id.startsWith(gamePrefix)) continue;
     await step(`boxscore:${game_id}`, () => source.boxscore(game_id), async (client, payload) => {
-      if (payload.game_id !== game_id || !payload.observed_at) throw new Error("Invalid source boxscore identity/observation");
-      const snapshot = nba.buildGameSnapshotPayload(payload);
+      const snapshot = buildBoxscoreSnapshot(payload, game_id);
       await publishRows(client, "players", playersFor(payload.traditional_players), ["player_id"]);
       await client.query(`SELECT ${quote(store.schema)}.publish_game_snapshot($1::jsonb,$2::jsonb,$3::jsonb)`, [snapshot.p_game, snapshot.p_boxscore, snapshot.p_players].map(value => JSON.stringify(value)));
     }, payload => nba.isFinalStatus(payload.status) ? 21600 : 15);
@@ -200,10 +209,15 @@ async function checkSources(source, season = SEASON) {
   }
   const latest = games.toSorted((a, b) => b.date.localeCompare(a.date))[0];
   if (latest) {
-    try { const box = await source.boxscore(latest.game_id); result.boxscore = { reachable: true, game_id: box.game_id, players: box.traditional_players.length }; }
-    catch (error) { result.boxscore = { reachable: false, error: error.message }; }
+    try {
+      const box = await source.boxscore(latest.game_id);
+      result.boxscore = { reachable: true, game_id: box.game_id };
+      buildBoxscoreSnapshot(box, latest.game_id);
+      Object.assign(result.boxscore, { valid: true, status: box.status, players: box.traditional_players.length });
+    }
+    catch (error) { result.boxscore = { reachable: false, ...result.boxscore, valid: false, error: error.message }; }
   }
-  return { ok: Boolean(result.games?.reachable && result.player_stats?.reachable && result.scoreboard?.reachable && result.boxscore?.reachable), sources: result };
+  return { ok: Boolean(result.games?.reachable && result.player_stats?.reachable && result.scoreboard?.reachable && result.boxscore?.valid), sources: result };
 }
 
 async function main() {

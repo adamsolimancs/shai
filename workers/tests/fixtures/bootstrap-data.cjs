@@ -5,7 +5,11 @@ function fixtureSource() {
   const game = { game_id: "0022600001", date: "2026-10-24", start_time: "2026-10-25T00:00:00Z", home_team_id: 1, away_team_id: 2, home_team_name: "One", away_team_name: "Two", home_team_score: 101, away_team_score: 99, observed_at: observed };
   const box = { game_id: game.game_id, game_date: game.date, start_time: game.start_time, status: "Final", observed_at: observed,
     home_team: { team_id: 1, team_name: "One", score: 101, is_home: true, leaders: [] }, away_team: { team_id: 2, team_name: "Two", score: 99, is_home: false, leaders: [] },
-    traditional_players: [{ player_id: 102, player_name: "New Rookie", team_id: 1, points: 30 }], advanced_players: [], line_score: [], team_totals: [], officials: [] };
+    traditional_players: [
+      { player_id: 102, player_name: "New Rookie", team_id: 1, points: 30 },
+      { player_id: 100, player_name: "Active Player", team_id: 1, points: 71 },
+      { player_id: 103, player_name: "Away Player", team_id: 2, points: 99 },
+    ], advanced_players: [], line_score: [], team_totals: [], officials: [] };
   const wrap = (name, fn) => async (...args) => { calls.push({ name, args }); return fn(...args); };
   return { calls, game, box,
     teams: wrap("teams", () => Array.from({ length: 30 }, (_, index) => ({ id: index + 1, name: `Team ${index + 1}`, city: "Fixture", abbreviation: `T${index + 1}` }))),

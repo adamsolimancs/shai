@@ -85,11 +85,114 @@ Manual diagnostics include nba_api's live CDN scoreboard/box score and a stats
 scoreboard probe with a 60-second deadline. Source-check failures fail the run;
 successful static directory writes do not imply live data access.
 
+The manual source check also records curl DNS/TCP/TLS/first-byte timings, HTTP
+status/content type and a short preview of non-JSON public NBA responses. It uses
+normal certificate verification and SDK headers, with curl negotiating supported
+compression. For a read-only network comparison on another host:
+
+```sh
+workers/.venv/bin/python workers/check-live-sources.py --network-only
+workers/.venv/bin/python -m unittest discover -s workers/tests -p test_source_network.py
+```
+
+Run these from the repository root. The environment must have nba_api 1.11.4 and
+curl installed. Database/Redis credentials are unnecessary and are removed from
+the curl child environment. This diagnostic does not use a rotating proxy or
+change the ingestion source adapter.
+
 On October 26, 2026, GitHub-hosted stats requests timed out while the same sources
-worked locally. The new workflow is pushed to `adam`; recurring runs still use
-`main`. See [PIPELINE.md](../PIPELINE.md) for run links and actual database freshness.
-Choose an ingestion host with confirmed source access or a supported data feed
-before relying on this schedule. Adding workers does not fix source reachability.
+worked locally. The Mac service completed scheduled ingestion and was later
+paused during the Render investigation. Both recurring runners are paused. The
+[self-hosted runbook](SELF_HOSTED.md) covers a restart on an awake, online Mac,
+and the [pipeline notes](../PIPELINE.md) record past verification.
+
+## Read-only health and coverage report
+
+```sh
+cd workers
+node --env-file=worker.env ingestion-health.js
+node --env-file=worker.env ingestion-health.js --json
+# With DATABASE_URL already exported:
+npm run health
+```
+
+The command uses only `DATABASE_URL` and optional `DATABASE_SCHEMA` (default
+`public`). It takes a single repeatable-read, read-only PostgreSQL transaction;
+it does not acquire the writer lease, update checkpoints, contact NBA/Redis, or
+trigger ingestion. Use a database role with SELECT access to the report's tables
+if desired. An initialized schema is required; missing tables are an unavailable
+report, not an empty database.
+
+Exit codes are **0** for healthy, **1** for degraded or empty, and **2** when a
+report cannot be produced (connection, schema, or option error). `--json` emits
+one JSON object directly to stdout; use the direct `node` command or
+`npm run --silent health -- --json` for automation. JSON `schema_version: 1`
+contains `status`, `coverage`, `freshness`, required `stages`, `optional_stages`,
+`issues`, and the effective `policy`. Missing timestamps are `null`; gap ID arrays
+are empty when no known gaps exist. Issues have stable `code` and `scope` fields.
+Unavailable output contains the version, status and a generic error, without
+database connection details. An unavailable report has no coverage fields.
+
+The report distinguishes these kinds of evidence:
+
+- **Source freshness:** only persisted `observed_at` values establish when NBA
+  data was observed. Games and box scores show oldest/latest observations plus
+  stale, missing and future counts. Recent games are evaluated individually, so
+  one fresh row cannot hide another stale row. The team-stat snapshot uses its
+  observation, never `updated_at`.
+- **Publication health:** required bootstrap stages show their latest status,
+  attempt, successful checkpoint and committed publication time. A failed or
+  running attempt retains its last success but never claims a new publication.
+  Static directory success and resumed/skipped work do not establish fresh live
+  data. Standings and player-season stats have no persisted source observation;
+  their freshness is explicitly unknown even when publication health is good.
+- **Coverage:** current-season games, played games, box scores, player lines,
+  regular-season player stats, standings and distinct snapshot team IDs are
+  counted. Directory counts include retained identities from other seasons.
+  The two-calendar-day New York window matches the bootstrap. Missing boxes,
+  boxes without player lines, and unfresh boxes for scored games in that window
+  affect health. All-season missing box IDs are informational: historical
+  backfill is outside this pipeline. Scheduled games with zero scores do not
+  require a box score. Player-stat coverage has no invented expected player
+  total; standings and team stats expect 30 teams once games have been played.
+  Observation ages outside the recent window are informational as well.
+- **Final box-score points:** for each recent final with player lines, the
+  report sums points by team and compares them with the team scores saved in
+  that box score. `coverage.recent.inconsistent_final_boxscores` lists the game
+  IDs and reasons when the totals disagree or the saved team scores are invalid.
+  The bootstrap applies the same check before replacing a final snapshot. The
+  check can find a missing scorer. A missing zero-point player or a non-scoring
+  stat error can still pass. Live snapshots are excluded because score and player
+  feeds can advance between requests.
+
+Operational limits deliberately allow the current three-hour off-hours schedule:
+live observations and required live-stage publications may be at most **six
+hours** old; recent final box-score observations/publications may be **24 hours**
+old to allow for the six-hour correction interval; static directories may be
+**48 hours** old. Timestamps more than five minutes in the future are not fresh.
+These are monitoring grace periods, not the worker's fetch/checkpoint TTLs and
+not a promise of live scores. The JSON includes these limits.
+
+Required stages are teams, players, games, today's scoreboard, standings,
+player stats, team stats, and each known scored recent game's box score. Missing,
+failed, running, empty or stale stages degrade health. A deliberate exception
+allows empty season-stat publications when fresh successful games and today's
+scoreboard checkpoints establish a season with no played games; a zero-game day
+alone does not erase season-stat requirements. An initialized empty database
+without that evidence reports `empty`. Optional `leaders:*` failures appear
+separately and never affect default core health. Older daily scoreboard and
+out-of-window box-score checkpoints do not affect it either.
+
+The ingestion workflow appends the human report to its job summary after worker
+success or failure. The report step is advisory (`continue-on-error`) and keeps
+the original worker failure result. Gated/skipped and probe-only runs do not
+read the database for a summary. No workflow run is needed to use this command.
+
+Limits: this is evidence about stored data and bootstrap checkpoints. It cannot
+prove NBA reachability, detect games absent from the entire stored inventory,
+establish player/standings source freshness, validate every stat, or inspect
+Redis/application serving freshness. `healthy` means these documented checks
+pass; it is not a claim of complete league data or upstream availability.
 
 ## Bootstrap validation
 
@@ -105,6 +208,12 @@ reference ordering, no inactive-history insertion, a newly observed player's FK,
 source interruption, publication rollback, retry, resume, idempotence, optional
 leader replacement, and current-season isolation. It never accepts or inherits a
 deployment database URL/cache credentials. PR CI installs PostgreSQL and runs it.
+It also exercises the health reader against empty/partial/complete fixture data,
+checks retained source observations and unchanged checkpoints, and runs the real
+health CLI for healthy, degraded and empty exit codes. Health unit tests cover
+stale/future/unknown observations, failed/running stages, optional failures,
+zero-game/off-day states, missing box scores/player lines, invalid snapshots,
+and New York calendar boundaries without network services or credentials.
 
 ## Legacy runner behavior
 

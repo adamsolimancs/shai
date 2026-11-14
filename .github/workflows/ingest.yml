@@ -73,6 +73,7 @@ jobs:
         if: steps.schedule.outputs.run_worker == 'true'
         run: python -m pip install nba_api==1.11.4
       - name: Run worker
+        id: worker
         if: steps.schedule.outputs.run_worker == 'true' && !inputs.probe_only
         env:
           REFRESH: ${{ inputs.refresh }}
@@ -92,6 +93,19 @@ jobs:
           args=()
           if [ "$REFRESH" = true ]; then args+=(--refresh); fi
           node workers/bootstrap.js "${args[@]}"
+      - name: Summarize ingestion health
+        if: ${{ always() && !cancelled() && (steps.worker.outcome == 'success' || steps.worker.outcome == 'failure') }}
+        continue-on-error: true
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DATABASE_SCHEMA: public
+        run: |
+          echo '### Current-season ingestion health' >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          result=0
+          node workers/ingestion-health.js >> "$GITHUB_STEP_SUMMARY" || result=$?
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          exit "$result"
       - name: Verify NBA source access
         if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' && !inputs.probe_only && steps.schedule.outputs.run_worker == 'true' }}
         env:

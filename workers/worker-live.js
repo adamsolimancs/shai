@@ -10,6 +10,7 @@ const { spawn } = require("child_process");
 const { Pool } = require("pg");
 const { cache } = require("./cache");
 const { acquireCronLease } = require("./cron-lease");
+const { isFinalStatus } = require("./boxscore-coverage");
 const dns = require("dns");
 const path = require("path");
 
@@ -622,10 +623,6 @@ function normalizeConflictValue(value) {
     return value.trim().toLowerCase();
   }
   return value;
-}
-
-function isFinalStatus(status) {
-  return Boolean(status && /final/i.test(status));
 }
 
 function isLiveStatus(status) {

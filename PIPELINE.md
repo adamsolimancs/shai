@@ -1,4 +1,4 @@
-# Live bootstrap status — 2026-10-26
+# Live bootstrap and source investigations
 
 The staged, resumable bootstrap is implemented in `workers/bootstrap.js` with
 source adapters in `workers/bootstrap-source.js`. The user requested 2026–27 live
@@ -75,18 +75,105 @@ import. Failed requests did not advance those observations or replace good data.
 Actual local API HTTP requests against Neon still returned 200 for games,
 standings, player/team stats and a recent box score, with NBA fetching disabled.
 
-GitHub-hosted NBA access is currently an operational blocker, not a database or
-checkpoint failure. The nba_api maintainers document that stats.nba.com often
+GitHub-hosted NBA access blocked that deployment, while the database and
+checkpoints worked. The nba_api maintainers document that stats.nba.com often
 does not respond to cloud-hosting IP ranges. More worker concurrency will not
-fix this and can add request pressure. Before enabling the new recurring runner,
-use an ingestion host with confirmed upstream access or a supported data feed.
+fix this and can add request pressure. The user subsequently chose the Mac as
+the ingestion host; the native service deployment is recorded below.
 [nba_api hosting guidance](https://github.com/swar/nba_api#rate-limits-and-hosting)
+
+## Recheck after Actions secret cleanup
+
+Repository `NBA_SEASON` was updated to `2026-27`; obsolete `SUPABASE_URL`,
+`SUPABASE_SECRET_KEY`, `SUPABASE_SCHEMA` and unused `NODE_ENV` entries were removed.
+The functional Neon/Redis settings were retained. Neither Preview nor Production
+has environment secrets/variables overriding these values. The modern bootstrap
+already pins 2026–27, so the stale season secret was not its source of NBA failures.
+
+[Forced refresh #5995](https://github.com/adamsolimancs/shai/actions/runs/40360888856)
+still failed after the cleanup: static directory writes to Neon succeeded, but
+all network-backed stats stages timed out, including a separate 60-second probe.
+[Read-only network run #5996](https://github.com/adamsolimancs/shai/actions/runs/40362405021)
+then compared the public NBA endpoints without database or Redis credentials:
+
+| Probe | This Mac | GitHub-hosted runner |
+| --- | --- | --- |
+| Stats DNS/TCP/TLS | Successful; certificate verified | Successful; TLS completed in 0.096 seconds; certificate verified |
+| Stats HTTP scoreboard | HTTP 200 JSON in 0.200 seconds | Zero response bytes; curl timed out after 20 seconds and nba_api after 60 seconds |
+| Live CDN scoreboard | HTTP 403 HTML, Access Denied | HTTP 403 HTML, Access Denied |
+| Proxy environment | None configured | None configured |
+
+The Mac also received HTTP 200 JSON in 0.314 seconds from **the exact NBA server
+IP used by Actions**, `23.32.109.87`, with the normal hostname and certificate
+verification retained. This rules out that endpoint simply being down or the
+failure being just a bad DNS destination. It strongly supports network-dependent
+NBA edge filtering, such as runner source-IP/reputation rules. The exact internal
+NBA rule cannot be established without NBA's server logs; client fingerprint
+rules are another possible factor. There was no certificate, DNS, Neon auth,
+season-validation or JSON parsing failure on the failing stats request: the
+request stalled waiting for its HTTP response. The CDN parser errors are instead
+explained by its explicit HTML 403 response, which also occurs on the Mac.
+
+### Why the old green runs are different
+
+[Run #215](https://github.com/adamsolimancs/shai/actions/runs/20701002953) on
+January 4 was successful, at commit `cc047c157a51ea5418a4c95c06d4c813baa00dba`.
+That worker called the configured backend `NBA_API_BASE_URL` with `NBA_API_KEY`
+using `/v1/...` routes. It did **not** make today's direct stats.nba.com requests
+from the Actions network. Its `runCronTask` also caught individual failures and
+continued without failing the final cron process. Historical green status is
+therefore evidence of a completed job, not proof of fresh NBA data from every
+stage. GitHub now returns HTTP 410 for those old logs, so exact historical data
+coverage cannot be recovered from them.
+[Old API request path](https://github.com/adamsolimancs/shai/blob/cc047c157a51ea5418a4c95c06d4c813baa00dba/workers/worker-live.js#L177),
+[old task failure handling](https://github.com/adamsolimancs/shai/blob/cc047c157a51ea5418a4c95c06d4c813baa00dba/workers/worker-live.js#L1047).
+
+The workflow was disabled again after the experiment. The Mac worker then ran
+successfully to refresh data and restore the failed test's checkpoints. The new
+read-only network diagnostic and offline tests are committed/pushed separately;
+the pending health-report/native-service source changes remain local.
+
+## Mac ingestion service
+
+The user selected this Mac while awake and online. A private Python 3.11.16
+environment with nba_api 1.11.4 passed all core stats source checks. A native
+LaunchAgent, `com.shai.ingestion`, is installed for user 501. It uses a separate
+runtime copy of worker commit `de65cd2137c3714c3192270bd45b257ac7dd6d0d` plus
+the tested launcher (SHA-256 begins `a8c8e042b6c4`); development edits are excluded.
+Credentials live in a private ignored environment file, not the plist or release.
+
+The initial ingestion pass returned `complete: true`: games, scoreboard,
+standings, player/team stats and seven due recent box scores all succeeded.
+The LaunchAgent then independently published fresh game and scoreboard data and
+exited 0. Its stderr log was empty. Game and scoreboard successful checkpoints
+advanced to `2026-10-26T04:35:47.211Z` and `2026-10-26T04:35:48.227Z` respectively;
+the representative box score `0022600118` advanced to `04:34:31.403Z`.
+
+The next real calendar event at 00:40 Eastern also ran without a manual trigger.
+Launchd reported two completed service runs with last exit code 0 and no stderr;
+the game and scoreboard successful checkpoints advanced again to
+`2026-10-26T04:40:04.016Z` and `2026-10-26T04:40:05.111Z`. Both service runs
+returned `complete: true`. This verifies native scheduling as well as startup.
+
+The native service checks the New York schedule every five minutes, uses the
+shared Redis lease, and caps a run at 20 minutes. Sleep, logout, shutdown or loss
+of network access interrupts updates. Later on October 26, the Mac service was
+disabled and unloaded at the user's request while Render was investigated.
+Recurring GitHub ingestion also remained disabled. The plist, private files,
+pinned release and checkpoints were retained. See the [pause and Render investigation](workers/HOSTED_BACKEND_QUALIFICATION.md#current-mac-worker-state)
+and [self-hosted runbook](workers/SELF_HOSTED.md#resuming-the-paused-macos-service).
 
 ## Validation completed
 
 - 59 worker tests passed, including a regression requiring scoreboard availability
   for a successful source check. Worker tests and the empty-database integration
   were rerun after the dispatch/source-check changes.
+- The generated Mac plist passed `plutil`. The manual pinned-runtime run and the
+  installed LaunchAgent both read from the NBA source and published to Neon.
+- The initial health report returned `healthy` against Neon during those runs.
+  That result predates the pause and the final-score reconciliation check. It
+  records the presence of player lines at the time, with no evidence about
+  missing individual lines.
 - Empty disposable PostgreSQL integration passed: dependency order, atomic
   publication/checkpoint rollback, interruption/retry/resume, idempotence,
   optional leaderboard replacement, and current-season isolation.
@@ -113,15 +200,25 @@ See `workers/README.md` for commands and checkpoint windows. The tracked ingesti
 workflow invokes the focused runner every five minutes in the evening/late
 night and every three hours otherwise, without historical sweeps. Those edits
 are pushed to `adam`, and the manual production verification runs are linked
-above. The default branch is `main`; it has not been updated, so existing
-production scheduling still uses its previous runner. No application deployment
-was performed. Automatic live updates have not been verified working.
+above. The default branch `main` was outside those verification runs. Production
+ingestion remains paused. The installed Mac runtime uses its pinned release
+independently of edits or merges to this repository. See the [provider decision](workers/PRODUCTION_OPTIONS.md)
+and [API-NBA live evaluation](workers/API_NBA_LIVE_EVALUATION.md) before choosing
+a replacement source.
 
 Keep direct NBA fetching disabled in the production API. An unavailable source
 should delay ingestion and leave honest stale/unavailable UI states, rather than
 turning visitor requests into upstream traffic.
 
-The next required step is a source/host decision based on the failed cloud probes,
-then publication to `main` and observation of repeated successful scheduled runs.
-Source/coverage monitoring, broader historical enrichment, raw-response archiving
-and more frequent active-game polling remain separate work.
+The [read-only health report](workers/README.md#read-only-health-and-coverage-report)
+can run while ingestion is paused. It distinguishes persisted source observations
+from publication times and flags final box scores whose player points disagree
+with either team's stored score. The bootstrap also rejects newly fetched final
+box scores with that discrepancy before replacing a published snapshot. Run
+the source check on the intended host again before reactivating a writer.
+
+On November 14, the Mac passed the read-only source check with 183 game rows,
+467 player-stat rows, a five-game scoreboard and a reconciled 24-player final
+box score for `0022600042`. The database configured for local ShAI reported
+degraded ingestion. Its newest stored game and box-score observations both dated
+to `2026-10-26T16:50:24.930Z`. The Mac service remained disabled and unloaded.

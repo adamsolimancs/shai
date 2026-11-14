@@ -7,6 +7,7 @@
     "test": "node --test",
     "bootstrap": "node bootstrap.js",
     "check:sources": "node bootstrap.js --check-sources",
+    "health": "node ingestion-health.js",
     "test:bootstrap-integration": "python3 integration/bootstrap_db.py",
     "test:lease-integration": "node integration/cron-lease.cjs"
   },
