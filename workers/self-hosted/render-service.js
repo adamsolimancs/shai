@@ -10,8 +10,8 @@ const ROOT = path.resolve(__dirname, "../..");
 const escapeXml = value => value.replace(/[&<>"']/g, char => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;",
 })[char]);
-const unitQuote = (value, command = false) => '"' + value.replaceAll("\\", "\\\\")
-  .replaceAll('"', '\\"').replaceAll("%", "%%").replaceAll("$", () => command ? "$$" : "$") + '"';
+const unitQuote = value => '"' + value.replaceAll("\\", "\\\\")
+  .replaceAll('"', '\\"').replaceAll("%", "%%") + '"';
 
 function render({ platform, node, python, envFile, root = ROOT, logDir }) {
   for (const value of [node, python, envFile, root, logDir]) {
@@ -44,8 +44,7 @@ Description=ShAI current-season NBA ingestion
 
 [Service]
 Type=oneshot
-WorkingDirectory=${unitQuote(root)}
-ExecStart=${args.map(arg => unitQuote(arg, true)).join(" ")}
+ExecStart=:${args.map(unitQuote).join(" ")}
 TimeoutStartSec=21min
 TimeoutStopSec=20s
 KillMode=control-group

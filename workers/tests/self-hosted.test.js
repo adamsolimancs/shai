@@ -129,8 +129,9 @@ test("macOS service uses absolute argument paths, calendar scheduling and no emb
 test("Linux service quotes argument boundaries and escapes systemd expansions", () => {
   const files = render({ ...settings, node: '/opt/a%u/$user/"node"', platform: "linux" });
   assert.match(files["shai-ingestion.service"], /Type=oneshot/);
-  assert.match(files["shai-ingestion.service"], /a%%u\/\$\$user\/\\"node\\"/);
+  assert.match(files["shai-ingestion.service"], /ExecStart=:"\/opt\/a%%u\/\$user\/\\"node\\"/);
   assert.match(files["shai-ingestion.service"], /"--" "[^"\n]+\/workers\/self-hosted\/run\.js"/);
+  assert.doesNotMatch(files["shai-ingestion.service"], /^WorkingDirectory=/m);
   assert.match(files["shai-ingestion.service"], /KillMode=control-group/);
   assert.match(files["shai-ingestion.timer"], /Persistent=true/);
   assert.throws(() => render({ ...settings, root: "/tmp/a\nExecStart=bad", platform: "linux" }), /control characters/);
