@@ -1,0 +1,1367 @@
+{
+  "date": "2026-10-26",
+  "timezone": "America/New_York",
+  "plan": "free",
+  "reference": "ESPN scoreboard",
+  "runs": [
+    {
+      "actions_run": 40439962241,
+      "checked_at": "2026-10-27T02:42:29.540Z",
+      "provider_http_requests": 10,
+      "request_checks": [
+        {
+          "path": "/status",
+          "requested_at": "2026-10-27T02:42:29.541Z",
+          "http_status": 200,
+          "rows": 1,
+          "received_at": "2026-10-27T02:42:30.182Z",
+          "duration_ms": 641
+        },
+        {
+          "path": "/games?live=all",
+          "requested_at": "2026-10-27T02:42:36.043Z",
+          "http_status": 200,
+          "rows": 3,
+          "received_at": "2026-10-27T02:42:36.183Z",
+          "duration_ms": 140
+        },
+        {
+          "path": "/games?date=2026-10-26&league=standard",
+          "requested_at": "2026-10-27T02:42:42.545Z",
+          "http_status": 200,
+          "error": "provider_rejected_query",
+          "error_years_mentioned": [],
+          "received_at": "2026-10-27T02:42:42.685Z",
+          "duration_ms": 140
+        },
+        {
+          "path": "/games?date=2026-10-27&league=standard",
+          "requested_at": "2026-10-27T02:42:49.047Z",
+          "http_status": 200,
+          "error": "provider_rejected_query",
+          "error_years_mentioned": [],
+          "received_at": "2026-10-27T02:42:49.186Z",
+          "duration_ms": 139
+        },
+        {
+          "path": "/games?live=all",
+          "requested_at": "2026-10-27T02:43:06.294Z",
+          "http_status": 200,
+          "rows": 3,
+          "received_at": "2026-10-27T02:43:06.428Z",
+          "duration_ms": 134
+        },
+        {
+          "path": "/games?live=all",
+          "requested_at": "2026-10-27T02:43:36.530Z",
+          "http_status": 200,
+          "rows": 3,
+          "received_at": "2026-10-27T02:43:36.675Z",
+          "duration_ms": 145
+        },
+        {
+          "path": "/games?live=all",
+          "requested_at": "2026-10-27T02:44:06.799Z",
+          "http_status": 200,
+          "rows": 3,
+          "received_at": "2026-10-27T02:44:07.101Z",
+          "duration_ms": 302
+        },
+        {
+          "path": "/games/statistics?id=16990",
+          "requested_at": "2026-10-27T02:44:13.301Z",
+          "http_status": 200,
+          "rows": 2,
+          "received_at": "2026-10-27T02:44:13.436Z",
+          "duration_ms": 135
+        },
+        {
+          "path": "/players/statistics?game=16990",
+          "requested_at": "2026-10-27T02:44:19.804Z",
+          "http_status": 200,
+          "rows": 19,
+          "received_at": "2026-10-27T02:44:19.936Z",
+          "duration_ms": 132
+        },
+        {
+          "path": "/games?id=16990",
+          "requested_at": "2026-10-27T02:44:26.306Z",
+          "http_status": 200,
+          "rows": 1,
+          "received_at": "2026-10-27T02:44:26.439Z",
+          "duration_ms": 133
+        }
+      ],
+      "comparisons": {
+        "total": 12,
+        "score_matches": 0,
+        "status_matches": 12
+      },
+      "live_samples": [
+        {
+          "received_at": "2026-10-27T02:42:36.239Z",
+          "reference_before_received_at": "2026-10-27T02:42:30.241Z",
+          "reference_after_received_at": "2026-10-27T02:42:36.238Z",
+          "comparison": [
+            {
+              "key": "ATL@HOU",
+              "provider_score": [
+                93,
+                109
+              ],
+              "provider_status": "in",
+              "provider_period": 4,
+              "provider_clock": "6:42",
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                95,
+                112
+              ],
+              "reference_period": 4,
+              "reference_clock": "5:25"
+            },
+            {
+              "key": "MEM@UTA",
+              "provider_score": [
+                70,
+                65
+              ],
+              "provider_status": "in",
+              "provider_period": 3,
+              "provider_clock": "6:58",
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                72,
+                65
+              ],
+              "reference_period": 3,
+              "reference_clock": "6:39"
+            },
+            {
+              "key": "GSW@DEN",
+              "provider_score": [
+                28,
+                32
+              ],
+              "provider_status": "in",
+              "provider_period": 1,
+              "provider_clock": null,
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                34,
+                32
+              ],
+              "reference_period": 2,
+              "reference_clock": "10:51"
+            }
+          ]
+        },
+        {
+          "received_at": "2026-10-27T02:43:06.454Z",
+          "reference_before_received_at": "2026-10-27T02:43:06.293Z",
+          "reference_after_received_at": "2026-10-27T02:43:06.453Z",
+          "comparison": [
+            {
+              "key": "ATL@HOU",
+              "provider_score": [
+                95,
+                109
+              ],
+              "provider_status": "in",
+              "provider_period": 4,
+              "provider_clock": "6:18",
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                95,
+                115
+              ],
+              "reference_period": 4,
+              "reference_clock": "5:08"
+            },
+            {
+              "key": "MEM@UTA",
+              "provider_score": [
+                70,
+                65
+              ],
+              "provider_status": "in",
+              "provider_period": 3,
+              "provider_clock": "6:58",
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                72,
+                65
+              ],
+              "reference_period": 3,
+              "reference_clock": "6:01"
+            },
+            {
+              "key": "GSW@DEN",
+              "provider_score": [
+                28,
+                32
+              ],
+              "provider_status": "in",
+              "provider_period": 1,
+              "provider_clock": null,
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                36,
+                32
+              ],
+              "reference_period": 2,
+              "reference_clock": "10:35"
+            }
+          ]
+        },
+        {
+          "received_at": "2026-10-27T02:43:36.696Z",
+          "reference_before_received_at": "2026-10-27T02:43:36.529Z",
+          "reference_after_received_at": "2026-10-27T02:43:36.696Z",
+          "comparison": [
+            {
+              "key": "ATL@HOU",
+              "provider_score": [
+                95,
+                109
+              ],
+              "provider_status": "in",
+              "provider_period": 4,
+              "provider_clock": "6:18",
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                95,
+                115
+              ],
+              "reference_period": 4,
+              "reference_clock": "5:08"
+            },
+            {
+              "key": "MEM@UTA",
+              "provider_score": [
+                70,
+                65
+              ],
+              "provider_status": "in",
+              "provider_period": 3,
+              "provider_clock": "6:58",
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                74,
+                65
+              ],
+              "reference_period": 3,
+              "reference_clock": "5:34"
+            },
+            {
+              "key": "GSW@DEN",
+              "provider_score": [
+                28,
+                32
+              ],
+              "provider_status": "in",
+              "provider_period": 1,
+              "provider_clock": null,
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                36,
+                32
+              ],
+              "reference_period": 2,
+              "reference_clock": "9:57"
+            }
+          ]
+        },
+        {
+          "received_at": "2026-10-27T02:44:07.122Z",
+          "reference_before_received_at": "2026-10-27T02:44:06.798Z",
+          "reference_after_received_at": "2026-10-27T02:44:07.121Z",
+          "comparison": [
+            {
+              "key": "ATL@HOU",
+              "provider_score": [
+                95,
+                112
+              ],
+              "provider_status": "in",
+              "provider_period": 4,
+              "provider_clock": "5:22",
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                95,
+                115
+              ],
+              "reference_period": 4,
+              "reference_clock": "5:08"
+            },
+            {
+              "key": "MEM@UTA",
+              "provider_score": [
+                72,
+                65
+              ],
+              "provider_status": "in",
+              "provider_period": 3,
+              "provider_clock": "6:43",
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                74,
+                66
+              ],
+              "reference_period": 3,
+              "reference_clock": "5:30"
+            },
+            {
+              "key": "GSW@DEN",
+              "provider_score": [
+                34,
+                32
+              ],
+              "provider_status": "in",
+              "provider_period": 2,
+              "provider_clock": "10:51",
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                36,
+                34
+              ],
+              "reference_period": 2,
+              "reference_clock": "9:39"
+            }
+          ]
+        }
+      ],
+      "date_samples": [
+        {
+          "received_at": "2026-10-27T02:42:42.828Z",
+          "reference_before_received_at": "2026-10-27T02:42:36.263Z",
+          "reference_after_received_at": "2026-10-27T02:42:42.828Z",
+          "comparison": [],
+          "date": "2026-10-26"
+        },
+        {
+          "received_at": "2026-10-27T02:42:49.260Z",
+          "reference_before_received_at": "2026-10-27T02:42:42.869Z",
+          "reference_after_received_at": "2026-10-27T02:42:49.260Z",
+          "comparison": [],
+          "date": "2026-10-27"
+        }
+      ],
+      "current_day_games": [
+        {
+          "id": 16990,
+          "key": "ATL@HOU",
+          "home_id": 14,
+          "away_id": 1,
+          "home": 109,
+          "away": 93,
+          "status": "in",
+          "period": 4,
+          "clock": "6:42"
+        },
+        {
+          "id": 16991,
+          "key": "MEM@UTA",
+          "home_id": 40,
+          "away_id": 19,
+          "home": 65,
+          "away": 70,
+          "status": "in",
+          "period": 3,
+          "clock": "6:58"
+        },
+        {
+          "id": 16992,
+          "key": "GSW@DEN",
+          "home_id": 9,
+          "away_id": 11,
+          "home": 32,
+          "away": 28,
+          "status": "in",
+          "period": 1,
+          "clock": null
+        }
+      ],
+      "boxscore": {
+        "key": "ATL@HOU",
+        "status": "in",
+        "player_rows": 19,
+        "teams": [
+          {
+            "team_id": 1,
+            "game_points": 95,
+            "team_stat_points": 95,
+            "player_points_sum": 95
+          },
+          {
+            "team_id": 14,
+            "game_points": 115,
+            "team_stat_points": 112,
+            "player_points_sum": 112
+          }
+        ]
+      }
+    },
+    {
+      "actions_run": 40440521644,
+      "checked_at": "2026-10-27T02:48:08.582Z",
+      "provider_http_requests": 10,
+      "request_checks": [
+        {
+          "path": "/status",
+          "requested_at": "2026-10-27T02:48:08.582Z",
+          "http_status": 200,
+          "rows": 1,
+          "received_at": "2026-10-27T02:48:09.143Z",
+          "duration_ms": 561
+        },
+        {
+          "path": "/games?live=all",
+          "requested_at": "2026-10-27T02:48:15.085Z",
+          "http_status": 200,
+          "rows": 3,
+          "received_at": "2026-10-27T02:48:15.211Z",
+          "duration_ms": 126
+        },
+        {
+          "path": "/games?date=2026-10-26",
+          "requested_at": "2026-10-27T02:48:21.588Z",
+          "http_status": 200,
+          "rows": 5,
+          "received_at": "2026-10-27T02:48:21.706Z",
+          "duration_ms": 118
+        },
+        {
+          "path": "/games?date=2026-10-27",
+          "requested_at": "2026-10-27T02:48:28.090Z",
+          "http_status": 200,
+          "rows": 6,
+          "received_at": "2026-10-27T02:48:28.234Z",
+          "duration_ms": 144
+        },
+        {
+          "path": "/games?live=all",
+          "requested_at": "2026-10-27T02:48:45.371Z",
+          "http_status": 200,
+          "rows": 3,
+          "received_at": "2026-10-27T02:48:45.494Z",
+          "duration_ms": 123
+        },
+        {
+          "path": "/games?live=all",
+          "requested_at": "2026-10-27T02:49:15.656Z",
+          "http_status": 200,
+          "rows": 3,
+          "received_at": "2026-10-27T02:49:15.967Z",
+          "duration_ms": 311
+        },
+        {
+          "path": "/games?live=all",
+          "requested_at": "2026-10-27T02:49:46.034Z",
+          "http_status": 200,
+          "rows": 3,
+          "received_at": "2026-10-27T02:49:46.326Z",
+          "duration_ms": 292
+        },
+        {
+          "path": "/games/statistics?id=16984",
+          "requested_at": "2026-10-27T02:49:52.537Z",
+          "http_status": 200,
+          "rows": 2,
+          "received_at": "2026-10-27T02:49:52.835Z",
+          "duration_ms": 298
+        },
+        {
+          "path": "/players/statistics?game=16984",
+          "requested_at": "2026-10-27T02:49:59.039Z",
+          "http_status": 200,
+          "rows": 20,
+          "received_at": "2026-10-27T02:49:59.170Z",
+          "duration_ms": 131
+        },
+        {
+          "path": "/games?id=16984",
+          "requested_at": "2026-10-27T02:50:05.542Z",
+          "http_status": 200,
+          "rows": 1,
+          "received_at": "2026-10-27T02:50:05.674Z",
+          "duration_ms": 133
+        }
+      ],
+      "comparisons": {
+        "total": 12,
+        "score_matches": 6,
+        "status_matches": 12
+      },
+      "live_samples": [
+        {
+          "received_at": "2026-10-27T02:48:15.246Z",
+          "reference_before_received_at": "2026-10-27T02:48:09.230Z",
+          "reference_after_received_at": "2026-10-27T02:48:15.245Z",
+          "comparison": [
+            {
+              "key": "ATL@HOU",
+              "provider_score": [
+                98,
+                117
+              ],
+              "provider_status": "in",
+              "provider_period": 4,
+              "provider_clock": "4:13",
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                99,
+                117
+              ],
+              "reference_period": 4,
+              "reference_clock": "4:13"
+            },
+            {
+              "key": "MEM@UTA",
+              "provider_score": [
+                74,
+                66
+              ],
+              "provider_status": "in",
+              "provider_period": 3,
+              "provider_clock": "4:41",
+              "reference_available": true,
+              "score_matches_reference_window": true,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                74,
+                66
+              ],
+              "reference_period": 3,
+              "reference_clock": "4:41"
+            },
+            {
+              "key": "GSW@DEN",
+              "provider_score": [
+                41,
+                36
+              ],
+              "provider_status": "in",
+              "provider_period": 2,
+              "provider_clock": "8:54",
+              "reference_available": true,
+              "score_matches_reference_window": true,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                41,
+                36
+              ],
+              "reference_period": 2,
+              "reference_clock": "8:54"
+            }
+          ]
+        },
+        {
+          "received_at": "2026-10-27T02:48:45.515Z",
+          "reference_before_received_at": "2026-10-27T02:48:45.370Z",
+          "reference_after_received_at": "2026-10-27T02:48:45.514Z",
+          "comparison": [
+            {
+              "key": "ATL@HOU",
+              "provider_score": [
+                98,
+                117
+              ],
+              "provider_status": "in",
+              "provider_period": 4,
+              "provider_clock": "4:13",
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                99,
+                117
+              ],
+              "reference_period": 4,
+              "reference_clock": "3:49"
+            },
+            {
+              "key": "MEM@UTA",
+              "provider_score": [
+                74,
+                66
+              ],
+              "provider_status": "in",
+              "provider_period": 3,
+              "provider_clock": "4:41",
+              "reference_available": true,
+              "score_matches_reference_window": true,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                74,
+                66
+              ],
+              "reference_period": 3,
+              "reference_clock": "4:41"
+            },
+            {
+              "key": "GSW@DEN",
+              "provider_score": [
+                41,
+                36
+              ],
+              "provider_status": "in",
+              "provider_period": 2,
+              "provider_clock": "8:54",
+              "reference_available": true,
+              "score_matches_reference_window": true,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                41,
+                36
+              ],
+              "reference_period": 2,
+              "reference_clock": "8:54"
+            }
+          ]
+        },
+        {
+          "received_at": "2026-10-27T02:49:15.986Z",
+          "reference_before_received_at": "2026-10-27T02:49:15.654Z",
+          "reference_after_received_at": "2026-10-27T02:49:15.985Z",
+          "comparison": [
+            {
+              "key": "ATL@HOU",
+              "provider_score": [
+                98,
+                117
+              ],
+              "provider_status": "in",
+              "provider_period": 4,
+              "provider_clock": "4:13",
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                100,
+                117
+              ],
+              "reference_period": 4,
+              "reference_clock": "3:48"
+            },
+            {
+              "key": "MEM@UTA",
+              "provider_score": [
+                74,
+                66
+              ],
+              "provider_status": "in",
+              "provider_period": 3,
+              "provider_clock": "4:41",
+              "reference_available": true,
+              "score_matches_reference_window": true,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                74,
+                66
+              ],
+              "reference_period": 3,
+              "reference_clock": "4:39"
+            },
+            {
+              "key": "GSW@DEN",
+              "provider_score": [
+                41,
+                36
+              ],
+              "provider_status": "in",
+              "provider_period": 2,
+              "provider_clock": "8:54",
+              "reference_available": true,
+              "score_matches_reference_window": true,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                41,
+                36
+              ],
+              "reference_period": 2,
+              "reference_clock": "8:54"
+            }
+          ]
+        },
+        {
+          "received_at": "2026-10-27T02:49:46.342Z",
+          "reference_before_received_at": "2026-10-27T02:49:46.032Z",
+          "reference_after_received_at": "2026-10-27T02:49:46.341Z",
+          "comparison": [
+            {
+              "key": "ATL@HOU",
+              "provider_score": [
+                99,
+                117
+              ],
+              "provider_status": "in",
+              "provider_period": 4,
+              "provider_clock": "4:05",
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                101,
+                117
+              ],
+              "reference_period": 4,
+              "reference_clock": "3:29"
+            },
+            {
+              "key": "MEM@UTA",
+              "provider_score": [
+                74,
+                66
+              ],
+              "provider_status": "in",
+              "provider_period": 3,
+              "provider_clock": "4:41",
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                76,
+                68
+              ],
+              "reference_period": 3,
+              "reference_clock": "3:54"
+            },
+            {
+              "key": "GSW@DEN",
+              "provider_score": [
+                41,
+                36
+              ],
+              "provider_status": "in",
+              "provider_period": 2,
+              "provider_clock": "8:54",
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                41,
+                38
+              ],
+              "reference_period": 2,
+              "reference_clock": "8:14"
+            }
+          ]
+        }
+      ],
+      "date_samples": [
+        {
+          "received_at": "2026-10-27T02:48:21.743Z",
+          "reference_before_received_at": "2026-10-27T02:48:15.273Z",
+          "reference_after_received_at": "2026-10-27T02:48:21.742Z",
+          "comparison": [
+            {
+              "key": "WAS@CHA",
+              "provider_score": [
+                103,
+                110
+              ],
+              "provider_status": "post",
+              "provider_period": 4,
+              "provider_clock": null,
+              "reference_available": true,
+              "score_matches_reference_window": true,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                103,
+                110
+              ],
+              "reference_period": 4,
+              "reference_clock": "0.0"
+            },
+            {
+              "key": "MIN@CLE",
+              "provider_score": [
+                125,
+                127
+              ],
+              "provider_status": "post",
+              "provider_period": 4,
+              "provider_clock": null,
+              "reference_available": true,
+              "score_matches_reference_window": true,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                125,
+                127
+              ],
+              "reference_period": 5,
+              "reference_clock": "0.0"
+            },
+            {
+              "key": "CHI@BOS",
+              "provider_score": [
+                99,
+                134
+              ],
+              "provider_status": "post",
+              "provider_period": 4,
+              "provider_clock": null,
+              "reference_available": true,
+              "score_matches_reference_window": true,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                99,
+                134
+              ],
+              "reference_period": 4,
+              "reference_clock": "0.0"
+            },
+            {
+              "key": "DAL@MIA",
+              "provider_score": [
+                113,
+                109
+              ],
+              "provider_status": "post",
+              "provider_period": 4,
+              "provider_clock": null,
+              "reference_available": true,
+              "score_matches_reference_window": true,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                113,
+                109
+              ],
+              "reference_period": 4,
+              "reference_clock": "0.0"
+            }
+          ],
+          "date": "2026-10-26"
+        },
+        {
+          "received_at": "2026-10-27T02:48:28.266Z",
+          "reference_before_received_at": "2026-10-27T02:48:21.761Z",
+          "reference_after_received_at": "2026-10-27T02:48:28.265Z",
+          "comparison": [
+            {
+              "key": "IND@MIL",
+              "provider_score": [
+                102,
+                110
+              ],
+              "provider_status": "post",
+              "provider_period": 4,
+              "provider_clock": null,
+              "reference_available": true,
+              "score_matches_reference_window": true,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                102,
+                110
+              ],
+              "reference_period": 4,
+              "reference_clock": "0.0"
+            },
+            {
+              "key": "PHX@OKC",
+              "provider_score": [
+                114,
+                125
+              ],
+              "provider_status": "post",
+              "provider_period": 4,
+              "provider_clock": null,
+              "reference_available": true,
+              "score_matches_reference_window": true,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                114,
+                125
+              ],
+              "reference_period": 4,
+              "reference_clock": "0.0"
+            },
+            {
+              "key": "ATL@HOU",
+              "provider_score": [
+                98,
+                117
+              ],
+              "provider_status": "in",
+              "provider_period": 4,
+              "provider_clock": "4:13",
+              "reference_available": true,
+              "score_matches_reference_window": false,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                99,
+                117
+              ],
+              "reference_period": 4,
+              "reference_clock": "4:05"
+            },
+            {
+              "key": "MEM@UTA",
+              "provider_score": [
+                74,
+                66
+              ],
+              "provider_status": "in",
+              "provider_period": 3,
+              "provider_clock": "4:41",
+              "reference_available": true,
+              "score_matches_reference_window": true,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                74,
+                66
+              ],
+              "reference_period": 3,
+              "reference_clock": "4:41"
+            },
+            {
+              "key": "GSW@DEN",
+              "provider_score": [
+                41,
+                36
+              ],
+              "provider_status": "in",
+              "provider_period": 2,
+              "provider_clock": "8:54",
+              "reference_available": true,
+              "score_matches_reference_window": true,
+              "status_matches_reference_window": true,
+              "reference_score": [
+                41,
+                36
+              ],
+              "reference_period": 2,
+              "reference_clock": "8:54"
+            }
+          ],
+          "date": "2026-10-27"
+        }
+      ],
+      "current_day_games": [
+        {
+          "id": 16990,
+          "key": "ATL@HOU",
+          "home_id": 14,
+          "away_id": 1,
+          "home": 117,
+          "away": 98,
+          "status": "in",
+          "period": 4,
+          "clock": "4:13"
+        },
+        {
+          "id": 16991,
+          "key": "MEM@UTA",
+          "home_id": 40,
+          "away_id": 19,
+          "home": 66,
+          "away": 74,
+          "status": "in",
+          "period": 3,
+          "clock": "4:41"
+        },
+        {
+          "id": 16992,
+          "key": "GSW@DEN",
+          "home_id": 9,
+          "away_id": 11,
+          "home": 36,
+          "away": 41,
+          "status": "in",
+          "period": 2,
+          "clock": "8:54"
+        },
+        {
+          "id": 16984,
+          "key": "WAS@CHA",
+          "home_id": 5,
+          "away_id": 41,
+          "home": 110,
+          "away": 103,
+          "status": "post",
+          "period": 4,
+          "clock": null
+        },
+        {
+          "id": 16985,
+          "key": "MIN@CLE",
+          "home_id": 7,
+          "away_id": 22,
+          "home": 127,
+          "away": 125,
+          "status": "post",
+          "period": 4,
+          "clock": null
+        },
+        {
+          "id": 16986,
+          "key": "CHI@BOS",
+          "home_id": 2,
+          "away_id": 6,
+          "home": 134,
+          "away": 99,
+          "status": "post",
+          "period": 4,
+          "clock": null
+        },
+        {
+          "id": 16987,
+          "key": "DAL@MIA",
+          "home_id": 20,
+          "away_id": 8,
+          "home": 109,
+          "away": 113,
+          "status": "post",
+          "period": 4,
+          "clock": null
+        },
+        {
+          "id": 16988,
+          "key": "IND@MIL",
+          "home_id": 21,
+          "away_id": 15,
+          "home": 110,
+          "away": 102,
+          "status": "post",
+          "period": 4,
+          "clock": null
+        },
+        {
+          "id": 16989,
+          "key": "PHX@OKC",
+          "home_id": 25,
+          "away_id": 28,
+          "home": 125,
+          "away": 114,
+          "status": "post",
+          "period": 4,
+          "clock": null
+        }
+      ],
+      "boxscore": {
+        "key": "WAS@CHA",
+        "status": "post",
+        "player_rows": 20,
+        "teams": [
+          {
+            "team_id": 41,
+            "game_points": 103,
+            "team_stat_points": 103,
+            "player_points_sum": 103
+          },
+          {
+            "team_id": 5,
+            "game_points": 110,
+            "team_stat_points": 110,
+            "player_points_sum": 107
+          }
+        ]
+      }
+    }
+  ],
+  "player_spot_check": {
+    "actions_run": 40441725148,
+    "checked_at": "2026-10-27T03:00:43.629Z",
+    "matched_points": 20,
+    "reference_players": 21,
+    "provider_players": 20,
+    "missing_reference_players": [
+      {
+        "team": "CHA",
+        "name": "Christian Anderson",
+        "points": 3
+      }
+    ],
+    "different_points": [],
+    "matched_lines": [
+      {
+        "reference_name": "Anthony Davis",
+        "provider_name": "Anthony Davis",
+        "points": 29,
+        "match": "full_name"
+      },
+      {
+        "reference_name": "Kyshawn George",
+        "provider_name": "Kyshawn George",
+        "points": 20,
+        "match": "full_name"
+      },
+      {
+        "reference_name": "Alex Sarr",
+        "provider_name": "Alex Sarr",
+        "points": 12,
+        "match": "full_name"
+      },
+      {
+        "reference_name": "Trae Young",
+        "provider_name": "Trae Young",
+        "points": 22,
+        "match": "full_name"
+      },
+      {
+        "reference_name": "Bilal Coulibaly",
+        "provider_name": "Bilal Coulibaly",
+        "points": 3,
+        "match": "full_name"
+      },
+      {
+        "reference_name": "Khris Middleton",
+        "provider_name": "Khris Middleton",
+        "points": 0,
+        "match": "full_name"
+      },
+      {
+        "reference_name": "Justin Champagnie",
+        "provider_name": "Justin Champagnie",
+        "points": 2,
+        "match": "full_name"
+      },
+      {
+        "reference_name": "Deandre Ayton",
+        "provider_name": "Deandre Ayton",
+        "points": 0,
+        "match": "full_name"
+      },
+      {
+        "reference_name": "Bub Carrington",
+        "provider_name": "Bub Carrington",
+        "points": 6,
+        "match": "full_name"
+      },
+      {
+        "reference_name": "Will Riley",
+        "provider_name": "W. Riley",
+        "points": 2,
+        "match": "unique_initial_and_surname"
+      },
+      {
+        "reference_name": "Tre Johnson",
+        "provider_name": "T. Johnson",
+        "points": 7,
+        "match": "unique_initial_and_surname"
+      },
+      {
+        "reference_name": "Moussa Diabate",
+        "provider_name": "Moussa Diabate",
+        "points": 11,
+        "match": "full_name"
+      },
+      {
+        "reference_name": "Brandon Miller",
+        "provider_name": "Brandon Miller",
+        "points": 39,
+        "match": "full_name"
+      },
+      {
+        "reference_name": "Naz Reid",
+        "provider_name": "Naz Reid",
+        "points": 18,
+        "match": "full_name"
+      },
+      {
+        "reference_name": "Dennis Schroder",
+        "provider_name": "Dennis Schroder",
+        "points": 8,
+        "match": "full_name"
+      },
+      {
+        "reference_name": "Sion James",
+        "provider_name": "S. James",
+        "points": 5,
+        "match": "unique_initial_and_surname"
+      },
+      {
+        "reference_name": "Royce O'Neale",
+        "provider_name": "Royce O'Neale",
+        "points": 0,
+        "match": "full_name"
+      },
+      {
+        "reference_name": "Tidjane Salaun",
+        "provider_name": "Tidjane Salaun",
+        "points": 5,
+        "match": "full_name"
+      },
+      {
+        "reference_name": "Ryan Kalkbrenner",
+        "provider_name": "R. Kalkbrenner",
+        "points": 6,
+        "match": "unique_initial_and_surname"
+      },
+      {
+        "reference_name": "Grayson Allen",
+        "provider_name": "Grayson Allen",
+        "points": 15,
+        "match": "full_name"
+      }
+    ],
+    "boxscore": {
+      "key": "WAS@CHA",
+      "status": "post",
+      "player_rows": 20,
+      "players": [
+        {
+          "team_id": 5,
+          "player_id": 3431,
+          "name": "Moussa Diabate",
+          "points": 11
+        },
+        {
+          "team_id": 5,
+          "player_id": 3950,
+          "name": "Brandon Miller",
+          "points": 39
+        },
+        {
+          "team_id": 5,
+          "player_id": 2146,
+          "name": "Naz Reid",
+          "points": 18
+        },
+        {
+          "team_id": 5,
+          "player_id": 472,
+          "name": "Dennis Schroder",
+          "points": 8
+        },
+        {
+          "team_id": 5,
+          "player_id": 4329,
+          "name": "S. James",
+          "points": 5
+        },
+        {
+          "team_id": 5,
+          "player_id": 851,
+          "name": "Royce O'Neale",
+          "points": 0
+        },
+        {
+          "team_id": 5,
+          "player_id": 4095,
+          "name": "Tidjane Salaun",
+          "points": 5
+        },
+        {
+          "team_id": 5,
+          "player_id": 4333,
+          "name": "R. Kalkbrenner",
+          "points": 6
+        },
+        {
+          "team_id": 5,
+          "player_id": 926,
+          "name": "Grayson Allen",
+          "points": 15
+        },
+        {
+          "team_id": 41,
+          "player_id": 126,
+          "name": "Anthony Davis",
+          "points": 29
+        },
+        {
+          "team_id": 41,
+          "player_id": 4183,
+          "name": "Kyshawn George",
+          "points": 20
+        },
+        {
+          "team_id": 41,
+          "player_id": 4184,
+          "name": "Alex Sarr",
+          "points": 12
+        },
+        {
+          "team_id": 41,
+          "player_id": 1046,
+          "name": "Trae Young",
+          "points": 22
+        },
+        {
+          "team_id": 41,
+          "player_id": 4036,
+          "name": "Bilal Coulibaly",
+          "points": 3
+        },
+        {
+          "team_id": 41,
+          "player_id": 361,
+          "name": "Khris Middleton",
+          "points": 0
+        },
+        {
+          "team_id": 41,
+          "player_id": 2798,
+          "name": "Justin Champagnie",
+          "points": 2
+        },
+        {
+          "team_id": 41,
+          "player_id": 930,
+          "name": "Deandre Ayton",
+          "points": 0
+        },
+        {
+          "team_id": 41,
+          "player_id": 4182,
+          "name": "Bub Carrington",
+          "points": 6
+        },
+        {
+          "team_id": 41,
+          "player_id": 4262,
+          "name": "W. Riley",
+          "points": 2
+        },
+        {
+          "team_id": 41,
+          "player_id": 4263,
+          "name": "T. Johnson",
+          "points": 7
+        }
+      ],
+      "teams": [
+        {
+          "team_id": 41,
+          "game_points": 103,
+          "team_stat_points": 103,
+          "player_points_sum": 103
+        },
+        {
+          "team_id": 5,
+          "game_points": 110,
+          "team_stat_points": 110,
+          "player_points_sum": 107
+        }
+      ]
+    }
+  }
+}

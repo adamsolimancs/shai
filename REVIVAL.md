@@ -1,48 +1,59 @@
-# ShAI revival review — 2026-09-14
+# ShAI revival and production hardening — 2026-10-25
 
-Ship the PostgreSQL/auth transition as an explicit migration before deploying the current worktree. The application is substantially healthier than the previous revival snapshot: ingestion now has an exclusive renewable lease and aggregate failure state, game snapshots publish transactionally, source-observation metadata reaches the UI, and fixture-driven desktop/mobile journeys cover the primary read paths. The remaining release blocker is operational continuity for the database and existing accounts.
+The current-season bootstrap is implemented and has seeded the live Neon database. The snapshot-reader migration is also applied. See [PIPELINE.md](PIPELINE.md) for production counts, source-access results, local validation, and the remaining publication/monitoring steps. The earlier hardening review below is retained as a record of that pass; its no-live-mutation statements describe the earlier pass only.
 
-## Instant wins completed in this pass
+## Implemented
 
-- Fixed a mobile box-score overflow caused by the global content-reveal animation overriding Tailwind's horizontal `translate` utility. On a 390px viewport, the page expanded to roughly 573px and shifted the main content to the right. The reveal remains as a fade, and the box-score journey now checks page width before navigating away.
-- Added league-leader responses to the isolated browser fixture. The new offseason homepage and the players page had begun calling these endpoints, causing one of the recovery journeys to fail the fixture's strict unknown-route assertion.
-- Added an explicit offseason-homepage to in-season-toggle journey for desktop and mobile. It verifies the seasonal recap, fixture leader data, the development toggle, route state, and the in-season result.
+- **Consistent box-score reads:** `202610250001_boxscore_snapshot_read.sql` defines `get_boxscore_snapshot(text)` as a single STABLE, SECURITY INVOKER SQL statement returning the parent and ordered players from one MVCC snapshot. Missing data returns NULL; an empty player set returns an empty array. The backend no longer falls back to inconsistent separate reads if the function fails. Existing route behavior still distinguishes absent data, unavailable sources, and stale-cache fallback.
+- **Production configuration and readiness:** production requires an explicit API key of at least 32 characters and DATABASE_URL. `/healthz` remains liveness. `/readiness` checks database schema/read privileges, the required snapshot reader, and cache with bounded dependency deadlines; database failure returns 503. Redis can degrade while the database works; startup memory fallback is visible. Responses are not cacheable and do not expose connection errors. This checks infrastructure, not whether ingestion filled the database.
+- **Usable database fallback during Redis failure:** cache-first stats helpers tolerate failed reads, metadata reads, fills, and stampede-lock operations. A production API regression verifies that a database box score and its original observation timestamp survive a Redis outage. Redis REST timeout is configurable and defaults to 0.5 seconds.
+- **Visitor-aware limits:** frontend server fetches derive an opaque HMAC from a trusted ingress IP. Vercel's visitor header is supported automatically; other ingresses require explicit trusted-header configuration. The frontend replaces caller-supplied visitor IDs. Authenticated backend calls use independent visitor and aggregate service budgets. Raw forwarded IPs do not select backend buckets. Redis increments/expiry are atomic; expired local counters are cleaned up. Search preserves 429 and Retry-After and supports recovery. Direct/background callers use peer/service budgets.
+- **Earlier revival fixes preserved:** stats/search and account request deadlines include response bodies; caller abort listeners are cleaned up. Sign-in retains stable identity when account synchronization times out; profile saves show a timeout error without updating the session. No automatic retry was added to ambiguous writes.
 
-These changes are small, reversible, limited to shared animation behavior and test coverage, and require no architecture, dependency, schema, or external-system change.
+## Local validation
 
-## Current health
+| Surface | Result |
+| --- | --- |
+| Backend | Ruff, Black, and strict mypy passed; pytest: 167 passed, one opt-in integration test skipped. |
+| PostgreSQL | 12 disposable-cluster tests passed, including concurrent publication/read consistency, uncommitted writer isolation, missing/empty snapshots, required migration checks, private function/table privileges, rollback/cancellation, and account migration/persistence. |
+| Redis | Disposable Redis rate-limit integration passed through the real Upstash adapter command payloads and Lua: concurrent replicas, visitor/service namespaces, expiry, and repair of counters missing TTLs. Added to backend CI. |
+| Frontend | ESLint and 63 unit tests passed. Production build and TypeScript passed, including a build with VERCEL=1. |
+| Browser | 48 fixture journeys passed in Chromium at desktop 1440×1000 and mobile 390×844. Includes scores/box scores, player/team search, missing/stale/failed data, stalled response bodies, 429/recovery, consistent visitor propagation across server-rendered stats and the search route, and Retry-After preservation. |
+| Workers | All 48 Node tests passed. Worker implementation was not changed in this follow-up. The disposable Redis lease integration also passed during the preceding revival pass. |
+| Patch | `git diff --check` passed. |
 
-- Backend: Ruff, Black, and strict mypy pass. Pytest passes 120 tests with 1 opt-in integration test skipped; measured aggregate coverage is 54%. The locally installed test interpreter is Python 3.13.2 rather than the repository target of Python 3.11. `asyncpg` was supplied only through a temporary `/tmp` target because the host environment had not installed the newly declared dependency.
-- Frontend: ESLint passes, all 36 Vitest tests pass, and the production Next.js build passes. The full Playwright suite passes 42 journeys across Chromium desktop (1440×1000) and mobile (390×844), including fresh, empty, partial, stale, unknown-observation-time, and failed states. The Browser plugin was unavailable, so repository Playwright was used.
-- Workers: all 48 Node tests pass, including lease ownership/renewal/loss, cron outcome aggregation and exit status, runtime-budget exhaustion, and transactional snapshot requirements.
-- Database: all 6 disposable-PostgreSQL reconstruction tests pass, including idempotence and rollback after failure or cancellation.
-- `git diff --check` passes. No live NBA, Redis, Neon, OAuth, scheduled ingestion, deployment, commit, or push was performed.
+The Browser plugin was unavailable, so the repository Playwright workflow was used at `http://127.0.0.1:3100` with its local fixture backend. Journey assertions cover meaningful page content, identity, navigation, console/runtime errors, framework overlays, and horizontal overflow. Existing desktop search-timeout and mobile box-score screenshot evidence was visually inspected during the revival. External images are stubbed. The browser tests verify the real Next request path against a controlled backend; separate API tests verify actual FastAPI budgets. They are not a live-provider end-to-end test.
 
-The first sandboxed E2E run exposed the missing league-leader fixture (39 passed, 1 failed). The first sandboxed database run could not allocate SysV shared memory. Turbopack also failed once when its helper process could not bind a sandboxed port. Re-running the affected checks with local-only sandbox exceptions passed; these were environment restrictions, not suppressed failures.
+Tests initially exposed fixture gaps (the new service limiter dependency and the full meta response shape), which were corrected. Sandboxed socket restrictions required local-only exceptions for the existing TLS tests, browser servers, disposable PostgreSQL/Redis, and Turbopack helpers.
 
-## Prioritized roadmap
+## Rollout requirements
 
-### Now — make the database/auth cutover deployable
+1. Apply `202610250001_boxscore_snapshot_read.sql` before deploying the API. Grant EXECUTE on `public.get_boxscore_snapshot(text)` and SELECT on required tables to the private app role if it differs from the migration owner. PUBLIC execution is revoked; Supabase service_role receives execution only when that role exists. Use the generated baseline only for an empty database.
+2. Set BACKEND_ENV=production and matching API_KEY/BACKEND_API_KEY using a generated secret of at least 32 characters. Configure DATABASE_URL. Missing required configuration now prevents startup; a missing migration/permission fails readiness.
+3. Keep direct NBA fetching disabled in production. Set visitor and service budgets independently through RATE_LIMIT_REQUESTS_PER_MINUTE and RATE_LIMIT_SERVICE_REQUESTS_PER_MINUTE. The former defaults to 240 (example env uses 60); service capacity defaults to 6000.
+4. On Vercel, trusted IP extraction is automatic. Elsewhere, configure TRUSTED_CLIENT_IP_HEADER only behind an ingress that overwrites the header and prevents direct origin access. Without trusted identity, frontend requests share a backend peer budget. People sharing a public IP share the visitor budget. API keys remain trusted server credentials.
+5. Use shared Redis for normal multi-replica enforcement. Redis outage fallback is per process, resets on restart, and cannot enforce a hard fleet-wide cap.
 
-- Resolved: `202610160001_oauth_account_ids.sql` migrates existing `user_accounts` rows to text OAuth subjects, and the disposable-PostgreSQL suite rehearses it with legacy rows. See `database/README.md` for the account-claiming contract.
-- Resolved: `.github/workflows/database.yml` installs `backend/` on Python 3.11 and also runs on `backend/**` changes, so the `DatabaseClient` and account tests in `database/tests/test_baseline.py` run in CI.
-- Resolve the box-score read contract. `fetch_boxscore` calls `get_boxscore_snapshot`, but no definition exists in the tracked schema or migrations; every database-backed box-score request can pay for a failed RPC before falling back to separate reads. Either track and test the function or deliberately remove the probe and document the consistency tradeoff.
+No live migrations, live ingestion, deployment, commits, or pushes were performed.
 
-### Next — harden production boundaries and degraded behavior
+## Prioritized remaining work
 
-- Fail closed on production secrets and readiness. `Settings.api_key` still defaults to `dev-secret-key`, and `/readiness` always returns HTTP 200 after checking only the optional cache. Require an explicit non-development key in production, define which dependencies are essential, and return a non-200 readiness status when the service cannot serve its required data path.
-- Bound account-service requests. `frontend/lib/userAccountsApi.ts` has no application timeout, so sign-in synchronization and profile operations can wait on the backend indefinitely. Add an abort deadline and exercise database unavailable, timeout, conflict, and retry behavior through the real NextAuth/profile boundary.
-- Make the offseason recap source-authoritative. `fetchFinalsSummary` infers the Finals matchup from the latest repeated June pairing rather than an explicit playoff round or series record. Persist series identity and outcome, or label the UI as inferred, before treating this as a trustworthy historical recap.
-- Reduce database amplification on cache misses. Several store helpers load entire dimension tables, and `fetch_player_stats` reads all players, player-info rows, and teams for one leaderboard request. Move joins and limits into typed SQL queries, then measure latency and query counts under cold-cache traffic.
+### Now
 
-### Later — lower maintenance and operability cost
+Build and rehearse the staged bootstrap described in PIPELINE.md: seed reference directories, then current/previous-season batch data, then recent box scores and optional enrichment. Verify source access from the actual worker host before filling production. The present cron runs dependent game work before reference rows, and a whole-directory player-info refresh can exceed the hour budget and starve later work.
 
-- Extract modules along tested behavior boundaries as they change. Current hotspots remain `workers/worker-live.js` (about 4,000 lines), `backend/app/services/nba.py` (about 2,200), `backend/app/api/routes.py` (about 1,675), and the player profile page (about 1,220). Avoid a broad rewrite; separate ingestion tasks, route groups, and presentation adapters behind the existing tests.
-- Add production-facing telemetry for ingestion age, task failures, stale-cache service, database fallback latency, and lease loss. The worker now records useful per-task outcomes, but those signals still need alerts and a user-visible operational view.
-- Clean up provider-specific naming after the cutover is proven. Backend route and store code still uses `SupabaseDep`, `SupabaseClient`, `supabase`, and Supabase-specific log text even though the implementation is generic PostgreSQL; this increases the chance of confusing future migrations and incidents.
+### Next
 
-## Coverage limits and preserved work
+Separate live updates from historical/enrichment work with durable per-item progress, bounded retries, upstream request budgets, and coverage/freshness metrics. Make the Finals recap authoritative: `frontend/app/(main)/page.tsx` still infers finalists/champion from June games rather than explicit series completion. Optimize cold-cache leaderboard queries: store helpers load entire dimension tables, while the generic adapter casts filter columns to text. Measure plans/latency before changing those queries.
 
-This was a representative pass over entrypoints, setup, CI, configuration, auth/account boundaries, backend storage, cache/freshness handling, database reconstruction, worker orchestration, the offseason homepage, and the primary browser journeys. It was not an exhaustive line-by-line review. The experimental `ml/` pipeline was inspected only for repository placement and was not executed.
+### Later
 
-The starting worktree already contained a large uncommitted cross-layer change set: 59 tracked-file changes plus 8 untracked files spanning PostgreSQL migration, auth simplification, local Docker setup, ingestion, offseason UI, loading animation, tests, and documentation. All were treated as user work. This pass changed only `frontend/app/globals.css`, `frontend/e2e/backend.mjs`, `frontend/e2e/journeys.spec.ts`, and this report. No unrelated change was reverted.
+Add alerts for ingestion lag, missing datasets, stale service, failed tasks, and lease loss. Extract behavior-bound modules incrementally from the roughly 4,000-line worker, 2,200-line NBA client, and 1,700-line routes file. Avoid a broad rewrite while data coverage is the immediate product bottleneck.
+
+## Limits and preserved work
+
+The worktree already contained eight modified files from the preceding revival; those edits were preserved and extended. No unrelated work was reverted, and generated Next type-path changes were restored after validation.
+
+Local backend tools use Python 3.13.2 rather than CI's 3.11. Host nba_api is 1.10.2, older than the declared/workflow dependency; source-network behavior was not exercised. The missing declared asyncpg dependency was supplied only through a temporary /tmp target. Node is locally 25.9.0 versus CI's 24. No project dependency versions or host installations were changed.
+
+This was a representative architecture/behavior review and local regression pass, not a production security audit, load test, deployed data inventory, live OAuth/NBA test, or dependency vulnerability audit. No deployed database counts or source freshness were inferred from fixture results. The experimental ml pipeline was not run.

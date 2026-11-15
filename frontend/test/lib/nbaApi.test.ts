@@ -24,7 +24,9 @@ describe("nbaFetch", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("throws when API key is missing", async () => {
@@ -75,6 +77,41 @@ describe("nbaFetch", () => {
     const { nbaFetch } = await import("@/lib/nbaApi");
 
     await expect(nbaFetch("/players/1")).rejects.toThrow("Not found");
+  });
+
+  it.each([200, 503])("times out while reading a stalled %s response body", async (status) => {
+    process.env.BACKEND_API_KEY = "test-key";
+    vi.useFakeTimers();
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      const response = makeResponse(null, status === 200, status);
+      response.json = () => new Promise((_resolve, reject) => {
+        init.signal!.addEventListener("abort", () => reject(new Error("Aborted")), { once: true });
+      });
+      return response;
+    }));
+    const { nbaFetch } = await import("@/lib/nbaApi");
+
+    const rejected = expect(nbaFetch("/players/1", { timeoutMs: 50 }))
+      .rejects.toThrow("NBA API request timed out after 50ms");
+    await vi.advanceTimersByTimeAsync(50);
+    await rejected;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("removes the caller abort listener after a completed request", async () => {
+    process.env.BACKEND_API_KEY = "test-key";
+    const caller = new AbortController();
+    let requestSignal: AbortSignal | null | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => {
+      requestSignal = init.signal;
+      return makeResponse({ ok: true, data: [] });
+    }));
+    const { nbaFetch } = await import("@/lib/nbaApi");
+
+    await nbaFetch("/players", { signal: caller.signal });
+    caller.abort();
+
+    expect(requestSignal?.aborted).toBe(false);
   });
 
   it("derives the NBA season from the calendar instead of a fixed default", async () => {

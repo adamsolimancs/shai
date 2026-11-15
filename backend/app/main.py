@@ -13,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from .api.routes import router as v1_router
-from .cache import CacheBackend, init_cache
+from .cache import CacheBackend, InMemoryCacheBackend, init_cache
 from .config import get_settings
 from .database import DatabaseClient
 from .logging import configure_logging
@@ -37,7 +37,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await resolver.initialize()
     nba_client = NBAStatsClient(settings, cache, resolver)
     news_client = NewsService(settings, cache, database)
-    rate_limiter = RateLimiter(settings.rate_limit_requests_per_minute, redis_client)
+    rate_limiter = RateLimiter(
+        settings.rate_limit_requests_per_minute,
+        redis_client,
+        namespace=f"{settings.cache_key_prefix}:rl:visitor",
+    )
+    service_rate_limiter = RateLimiter(
+        settings.rate_limit_service_requests_per_minute,
+        redis_client,
+        namespace=f"{settings.cache_key_prefix}:rl:service",
+    )
 
     app.state.settings = settings
     app.state.cache = cache
@@ -47,6 +56,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.nba_client = nba_client
     app.state.news_client = news_client
     app.state.rate_limiter = rate_limiter
+    app.state.service_rate_limiter = service_rate_limiter
 
     app.state.background_tasks = []
     if settings.enable_hot_cache_refresh and settings.nba_api_calls_allowed:
@@ -94,14 +104,58 @@ async def health() -> dict[str, str]:
 
 
 @app.get("/readiness", include_in_schema=False)
-async def readiness(request: Request) -> dict[str, str]:
+async def readiness(request: Request) -> JSONResponse:
     cache = cast(CacheBackend, request.app.state.cache)
-    status_text = "ok"
-    try:
-        await cache.get("readiness:noop")
-    except Exception as exc:
-        status_text = f"degraded: {exc}"
-    return {"status": status_text}
+    database = cast(DatabaseClient | None, request.app.state.database)
+    current_settings = request.app.state.settings
+
+    async def cache_ok() -> bool:
+        try:
+            await asyncio.wait_for(
+                cache.get("readiness:noop"), current_settings.readiness_timeout_seconds
+            )
+            return True
+        except Exception:
+            return False
+
+    async def database_ok() -> bool:
+        if database is None:
+            return False
+        try:
+            await asyncio.wait_for(
+                database.check_readiness(), current_settings.readiness_timeout_seconds
+            )
+            return True
+        except Exception:
+            return False
+
+    cache_ready, database_ready = await asyncio.gather(cache_ok(), database_ok())
+    ready = (
+        database_ready if current_settings.is_production or database is not None else cache_ready
+    )
+    memory_fallback = (
+        isinstance(cache, InMemoryCacheBackend)
+        and bool(current_settings.upstash_redis_rest_url)
+        and bool(current_settings.upstash_redis_rest_token)
+    )
+    cache_status = "unavailable"
+    if cache_ready:
+        cache_status = "memory_fallback" if memory_fallback else "ok"
+    status_text = "unavailable"
+    if ready:
+        status_text = "ok" if cache_status == "ok" else "degraded"
+    checks = {
+        "cache": cache_status,
+        "database": "ok" if database_ready else "unavailable" if database else "not_configured",
+    }
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={
+            "status": status_text,
+            "checks": checks,
+        },
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.exception_handler(HTTPException)

@@ -193,6 +193,85 @@ class BaselineTest(unittest.TestCase):
         self.sql(self.publish(players=[]))
         self.assertEqual(self.sql("SELECT count(*) FROM boxscore_players;"), "0")
 
+    def test_snapshot_reads_are_consistent_during_concurrent_publication(self):
+        import asyncpg
+        from app.config import Settings
+        from app.database import DatabaseClient
+        from app.services.store import fetch_boxscore
+
+        self.sql(self.publish())
+        self.assertEqual(self.sql("SELECT provolatile FROM pg_proc WHERE oid = 'public.get_boxscore_snapshot(text)'::regprocedure;"), "s")
+
+        async def exercise():
+            url = f"postgresql://postgres@/postgres?host={self.tmp.name}"
+            writer = await asyncpg.connect(url)
+            reader = DatabaseClient(Settings(_env_file=None, database_url=url))
+            try:
+                await reader.check_readiness()
+                self.assertIsNone(await fetch_boxscore(reader, "missing"))
+                async with writer.transaction():
+                    await writer.execute(self.publish(score=20))
+                    old = await asyncio.wait_for(fetch_boxscore(reader, "g1"), 2)
+                    self.assertEqual(old["home_team"]["score"], 10)
+                    self.assertEqual(old["traditional_players"][0]["points"], 10)
+                new = await fetch_boxscore(reader, "g1")
+                self.assertEqual(new["home_team"]["score"], 20)
+                self.assertEqual(new["traditional_players"][0]["points"], 20)
+                games = await reader.select_games(filters={"game_id": "eq.g1"})
+                self.assertEqual(games[0]["status"], "live")
+                self.assertEqual(games[0]["home_team_score"], 20)
+
+                async def publish_many():
+                    for score in range(30, 80):
+                        await writer.execute(self.publish(score=score))
+
+                async def read_many():
+                    for _ in range(80):
+                        snapshot = await fetch_boxscore(reader, "g1")
+                        self.assertEqual(snapshot["home_team"]["score"], snapshot["traditional_players"][0]["points"])
+
+                await asyncio.gather(publish_many(), read_many())
+                await writer.execute(self.publish(players=[]))
+                self.assertEqual((await fetch_boxscore(reader, "g1"))["traditional_players"], [])
+            finally:
+                await writer.close()
+                await reader.close()
+
+        asyncio.run(exercise())
+
+    def test_readiness_fails_when_required_snapshot_migration_is_missing(self):
+        self.sql("ALTER FUNCTION public.get_boxscore_snapshot(text) RENAME TO temporarily_missing;")
+        try:
+            from app.config import Settings
+            from app.database import DatabaseClient
+            import asyncpg
+
+            async def exercise():
+                database = DatabaseClient(Settings(_env_file=None, database_url=f"postgresql://postgres@/postgres?host={self.tmp.name}"))
+                try:
+                    with self.assertRaises(asyncpg.UndefinedFunctionError):
+                        await database.check_readiness()
+                finally:
+                    await database.close()
+            asyncio.run(exercise())
+        finally:
+            self.sql("ALTER FUNCTION public.temporarily_missing(text) RENAME TO get_boxscore_snapshot;")
+
+    def test_snapshot_read_requires_explicit_function_and_table_privileges(self):
+        self.sql(self.publish())
+        self.sql("CREATE ROLE snapshot_reader; GRANT USAGE ON SCHEMA public TO snapshot_reader; GRANT SELECT ON public.boxscores, public.boxscore_players TO snapshot_reader;")
+        try:
+            denied = self.sql("SET ROLE snapshot_reader; SELECT public.get_boxscore_snapshot('g1');", succeeds=False)
+            self.assertIn("permission denied for function", denied)
+            self.sql("GRANT EXECUTE ON FUNCTION public.get_boxscore_snapshot(text) TO snapshot_reader;")
+            value = self.sql("SET ROLE snapshot_reader; SELECT public.get_boxscore_snapshot('g1')->'players'->0->>'points';")
+            self.assertEqual(value.splitlines()[-1], "10")
+            self.sql("REVOKE SELECT ON public.boxscore_players FROM snapshot_reader;")
+            denied = self.sql("SET ROLE snapshot_reader; SELECT public.get_boxscore_snapshot('g1');", succeeds=False)
+            self.assertIn("permission denied for table boxscore_players", denied)
+        finally:
+            self.sql("DROP OWNED BY snapshot_reader; DROP ROLE snapshot_reader;")
+
     def test_failure_after_parent_update_rolls_back_every_table(self):
         self.sql(self.publish())
         before = self.state()

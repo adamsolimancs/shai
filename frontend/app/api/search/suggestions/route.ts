@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import type { SearchSuggestion } from "@/components/SearchCombobox";
-import { nbaFetch } from "@/lib/nbaApi";
+import { nbaFetch, NbaApiError } from "@/lib/nbaApi";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
@@ -26,6 +26,13 @@ export async function GET(request: Request) {
       return new Response(null, { status: 499 });
     }
     const message = error instanceof Error ? error.message : "Search suggestions failed.";
+    if (error instanceof NbaApiError && error.status === 429) {
+      return NextResponse.json({ error: message }, {
+        status: 429,
+        headers: error.retryAfter && /^\d+$/.test(error.retryAfter)
+          ? { "Retry-After": error.retryAfter } : undefined,
+      });
+    }
     return NextResponse.json({ error: message }, { status: 502 });
   }
 }

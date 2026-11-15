@@ -1,0 +1,83 @@
+"use strict";
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const { probe } = require("../check-hosted-backend");
+
+async function run({ healthStatus = 200, gamesStatus = 200, source = "api", hit = false, stale = false, observed = "2026-10-26T18:00:00Z", legacy = false, beforeRefresh = null, afterRefresh = null, baseUrl = "https://backend.example.test" } = {}) {
+  const calls = [], logs = [];
+  let metaCalls = 0;
+  const result = await probe({ baseUrl, apiKey: "private-key", now: () => Date.parse("2026-10-26T18:00:00Z"),
+    log: row => logs.push(structuredClone(row)), fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      if (url.pathname === "/healthz") return Response.json({ status: "ok" }, { status: healthStatus });
+      if (url.pathname === "/v1/meta") return Response.json({ ok: true, data: { service: "nba-data-api",
+        last_cache_refresh: { "games:2026-27:Regular Season:None:None": ++metaCalls === 1 ? beforeRefresh : afterRefresh } } });
+      assert.equal(url.pathname, "/v1/games");
+      if (gamesStatus !== 200) return Response.json({ error: { code: "UPSTREAM_ERROR", message: "private-key" } }, { status: gamesStatus });
+      return Response.json({ ok: true, data: [{ game_id: "0022600001", team_id: 1610612737 }],
+        meta: legacy ? { cache: { hit, stale } } : { source, stale, as_of: observed, cache: { hit, stale } } });
+    } });
+  return { result, calls, logs };
+}
+
+test("only accepts current-season rows from a new NBA observation", async () => {
+  const { result, calls, logs } = await run();
+  assert.equal(result.status, "passed");
+  assert.equal(result.fresh_nba_verified, true);
+  assert.equal(calls.length, 3);
+  assert.deepEqual(calls[0].options.headers, {});
+  assert.equal(calls[1].options.headers["x-api-key"], "private-key");
+  assert.ok(calls.every(row => row.options.method === "GET" && row.options.redirect === "error"));
+  assert.ok(!JSON.stringify({ result, logs }).includes("private-key"));
+});
+
+test("unavailable backend stops before authenticated requests", async () => {
+  const { result, calls } = await run({ healthStatus: 404 });
+  assert.equal(result.error, "http_404");
+  assert.equal(calls.length, 1);
+  assert.equal(result.fresh_nba_verified, false);
+});
+
+test("retains a known upstream error code without logging arbitrary error details", async () => {
+  const { result, logs } = await run({ gamesStatus: 502 });
+  assert.equal(result.error, "http_502");
+  assert.equal(result.checks.at(-1).backend_error_code, "UPSTREAM_ERROR");
+  assert.ok(!JSON.stringify({ result, logs }).includes("private-key"));
+});
+
+test("legacy service must confirm a new upstream refresh after a cache miss", async () => {
+  const { result, calls } = await run({ legacy: true, afterRefresh: "2026-10-26T18:00:00Z" });
+  assert.equal(result.status, "passed");
+  assert.equal(result.evidence, "advanced_service_upstream_refresh");
+  assert.equal(calls.length, 4);
+});
+
+for (const options of [
+  { afterRefresh: "2026-10-25T18:00:00Z" },
+  { beforeRefresh: "2026-10-26T18:00:00Z", afterRefresh: "2026-10-26T18:00:00Z" },
+  { afterRefresh: "2026-10-27T18:00:00Z" },
+  { afterRefresh: null },
+  { hit: true, afterRefresh: "2026-10-26T18:00:00Z" },
+]) {
+  test(`legacy service rejects unproven refresh ${JSON.stringify(options)}`, async () => {
+    const { result } = await run({ legacy: true, ...options });
+    assert.equal(result.error, "fresh_upstream_fetch_not_proven");
+    assert.equal(result.fresh_nba_verified, false);
+  });
+}
+
+for (const options of [{ source: "db" }, { source: "redis" }, { hit: true }, { stale: true }, { observed: null }, { observed: "2026-10-25T18:00:00Z" }]) {
+  test(`rejects insufficient freshness evidence ${JSON.stringify(options)}`, async () => {
+    const { result } = await run(options);
+    assert.equal(result.error, "fresh_upstream_fetch_not_proven");
+    assert.equal(result.fresh_nba_verified, false);
+  });
+}
+
+test("URL credentials, query parameters and insecure schemes fail before network access", async () => {
+  for (const baseUrl of ["http://backend.example.test", "https://user:pass@backend.example.test", "https://backend.example.test/?key=private-key"]) {
+    const { result, calls } = await run({ baseUrl });
+    assert.equal(result.error, "unsafe_backend_url");
+    assert.equal(calls.length, 0);
+  }
+});

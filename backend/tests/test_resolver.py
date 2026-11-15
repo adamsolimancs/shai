@@ -23,7 +23,14 @@ async def test_resolver_uses_cache(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_resolver_skips_upstream_refresh_when_disabled(monkeypatch):
-    cache = InMemoryCacheBackend(Settings(environment="production"))
+    cache = InMemoryCacheBackend(
+        Settings(
+            _env_file=None,
+            environment="production",
+            api_key="a" * 32,
+            database_url="postgresql://localhost/test",
+        )
+    )
     resolver = NameResolver(cache, supabase=object(), allow_upstream=False)
 
     async def fake_fetch_from_db():

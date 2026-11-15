@@ -76,24 +76,24 @@ async def test_fetch_boxscore_uses_rpc_snapshot():
 
 
 @pytest.mark.asyncio
-async def test_fetch_boxscore_falls_back_to_table_reads_when_rpc_fails():
-    supabase = DummySupabase(
-        rpc_error=RuntimeError("rpc unavailable"),
-        row={
-            "game_id": "001",
-            "status": "Final",
-            "officials": "[]",
-            "home_team": '{"team_id": 10, "score": 110, "is_home": true, "leaders": []}',
-            "away_team": '{"team_id": 20, "score": 102, "is_home": false, "leaders": []}',
-            "line_score": "[]",
-            "team_totals": "[]",
-        },
-        players=[{"player_id": "1", "player_name": "Player One", "team_id": 10, "points": 30}],
-    )
+async def test_fetch_boxscore_never_splits_reads_when_rpc_fails():
+    database = DummySupabase(rpc_error=RuntimeError("migration missing"))
+    with pytest.raises(RuntimeError, match="migration missing"):
+        await fetch_boxscore(database, "001")
+    assert database.select_one_calls == []
+    assert database.select_calls == []
 
-    payload = await fetch_boxscore(supabase, "001")
 
-    assert payload is not None
-    assert payload["traditional_players"][0]["player_name"] == "Player One"
-    assert supabase.select_one_calls == [("boxscores", {"game_id": "eq.001"})]
-    assert supabase.select_calls[0][0] == "boxscore_players"
+@pytest.mark.asyncio
+async def test_fetch_boxscore_missing_snapshot_is_not_an_error():
+    database = DummySupabase(rpc_payload=None)
+    assert await fetch_boxscore(database, "missing") is None
+    assert database.select_one_calls == []
+    assert database.select_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("snapshot", [{}, {"boxscore": {}}, {"boxscore": {}, "players": None}])
+async def test_fetch_boxscore_rejects_invalid_snapshot(snapshot):
+    with pytest.raises(ValueError, match="Invalid boxscore snapshot"):
+        await fetch_boxscore(DummySupabase(rpc_payload=snapshot), "001")

@@ -68,9 +68,23 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
+
+// Emulate a transport that never completes headers or the body until cancelled.
+const stallAccountRequest = (phase: "headers" | "body") => {
+  vi.stubEnv("BACKEND_API_TIMEOUT_MS", "50");
+  vi.useFakeTimers();
+  vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => {
+    const stalled = new Promise<never>((_resolve, reject) => {
+      init.signal!.addEventListener("abort", () => reject(new Error("Aborted")), { once: true });
+    });
+    return phase === "headers" ? stalled : Promise.resolve({ ok: true, json: () => stalled });
+  }));
+};
 
 describe("Google sign-in account sync", () => {
   it("keys the account and session by the stable provider subject", async () => {
@@ -117,6 +131,19 @@ describe("Google sign-in account sync", () => {
     expect(token.sub).toBe("google:001234567890");
     expect(token.username).toBeNull();
   });
+
+  it.each(["headers", "body"] as const)("finishes sign-in when account %s stall", async (phase) => {
+    stallAccountRequest(phase);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    await import("@/auth");
+
+    const pending = nextAuthConfig.current!.callbacks.jwt(googleSignIn("random-uuid"));
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(await pending).toMatchObject({ sub: "google:001234567890", username: null });
+    expect(log).toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
 
 describe("updateProfileAction", () => {
@@ -126,6 +153,19 @@ describe("updateProfileAction", () => {
     form.set("username", username);
     return form;
   };
+
+  it.each(["headers", "body"] as const)("reports a timeout when account %s stall", async (phase) => {
+    authSession.mockResolvedValue({ user: { id: "google:001234567890", provider: "google" } });
+    stallAccountRequest(phase);
+    const { updateProfileAction } = await import("@/lib/profileActions");
+
+    const pending = updateProfileAction({ error: null, success: null }, profileForm("Name", ""));
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(await pending).toEqual({ error: "Account request timed out. Please try again.", success: null });
+    expect(updateSession).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
 
   it("persists profile edits for the signed-in provider subject", async () => {
     authSession.mockResolvedValue({ user: { id: "google:001234567890", provider: "google" } });

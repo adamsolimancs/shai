@@ -10,6 +10,7 @@ const { spawn } = require("child_process");
 const { Pool } = require("pg");
 const { cache } = require("./cache");
 const { acquireCronLease } = require("./cron-lease");
+const { isFinalStatus } = require("./boxscore-coverage");
 const dns = require("dns");
 const path = require("path");
 
@@ -624,10 +625,6 @@ function normalizeConflictValue(value) {
   return value;
 }
 
-function isFinalStatus(status) {
-  return Boolean(status && /final/i.test(status));
-}
-
 function isLiveStatus(status) {
   if (!status) return false;
   const text = String(status).toLowerCase();
@@ -1203,7 +1200,7 @@ async function ensureNbaApiBridge() {
   }
   const scriptPath = path.join(__dirname, "nba_api_bridge.py");
   nbaApiBridgeStdout = "";
-  nbaApiBridge = spawn("python3", [scriptPath], {
+  nbaApiBridge = spawn(process.env.PYTHON_BIN || "python3", [scriptPath], {
     stdio: ["pipe", "pipe", "pipe"],
   });
   nbaApiBridge.stdout.setEncoding("utf8");
@@ -2011,6 +2008,8 @@ async function fetchLeagueLeadersRows(
 ) {
   const url = new URL("https://stats.nba.com/stats/leagueleaders");
   url.searchParams.set("LeagueID", "00");
+  url.searchParams.set("Scope", "S");
+  url.searchParams.set("ActiveFlag", "");
   url.searchParams.set("Season", season);
   url.searchParams.set("SeasonType", seasonType);
   url.searchParams.set("PerMode", perMode);
@@ -3941,6 +3940,25 @@ if (require.main === module) {
 }
 
 module.exports = {
+  fetchStaticTeams,
+  fetchStaticPlayers,
+  fetchLeagueStandingsRows,
+  fetchLeagueDashPlayerStats,
+  fetchLeagueDashTeamStats,
+  fetchLeagueLeadersRows,
+  statsRequest,
+  normalizeLiveScoreboardGame,
+  mapLeagueStandingRow,
+  mapPlayerSeasonStatsRow,
+  normalizeGameFinderRows,
+  buildCdnPlayers,
+  buildCdnTeamTotals,
+  buildCdnTeamCard,
+  buildCdnLineScore,
+  async closeWorkerResources() {
+    if (nbaApiBridge) nbaApiBridge.kill();
+    if (databasePool) await databasePool.end();
+  },
   CONFIG,
   startWorker,
   validateConfig,

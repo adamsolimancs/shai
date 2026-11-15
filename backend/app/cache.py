@@ -56,6 +56,8 @@ class RedisClientProtocol(Protocol):
 
     async def ttl(self, key: str) -> int: ...
 
+    async def eval(self, script: str, numkeys: int, *args: str) -> Any: ...
+
     async def close(self) -> None: ...
 
 
@@ -150,6 +152,9 @@ class UpstashRedisClient:
         result = await self._execute("TTL", key)
         return int(result)
 
+    async def eval(self, script: str, numkeys: int, *args: str) -> Any:
+        return await self._execute("EVAL", script, str(numkeys), *args)
+
     async def close(self) -> None:
         await self._client.aclose()
 
@@ -236,6 +241,7 @@ async def init_cache(settings: Settings) -> tuple[CacheBackend, Any | None]:
         redis_client = UpstashRedisClient(
             url=settings.upstash_redis_rest_url,
             token=settings.upstash_redis_rest_token,
+            timeout=settings.cache_redis_timeout_seconds,
         )
         try:
             await redis_client.ping()

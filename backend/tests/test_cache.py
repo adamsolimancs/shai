@@ -36,6 +36,7 @@ async def test_upstash_redis_client_uses_rest_commands():
             "INCR": 1,
             "EXPIRE": 1,
             "TTL": 60,
+            "EVAL": [1, 60],
         }
         return httpx.Response(200, json={"result": responses[operation]})
 
@@ -54,6 +55,7 @@ async def test_upstash_redis_client_uses_rest_commands():
     assert await client.incr("rl:key") == 1
     assert await client.expire("rl:key", 60) == 1
     assert await client.ttl("rl:key") == 60
+    assert await client.eval("return {1, 60}", 1, "rl:key") == [1, 60]
     await client.close()
 
     assert commands == [
@@ -64,6 +66,7 @@ async def test_upstash_redis_client_uses_rest_commands():
         ["INCR", "rl:key"],
         ["EXPIRE", "rl:key", "60"],
         ["TTL", "rl:key"],
+        ["EVAL", "return {1, 60}", "1", "rl:key"],
     ]
 
 
@@ -121,6 +124,7 @@ async def test_init_cache_uses_upstash_when_configured(monkeypatch: pytest.Monke
     assert captured["url"] == "https://nba-cache.upstash.io"
     assert captured["token"] == "rest-token"
     assert captured["pinged"] is True
+    assert captured["timeout"] == 0.5
 
     await cache.close()
     assert captured["closed"] is True

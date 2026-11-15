@@ -171,3 +171,44 @@ async def test_get_or_set_cache_uses_redis_lock_protocol():
     assert meta.stale is False
     assert redis_client.set_calls == [("key:lock", "1", None, 2000, True)]
     assert redis_client.delete_calls == [("key:lock",)]
+
+
+@pytest.mark.asyncio
+async def test_cache_failure_never_masks_the_original_database_failure():
+    class BrokenCache:
+        async def get(self, _key):
+            raise RuntimeError("redis read failed")
+
+        async def get_stale(self, _key):
+            raise RuntimeError("redis stale read failed")
+
+    async def fetcher():
+        raise ValueError("database failed")
+
+    with pytest.raises(ValueError, match="database failed"):
+        await get_or_set_cache(
+            cache=BrokenCache(), redis_client=None, key="key", ttl=60, fetcher=fetcher
+        )
+
+
+@pytest.mark.asyncio
+async def test_lock_release_failure_cannot_discard_good_database_data():
+    class BrokenRelease:
+        async def set(self, *_args, **_kwargs):
+            return "OK"
+
+        async def delete(self, *_args):
+            raise RuntimeError("redis release failed")
+
+    async def fetcher():
+        return {"value": "database"}
+
+    data, meta = await get_or_set_cache(
+        cache=InMemoryCacheBackend(Settings(_env_file=None)),
+        redis_client=BrokenRelease(),
+        key="key",
+        ttl=60,
+        fetcher=fetcher,
+    )
+    assert data == {"value": "database"}
+    assert meta.hit is False

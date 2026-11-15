@@ -25,6 +25,10 @@ vi.mock("next/link", () => ({
 }));
 
 describe("ScoreCard", () => {
+  it("shows the live status in the default card layout", () => {
+    render(<ScoreCard status="Q3 04:12" home={{ name: "Home", score: 90 }} away={{ name: "Away", score: 85 }} />);
+    expect(screen.getByText("Q3 04:12")).toBeVisible();
+  });
   it("renders fallback labels", () => {
     render(
       <ScoreCard

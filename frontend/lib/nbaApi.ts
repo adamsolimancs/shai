@@ -1,3 +1,5 @@
+import { backendHeaders } from "@/lib/backendHeaders";
+
 const API_BASE_URL = process.env.BACKEND_API_BASE_URL || "http://localhost:8080";
 const API_KEY = process.env.BACKEND_API_KEY;
 const ENV_TIMEOUT_MS = Number(
@@ -24,7 +26,7 @@ type ErrorEnvelope = {
 };
 
 export class NbaApiError extends Error {
-  constructor(message: string, public readonly status: number) {
+  constructor(message: string, public readonly status: number, public readonly retryAfter?: string | null) {
     super(message);
     this.name = "NbaApiError";
   }
@@ -55,6 +57,7 @@ export async function nbaFetchEnvelope<T>(
   }
 
   const { timeoutMs, ...initRest } = init ?? {};
+  const requestHeaders = await backendHeaders(initRest.headers);
   const url = path.startsWith("http") ? path : `${API_BASE_URL}${path}`;
   if (process.env.NODE_ENV !== "production") {
     console.log("NBA Fetch:", url);
@@ -65,11 +68,12 @@ export async function nbaFetchEnvelope<T>(
   const timeoutValue =
     typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : DEFAULT_TIMEOUT_MS;
   const controller = timeoutValue ? new AbortController() : null;
+  const abortFromCaller = () => controller?.abort();
   if (controller && initRest?.signal) {
     if (initRest.signal.aborted) {
       controller.abort();
     } else {
-      initRest.signal.addEventListener("abort", () => controller.abort(), { once: true });
+      initRest.signal.addEventListener("abort", abortFromCaller, { once: true });
     }
   }
 
@@ -77,10 +81,7 @@ export async function nbaFetchEnvelope<T>(
     ...initRest,
     cache,
     signal: controller?.signal ?? initRest?.signal,
-    headers: {
-      "x-api-key": API_KEY,
-      ...(initRest?.headers || {}),
-    },
+    headers: requestHeaders,
   };
 
   if (cache !== "no-store") {
@@ -98,9 +99,26 @@ export async function nbaFetchEnvelope<T>(
     }, timeoutValue);
   }
 
-  let response: Response;
   try {
-    response = await fetch(url, requestInit);
+    const response = await fetch(url, requestInit);
+    if (!response.ok) {
+      const errorBody = await safeJson(response);
+      const message =
+        errorBody && typeof errorBody === "object" && "error" in errorBody
+          ? (errorBody as Partial<ErrorEnvelope>).error?.message
+          : undefined;
+      throw new NbaApiError(
+        message || `NBA API request failed with ${response.status}`,
+        response.status,
+        response.headers?.get("Retry-After"),
+      );
+    }
+
+    const body = (await response.json()) as Envelope<T> | ErrorEnvelope;
+    if (!body.ok) {
+      throw new Error(body.error?.message || "NBA API returned error");
+    }
+    return body;
   } catch (error) {
     if (didTimeout) {
       throw new Error(`NBA API request timed out after ${timeoutValue}ms`);
@@ -110,22 +128,8 @@ export async function nbaFetchEnvelope<T>(
     if (timeoutId) {
       clearTimeout(timeoutId);
     }
+    initRest?.signal?.removeEventListener("abort", abortFromCaller);
   }
-
-  if (!response.ok) {
-    const errorBody = await safeJson(response);
-    const message =
-      errorBody && typeof errorBody === "object" && "error" in errorBody
-        ? (errorBody as Partial<ErrorEnvelope>).error?.message
-        : undefined;
-    throw new NbaApiError(message || `NBA API request failed with ${response.status}`, response.status);
-  }
-
-  const body = (await response.json()) as Envelope<T> | ErrorEnvelope;
-  if (!body.ok) {
-    throw new Error(body.error?.message || "NBA API returned error");
-  }
-  return body;
 }
 
 async function safeJson(response: Response): Promise<Record<string, unknown> | null> {

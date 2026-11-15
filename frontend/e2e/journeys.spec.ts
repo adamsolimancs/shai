@@ -16,7 +16,7 @@ test.beforeEach(async ({ page, request }) => {
   page.on('console', message => {
     if (message.type() !== 'error') return;
     // Search failure and an absent team deliberately produce HTTP error responses.
-    if (/Failed to load resource:.*(?:404|502)/.test(message.text())) return;
+    if (/Failed to load resource:.*(?:404|429|502)/.test(message.text())) return;
     errors.push(message.text());
   });
   await page.route('**/*', async route => {
@@ -87,6 +87,13 @@ test('offseason homepage → in-season toggle', async ({ page }) => {
   await page.getByRole('button', { name: 'Dev: offseason' }).click();
   await expect(page).toHaveURL(/offseason=0/);
   await expect(page.getByRole('heading', { name: 'Recent Games' })).toBeVisible();
+  await checkPage(page);
+});
+
+test('an explicitly live game remains live after midnight', async ({ page, request }) => {
+  await scenario(request, { scores: 'live', tonight: 'empty' });
+  await open(page, '/scores');
+  await expect(page.getByText('Q3 04:12', { exact: true })).toBeVisible();
   await checkPage(page);
 });
 
@@ -178,14 +185,18 @@ for (const entity of ['player', 'team']) {
   }
 }
 
-for (const mode of ['empty', 'failed']) {
-  test(`search ${mode} and recovery`, async ({ page, request }) => {
+for (const mode of ['empty', 'failed', 'stalled', 'limited']) {
+  test(`search ${mode} and recovery`, async ({ page, request }, testInfo) => {
     await scenario(request, { search: mode });
     await open(page, '/scores');
     const input = page.getByRole('combobox', { name: 'Search players and teams' });
     await input.fill('LeBron');
-    await expect(page.locator('p').filter({ hasText: mode === 'empty' ? /^No matching players or teams\.$/ : /^Suggestions are unavailable\. Press Enter to search players\.$/ })).toBeVisible();
+    await expect(page.locator('p').filter({ hasText: mode === 'empty' ? /^No matching players or teams\.$/ : /^Suggestions are unavailable\. Press Enter to search players\.$/ })).toBeVisible({ timeout: 6000 });
     await expect(page.getByRole('option')).toHaveCount(0);
+    if (mode === 'stalled') {
+      await checkPage(page);
+      await page.screenshot({ path: `/tmp/shai-search-timeout-${testInfo.project.name}.png`, fullPage: true });
+    }
     await scenario(request, {});
     await input.fill('LeBron James');
     await page.getByRole('option', { name: /LeBron James/ }).click();
@@ -193,3 +204,20 @@ for (const mode of ['empty', 'failed']) {
     await expect(page.getByRole('heading', { name: 'LeBron James', exact: true })).toBeVisible();
   });
 }
+
+test('trusted visitor identity crosses Next server fetches and search preserves 429', async ({ page, request }) => {
+  await page.setExtraHTTPHeaders({ 'x-fixture-client-ip': '192.0.2.1', 'x-shai-visitor-id': 'forged', 'x-forwarded-for': '198.51.100.1' });
+  await open(page, '/scores');
+  let records = await (await request.get(`${backend}/__visitors`)).json();
+  const scoreVisitor = records.find((record: { path: string }) => record.path === '/v1/games').visitor;
+  expect(scoreVisitor).toMatch(/^[0-9a-f]{64}$/);
+  await scenario(request, { search: 'limited' });
+  const limited = await request.get('/api/search/suggestions?q=LeBron', { headers: { 'x-fixture-client-ip': '192.0.2.1' } });
+  expect(limited.status()).toBe(429);
+  expect(limited.headers()['retry-after']).toBe('30');
+  records = await (await request.get(`${backend}/__visitors`)).json();
+  expect(records.at(-1).visitor).toBe(scoreVisitor);
+  await request.get('/api/search/suggestions?q=LeBron', { headers: { 'x-fixture-client-ip': '192.0.2.2' } });
+  records = await (await request.get(`${backend}/__visitors`)).json();
+  expect(records.at(-1).visitor).not.toBe(scoreVisitor);
+});

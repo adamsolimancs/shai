@@ -25,6 +25,21 @@ BACKEND_API_BASE_URL=http://localhost:8080
 BACKEND_API_KEY=dev-secret-key
 AUTH_SECRET=replace-me
 ```
+`BACKEND_API_TIMEOUT_MS` sets the stats and account request deadline (10 seconds
+by default), including response body reads. Search uses its own 5-second deadline.
+Timed-out profile saves show an error; sign-in retains its existing fallback when
+account synchronization is unavailable.
+
+Visitor limits use a server-generated HMAC of the trusted client IP for both
+server-rendered stats and account calls. On Vercel, `x-vercel-forwarded-for` is the
+source. Other hosts must explicitly set `TRUSTED_CLIENT_IP_HEADER` **only** when
+their ingress overwrites that header and clients cannot reach the origin directly.
+No header is trusted by default on other hosts; those calls use backend peer and
+service limits. Malformed/multiple IPs and caller-supplied visitor IDs are ignored.
+Build/background calls without request context use the same safe fallback. Search
+preserves backend HTTP 429 and `Retry-After` and can recover on a subsequent query.
+See [Vercel request-header documentation](https://vercel.com/docs/headers/request-headers).
+
 The frontend derives the current NBA season automatically. Set `NBA_DEFAULT_SEASON`
 only when you intentionally want to pin every season-aware view to an override.
 
