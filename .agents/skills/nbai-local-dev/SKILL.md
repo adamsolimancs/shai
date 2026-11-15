@@ -18,14 +18,15 @@ Check these files first unless the task is already narrowly scoped:
 - `backend/pyproject.toml`
 - `frontend/package.json`
 
-Run services with the repo's expected ports:
+Use the Docker Compose workflow by default. For first-time setup, run `npm install` from the repository root and create `frontend/.env` and `backend/.env` from their respective `.env.example` files. Set `BACKEND_API_KEY` in `frontend/.env` as described in the root README. Start the app from the repository root:
 
 ```bash
-cd backend && uvicorn app.main:app --reload --port 8080
-cd frontend && npm run dev
+npm run dev
 ```
 
-Use `GET /healthz` for a quick backend sanity check.
+This starts FastAPI and Redis in Docker Compose and Next.js on the host. The API reloads on backend edits and listens at `http://localhost:8080`. The frontend listens at `http://localhost:3000`. On macOS the root script opens Docker Desktop if needed. Use `GET http://localhost:8080/healthz` for a quick backend sanity check. Press Ctrl-C to stop the app and use `npm run dev:down` from the root to remove the Compose containers.
+
+Use the standalone startup commands in the README when debugging a service in isolation or when Docker is unavailable.
 
 ## Architecture
 

@@ -37,9 +37,13 @@ The production read path is:
 
 Run the smallest checks that cover the changed behavior. Do not run the full repository suite for documentation-only or similarly low-risk edits.
 
-- Frontend: from `frontend/`, run `npm run lint` and `npm run test`; also run `npm run build` for routing, configuration, or production-build changes.
+- Frontend: from `frontend/`, run `npm run lint` and `npm run test`. For routing, configuration, or production-build changes, run `npm --prefix frontend run build` from the repository root.
 - Backend: from `backend/`, run `ruff check .`, `black --check .`, and `pytest`; run `mypy app` when changing typed interfaces or schemas.
 - Workers: from `workers/`, run `npm run test`.
 - Cross-layer contract changes: validate every affected subsystem.
 
 Report the checks run and any checks skipped because they require credentials, live services, or unavailable dependencies.
+
+## Project motivation
+
+ShAI is Adam's passion project and a way to practice building production-grade applications as he works toward becoming an elite software engineer.
