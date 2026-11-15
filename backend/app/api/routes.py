@@ -477,6 +477,17 @@ def _boxscore_not_found() -> HTTPException:
     )
 
 
+@router.get("/poc/last-night", response_model=Envelope[dict[str, Any] | None])
+async def last_night_snapshot(
+    request: Request, supabase: SupabaseDep
+) -> Envelope[dict[str, Any] | None]:
+    client = _require_supabase_client(supabase)
+    snapshot = await fetch_observed_api_snapshot(client, "hoopr:last-night")
+    _log_data_source(request, "database")
+    request.state.data_as_of = snapshot.observed_at
+    return success(request, snapshot.data if isinstance(snapshot.data, dict) else None)
+
+
 @router.get("/meta", response_model=Envelope[MetaResponse])
 async def meta(request: Request, client: NBAClientDep) -> Envelope[MetaResponse]:
     payload = await client.get_meta()

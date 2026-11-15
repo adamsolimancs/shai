@@ -1,9 +1,11 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import DataFreshness from "@/components/DataFreshness";
 import LocalGameTime from "@/components/LocalGameTime";
 import ScoreCard from "@/components/ScoreCard";
 import { buildTimeFallback, isFinalGame, parseGameDate, toDateKey } from "@/lib/gameUtils";
 import { DEFAULT_SEASON, nbaFetchEnvelope } from "@/lib/nbaApi";
+import { fetchRecentResults } from "@/lib/recentResults";
 
 export const metadata: Metadata = {
   title: "NBA Scores and Results",
@@ -21,11 +23,13 @@ type Game = {
   away_team_name: string;
   away_team_score: number;
   status?: string | null;
+  boxscore_href?: string;
 };
 
 type EnhancedGame = {
   id: string;
   rawDate: string;
+  boxscoreHref: string;
   timeValue: string;
   dateKey: string;
   dateLabel: string;
@@ -71,6 +75,7 @@ function enhanceGame(game: Game): EnhancedGame {
   return {
     id: game.game_id,
     rawDate: game.date,
+    boxscoreHref: game.boxscore_href ?? `/boxscore/${game.game_id}`,
     timeValue,
     dateKey: toDateKey(date),
     dateLabel: DATE_FORMATTER.format(date),
@@ -102,7 +107,8 @@ function groupGamesByDate(games: EnhancedGame[]): { date: string; label: string;
 
 export default async function ScoresPage() {
   const nbaToday = getNbaDateKey();
-  const [gamesResult, tonightResult] = await Promise.allSettled([
+  const hooprEnabled = process.env.HOOPR_POC_ENABLED === "true";
+  const [gamesResult, tonightResult, hooprResult] = await Promise.allSettled([
     nbaFetchEnvelope<Game[]>(
       `/v1/games?season=${DEFAULT_SEASON}&page_size=36`,
       { cache: "no-store" },
@@ -111,10 +117,25 @@ export default async function ScoresPage() {
       `/v1/games?season=${DEFAULT_SEASON}&date_from=${nbaToday}&date_to=${nbaToday}&page_size=24`,
       { cache: "no-store" },
     ),
+    hooprEnabled ? fetchRecentResults() : null,
   ]);
+  const hoopr = hooprResult.status === "fulfilled" ? hooprResult.value : null;
+  const slates = hoopr?.data?.slates ?? [];
+  const importedDates = new Set(slates.map(slate => slate.date));
+  const importedGames = slates.flatMap(slate => slate.games.map((game): Game => ({
+    game_id: `hoopr-${game.id}`,
+    date: slate.date,
+    home_team_name: game.home,
+    home_team_score: game.homeScore,
+    away_team_name: game.away,
+    away_team_score: game.awayScore,
+    status: "Final",
+    boxscore_href: `/stats-search?date=${slate.date}#game-${game.id}`,
+  })));
   const games = gamesResult.status === "fulfilled" ? gamesResult.value.data : [];
   const tonightGames = tonightResult.status === "fulfilled" ? tonightResult.value.data : [];
-  const enhanced = games.map(enhanceGame);
+  const enhanced = [...games.map(enhanceGame).filter(game => !importedDates.has(game.dateKey)),
+    ...importedGames.map(enhanceGame)];
   const tonightSlate = tonightGames
     .map(enhanceGame)
     .filter((game) => game.dateKey === nbaToday && !game.isFinal)
@@ -128,6 +149,11 @@ export default async function ScoresPage() {
           <p className="text-xs uppercase tracking-[0.5em] text-white/60">Season scoreboard</p>
           <h1 className="mt-3 text-4xl font-semibold text-white">Catch up on the latest NBA slate</h1>
         </div>
+        {hooprEnabled && (
+          <Link href="/stats-search" className="inline-block text-sm font-medium underline">
+            Stats search
+          </Link>
+        )}
       </header>
       <section className="space-y-6">
         <div className="flex items-center justify-between">
@@ -148,7 +174,7 @@ export default async function ScoresPage() {
               return (
                 <ScoreCard
                   key={`tonight-${game.id}`}
-                  href={`/boxscore/${game.id}`}
+                  href={game.boxscoreHref}
                   prefetch={false}
                   className="w-full max-w-[360px]"
                   timeLabel={<LocalGameTime value={game.timeValue} fallback={game.timeFallback} showTime={true} />}
@@ -167,8 +193,9 @@ export default async function ScoresPage() {
         <div>
           <h2 className="text-2xl font-semibold text-white">Latest results</h2>
         </div>
-        <DataFreshness meta={gamesResult.status === "fulfilled" ? gamesResult.value.meta : undefined} />
-        {gamesResult.status === "rejected" ? (
+        <DataFreshness meta={importedGames.length > 0 ? hoopr?.meta
+          : gamesResult.status === "fulfilled" ? gamesResult.value.meta : undefined} />
+        {gamesResult.status === "rejected" && grouped.length === 0 ? (
           <p role="alert">Latest results are unavailable. Please try again later.</p>
         ) : grouped.length === 0 ? (
           <div className="rounded-3xl border border-white/10 bg-slate-950/40 p-10 text-center text-white/70">
@@ -186,7 +213,7 @@ export default async function ScoresPage() {
                   {group.games.map((game) => (
                     <ScoreCard
                       key={game.id}
-                      href={`/boxscore/${game.id}`}
+                      href={game.boxscoreHref}
                       prefetch={false}
                       className="w-full max-w-[360px]"
                       timeLabel={<LocalGameTime value={game.timeValue} fallback={game.timeFallback} showTime={game.showTime} />}

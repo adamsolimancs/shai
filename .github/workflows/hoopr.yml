@@ -1,0 +1,65 @@
+name: Daily hoopR import
+
+on:
+  schedule:
+    - cron: "23 8 * * *"
+      timezone: America/New_York
+  workflow_dispatch:
+    inputs:
+      slate_date:
+        description: Eastern slate date to require (YYYY-MM-DD)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hoopr-overnight
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Download and validate recent slates
+        env:
+          SLATE_DATE: ${{ inputs.slate_date }}
+        run: |
+          args=()
+          if [ -n "$SLATE_DATE" ]; then
+            next_date=$(python -c 'import os; from datetime import date, timedelta; print(date.fromisoformat(os.environ["SLATE_DATE"]) + timedelta(days=1))')
+            args+=(--today "$next_date")
+          fi
+          python workers/import-hoopr.py "${args[@]}" > "$RUNNER_TEMP/hoopr.json"
+          python - "$RUNNER_TEMP/hoopr.json" <<'PYTHON'
+          import json
+          import os
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as file:
+              slates = json.load(file)["slates"]
+          expected = os.environ["SLATE_DATE"]
+          if expected and slates[0]["date"] != expected:
+              raise SystemExit(f"Expected latest slate {expected}, found {slates[0]['date']}")
+          for slate in slates:
+              print(f"Validated {slate['date']}: {len(slate['games'])} final games with player box scores")
+          PYTHON
+      - uses: actions/setup-node@v6
+        if: vars.HOOPR_POC_ENABLED == 'true'
+        with:
+          node-version: 24
+      - name: Install worker dependencies
+        if: vars.HOOPR_POC_ENABLED == 'true'
+        working-directory: workers
+        run: npm ci
+      - name: Publish validated snapshot
+        if: vars.HOOPR_POC_ENABLED == 'true'
+        env:
+          DATABASE_URL: ${{ secrets.HOOPR_DATABASE_URL }}
+        run: node workers/publish-hoopr.js < "$RUNNER_TEMP/hoopr.json"

@@ -247,3 +247,53 @@ Redis. Existing stored rows retain their observation when reused. Cache writes
 also publish `:observation:v1` metadata with the same fresh/stale TTLs as the data;
 cache writes never use their own write time as an observation. Apply the
 `202609070002_source_observations.sql` migration before deploying this worker.
+
+## Daily hoopR import
+
+`import-hoopr.py` checks the current-season hoopR schedule, team totals and player
+lines, then emits one snapshot containing up to three recent completed Eastern
+slates. The snapshot uses ESPN IDs and is stored separately under
+`api_snapshots.cache_key = 'hoopr:last-night'`. It requires the existing
+`api_snapshots` table and leaves the NBA-ID tables and Redis keys alone.
+
+To replay a known import with local source files named `nba_schedule.csv`,
+`player_box.csv` and `team_box.csv`:
+
+```sh
+python3 workers/import-hoopr.py --csv-dir /path/to/files --today 2026-11-14 > /tmp/hoopr.json
+```
+
+The **Daily hoopR import** GitHub workflow validates at 8:23 a.m. Eastern and can
+also be dispatched manually. To publish into a private demo database, set the
+repository variable `HOOPR_POC_ENABLED=true` and add the
+`HOOPR_DATABASE_URL` secret with write access to that database's snapshot table.
+Point the demo backend at the same database and set `HOOPR_POC_ENABLED=true`
+in the demo frontend. The environment switch enables Stats Search and uses the validated results
+and box scores on the existing Scores page. Use deployment-level access controls to keep the demo private.
+A failed validation preserves the last good snapshot, whose slate and import
+timestamps are visible in the UI. Confirm publication rights before enabling
+the feature on a publicly accessible deployment.
+
+### One-time player season backfill
+
+SportsDataverse's NBA Stats archive includes NBA IDs, regular seasons and
+playoffs. The season files currently run from ending year 1997 through 2027.
+Generate and inspect the normalized rows before loading a private demo database:
+
+```sh
+python3 workers/import-player-seasons.py 1997 2027 > /tmp/shai-player-seasons.json
+DATABASE_URL="$DEMO_DATABASE_URL" node workers/publish-player-seasons.js < /tmp/shai-player-seasons.json
+```
+
+The publisher inserts missing player identities and season rows in one
+transaction, preserves existing rows, and records unknown historical team IDs
+as null. It uses the existing `players` and `player_season_stats` tables.
+The import leaves unavailable fields such as games started null. This backfill
+is run separately from the morning scores workflow. Seasons prior to 1996–97
+require an additional source and identifier/coverage validation.
+
+For a local scores preview, create a validated snapshot file and set
+`HOOPR_LOCAL_SNAPSHOT_PATH` to its absolute path in `frontend/.env.local` along
+with `HOOPR_POC_ENABLED=true`. Next.js uses this file only in development.
+A failed import should preserve the previous file. Redirect output to a
+temporary file and move it into place only after the command succeeds.
