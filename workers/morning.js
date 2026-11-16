@@ -175,6 +175,7 @@ async function publish(pool, schema, source, batch, runId, today) {
       ...(batch.aggregateError ? { aggregate_error: batch.aggregateError } : {}),
       latest_slate: batch.snapshots.map(({ p_game }) => p_game.date).sort().at(-1),
       scores_and_boxscores_written: publishedBoxes.length,
+      box_ids_written: publishedBoxes,
       scores_and_boxscores_verified: verified.size,
       standings_written: standings, standings_verified: batch.teamRows.length,
       player_stats_written: players, player_stats_verified: batch.playerRows.length,
