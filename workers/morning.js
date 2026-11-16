@@ -52,12 +52,12 @@ async function loadArchive(today) {
   return JSON.parse(stdout);
 }
 
-function prepareBatch({ standings, playerStats, boxes }, today) {
-  const teamRows = standings.map(row => nba.mapLeagueStandingRow(nba.normalizeLeagueStanding(row), SEASON));
+function prepareBatch({ standings, playerStats, boxes, aggregateError = null }, today) {
+  const teamRows = aggregateError ? [] : standings.map(row => nba.mapLeagueStandingRow(nba.normalizeLeagueStanding(row), SEASON));
   const knownTeams = new Set(teamRows.map(row => row?.team_id));
-  if (teamRows.length !== 30 || knownTeams.size !== 30 ||
+  if (!aggregateError && (teamRows.length !== 30 || knownTeams.size !== 30 ||
       teamRows.some(row => !row?.team_id || !Number.isInteger(row.wins) || !Number.isInteger(row.losses) ||
-        row.wins < 0 || row.losses < 0 || !row.conference || !row.conference_rank)) {
+        row.wins < 0 || row.losses < 0 || !row.conference || !row.conference_rank))) {
     throw new Error("Expected 30 distinct teams with valid standings");
   }
 
@@ -70,7 +70,7 @@ function prepareBatch({ standings, playerStats, boxes }, today) {
     }
     if (!playerDirectory.has(playerId)) playerDirectory.set(playerId, { player_id: playerId, full_name: name.trim(), is_active: "true" });
   };
-  for (const row of playerStats) {
+  for (const row of aggregateError ? [] : playerStats) {
     addPlayer(row.PLAYER_ID, row.PLAYER_NAME);
     const mapped = nba.mapPlayerSeasonStatsRow(row, SEASON, "Regular Season");
     mapped.team_id = Number(mapped.team_id) || undefined;
@@ -83,15 +83,16 @@ function prepareBatch({ standings, playerStats, boxes }, today) {
       playerRows.set(mapped.player_id, nba.compactObject(mapped));
     }
   }
-  if (playerRows.size < 300) throw new Error("Player season coverage looks incomplete");
+  if (!aggregateError && playerRows.size < 300) throw new Error("Player season coverage looks incomplete");
 
   const seen = new Set();
   const snapshots = boxes.map(box => {
     if (!box.game_id?.startsWith(`002${String(seasonYear).slice(-2)}`) || seen.has(box.game_id) ||
         !/^\d{4}-\d{2}-\d{2}$/.test(box.game_date) || box.game_date < `${seasonYear}-10-01` ||
         box.game_date >= today || !nba.isFinalStatus(box.status) ||
-        !Number.isFinite(Date.parse(box.observed_at)) || !knownTeams.has(box.home_team?.team_id) ||
-        !knownTeams.has(box.away_team?.team_id) || box.home_team.score === box.away_team.score) {
+        !Number.isFinite(Date.parse(box.observed_at)) || !box.home_team?.team_id || !box.away_team?.team_id ||
+        (!aggregateError && (!knownTeams.has(box.home_team.team_id) || !knownTeams.has(box.away_team.team_id))) ||
+        box.home_team.score === box.away_team.score) {
       throw new Error(`Invalid completed box score for ${box.game_id}`);
     }
     seen.add(box.game_id);
@@ -100,7 +101,7 @@ function prepareBatch({ standings, playerStats, boxes }, today) {
   });
   if (!snapshots.length) throw new Error("No completed box scores in the publication batch");
 
-  return { teamRows, playerRows: [...playerRows.values()], playerDirectory: [...playerDirectory.values()], snapshots };
+  return { teamRows, playerRows: [...playerRows.values()], playerDirectory: [...playerDirectory.values()], snapshots, aggregateError };
 }
 
 async function verifiedGames(client, schema, ids) {
@@ -131,8 +132,10 @@ async function publish(pool, schema, source, batch, runId, today) {
   const attempted = new Date().toISOString();
   const ids = batch.snapshots.map(({ p_game }) => p_game.game_id);
   const teams = (await nba.fetchStaticTeams()).map(nba.mapTeamRow).filter(Boolean);
-  if (teams.length !== 30 || batch.teamRows.some(row => !teams.some(team => team.team_id === row.team_id))) {
-    throw new Error("NBA team directory does not cover the standings");
+  const teamIds = new Set(teams.map(team => team.team_id));
+  if (teamIds.size !== 30 || batch.teamRows.some(row => !teamIds.has(row.team_id)) ||
+      batch.snapshots.some(({ p_game }) => !teamIds.has(p_game.home_team_id) || !teamIds.has(p_game.away_team_id))) {
+    throw new Error("NBA team directory does not cover the import");
   }
   const client = await pool.connect();
   let result;
@@ -169,6 +172,7 @@ async function publish(pool, schema, source, batch, runId, today) {
     if (verified.size !== ids.length) throw new Error("Stored finals do not reconcile with their player box scores");
     result = {
       source, run_id: runId, date: today,
+      ...(batch.aggregateError ? { aggregate_error: batch.aggregateError } : {}),
       latest_slate: batch.snapshots.map(({ p_game }) => p_game.date).sort().at(-1),
       scores_and_boxscores_written: publishedBoxes.length,
       scores_and_boxscores_verified: verified.size,
@@ -247,7 +251,8 @@ async function main() {
     throw new Error("Requested slate is absent from the verified batch");
   }
   if (args.has("--check")) {
-    console.log(JSON.stringify({ source, standings: batch.teamRows.length, players: batch.playerRows.length, boxes: batch.snapshots.length }));
+    console.log(JSON.stringify({ source, standings: batch.teamRows.length, players: batch.playerRows.length, boxes: batch.snapshots.length, aggregateError: batch.aggregateError }));
+    if (batch.aggregateError) process.exitCode = 1;
     return;
   }
 
@@ -267,6 +272,7 @@ async function main() {
     await invalidate(result);
     const { box_ids, ...summary } = result;
     console.log(JSON.stringify({ event: "verified_publication", ...summary }));
+    if (batch.aggregateError) process.exitCode = 1;
   } finally {
     try { if (lease) await lease.release(); }
     finally { await pool.end(); }

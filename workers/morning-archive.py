@@ -181,8 +181,9 @@ def make_archive(files, observations, today, year):
     latest_slate = max(box["game_date"] for box in boxes)
     finals = [row for row in schedule if row["season_type"] == "2"
               and row["game_date"] <= latest_slate and row["status_type_name"] == "STATUS_FINAL"]
+    aggregate_error = None
     if sum(int(row["wins"]) + int(row["losses"]) for row in standings) < 2 * len(finals):
-        raise ValueError("NBA standings archive trails the latest completed ESPN slate")
+        aggregate_error = "NBA standings archive trails the latest completed ESPN slate"
     stats = []
     for row in files["player_stats"]:
         if (row["season"], row["season_type"], row["measure_type"], row["per_mode"]) == (
@@ -190,8 +191,11 @@ def make_archive(files, observations, today, year):
             stats.append({key.upper(): value for key, value in row.items() if value})
     latest_start = max(datetime.fromisoformat(box["start_time"]) for box in boxes)
     if min(observations["standings"], observations["player_stats"]) <= latest_start:
-        raise ValueError("NBA season archives predate the latest completed slate")
-    return {"boxes": boxes, "standings": standings, "playerStats": stats}
+        aggregate_error = aggregate_error or "NBA season archives predate the latest completed slate"
+    return {
+        "boxes": boxes, "standings": standings, "playerStats": stats,
+        "aggregateError": aggregate_error,
+    }
 
 
 if __name__ == "__main__":

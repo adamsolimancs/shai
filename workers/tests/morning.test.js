@@ -36,3 +36,26 @@ test("NBA results reject disagreeing final scores and do not request today's liv
   await assert.rejects(loadNba(source, "2026-11-15"), /game list and box score disagree/);
   assert.deepEqual(requested, ["0022600231"]);
 });
+
+test("lagging aggregates leave validated final boxes eligible for publication", () => {
+  const { prepareBatch } = require("../morning");
+  const box = {
+    game_id: "0022600231",
+    game_date: "2026-11-14",
+    observed_at: "2026-11-15T12:30:00Z",
+    status: "Final",
+    home_team: { team_id: 1, score: 108 },
+    away_team: { team_id: 2, score: 116 },
+    traditional_players: [
+      { player_id: 1, player_name: "Home Player", team_id: 1, points: 108 },
+      { player_id: 2, player_name: "Away Player", team_id: 2, points: 116 },
+    ],
+  };
+  const aggregateError = "Season archives lag the completed slate";
+  const batch = prepareBatch({ boxes: [box], aggregateError }, "2026-11-15");
+  assert.equal(batch.aggregateError, aggregateError);
+  assert.equal(batch.teamRows.length, 0);
+  assert.equal(batch.playerRows.length, 0);
+  assert.equal(batch.snapshots[0].p_game.home_team_score, 108);
+  assert.equal(batch.snapshots[0].p_players.length, 2);
+});
