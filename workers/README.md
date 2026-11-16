@@ -260,7 +260,9 @@ zero retries. If a fetch fails or the full batch cannot be validated, it
 uses hoopR's NBA standings and season-stat archives and ESPN-backed final
 scores and traditional box scores. The latest three completed regular-season
 slates must reconcile. ESPN games must match one NBA schedule game by date
-and home/away teams, and played lines need an unambiguous NBA player ID.
+and home/away teams, and played lines need an unambiguous NBA player ID. A
+missing current-season player crosswalk entry can use the previous season
+when the ESPN ID and both archived names agree.
 
 The job writes games, box scores, standings and player season stats in a
 single database transaction. It retains reconciled stored finals when the
@@ -268,7 +270,10 @@ archive agrees or the stored source is newer. Archive standings and player
 stats cannot replace rows with more games played. Successful runs read back
 the committed rows, invalidate their serving caches, and print a publication
 receipt with written and verified counts. The workflow fails if it cannot
-verify publication. A receipt is also written to the existing
+verify full publication. If the season-stat archives trail the completed
+slate, the job publishes verified scores and boxes, leaves both season
+aggregates in place, and exits nonzero with the reason in its receipt.
+A receipt is also written to the existing
 `ingestion_state` table under `bootstrap:v1` for the season's `morning` entity.
 
 To validate the latest files without writing to a database:

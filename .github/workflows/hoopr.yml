@@ -46,10 +46,14 @@ jobs:
           STATS_RETRY_MAX: "0"
         run: |
           set -o pipefail
-          node workers/morning.js | tee "$RUNNER_TEMP/morning-publication.jsonl"
-          {
-            echo '### Verified NBA database publication'
-            echo '```json'
-            grep '"event":"verified_publication"' "$RUNNER_TEMP/morning-publication.jsonl"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          result=0
+          node workers/morning.js | tee "$RUNNER_TEMP/morning-publication.jsonl" || result=$?
+          if grep -q '"event":"verified_publication"' "$RUNNER_TEMP/morning-publication.jsonl"; then
+            {
+              echo '### Verified NBA database publication'
+              echo '```json'
+              grep '"event":"verified_publication"' "$RUNNER_TEMP/morning-publication.jsonl"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$result"
