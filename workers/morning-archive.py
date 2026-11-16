@@ -20,6 +20,7 @@ FILES = {
     "team_boxes": "espn_nba_team_boxscores/team_box",
     "nba_schedule": "nba_stats_schedules/nba_schedule",
     "player_ids": "nba_crosswalk/nba_player_crosswalk",
+    "prior_player_ids": "nba_crosswalk/nba_player_crosswalk",
     "standings": "nba_stats_standings/standings",
     "player_stats": "nba_stats_player_season_stats/player_season_stats",
 }
@@ -39,13 +40,31 @@ def download(key, year):
     return list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig")))), observed
 
 
-def crosswalk(rows, source, target, year):
-    ids = defaultdict(set)
+def player_crosswalk(rows, year):
+    candidates = defaultdict(list)
     for row in rows:
-        if (row["season"] == str(year) and row[source].isdigit()
-                and row[target].isdigit() and float(row["match_confidence"] or 0) >= 0.95):
-            ids[row[source]].add(int(row[target]))
-    return {source_id: next(iter(targets)) for source_id, targets in ids.items() if len(targets) == 1}
+        if (row["season"] == str(year) and row["espn_athlete_id"].isdigit()
+                and row["nba_player_id"].isdigit() and float(row["match_confidence"] or 0) >= 0.95):
+            candidates[row["espn_athlete_id"]].append(row)
+    return candidates
+
+
+def resolve_player(row, current, prior):
+    espn_id = row["athlete_id"]
+    candidates = current.get(espn_id)
+    if not candidates:
+        name = row["athlete_display_name"].strip().casefold()
+        prior_candidates = prior.get(espn_id, [])
+        if prior_candidates and all(
+            candidate["espn_full_name"].strip().casefold() == name
+            and candidate["nba_player_name"].strip().casefold() == name
+            for candidate in prior_candidates
+        ):
+            candidates = prior_candidates
+    ids = {int(candidate["nba_player_id"]) for candidate in candidates or []}
+    if len(ids) != 1:
+        raise ValueError(f"No unambiguous NBA ID for ESPN player {espn_id} ({row['athlete_display_name']})")
+    return ids.pop()
 
 
 ESPN_TEAM_CODES = {"WSH": "WAS", "GS": "GSW", "SA": "SAS", "NY": "NYK", "UTAH": "UTA", "NO": "NOP"}
@@ -91,7 +110,8 @@ def make_archive(files, observations, today, year):
         if row["season"] == str(year) and row["season_type"] == "regular-season":
             key = row["game_date"], row["home_team_abbreviation"], row["away_team_abbreviation"]
             nba_games[key].append(row)
-    player_ids = crosswalk(files["player_ids"], "espn_athlete_id", "nba_player_id", year)
+    player_ids = player_crosswalk(files["player_ids"], year)
+    prior_player_ids = player_crosswalk(files["prior_player_ids"], year - 1)
     player_rows = overnight.group_by_game(files["player_boxes"])
     team_rows = overnight.group_by_game(files["team_boxes"])
     box_observed = min(observations[k] for k in ("schedule", "player_boxes", "team_boxes"))
@@ -134,7 +154,7 @@ def make_archive(files, observations, today, year):
                     if row["team_id"] != team_key or row["did_not_play"] == "true":
                         continue
                     players.append({
-                        "player_id": player_ids[row["athlete_id"]],
+                        "player_id": resolve_player(row, player_ids, prior_player_ids),
                         "player_name": row["athlete_display_name"], "team_id": team_id,
                         "team_abbreviation": tricode, "minutes": float(row["minutes"]),
                         "points": int(row["points"]), "rebounds": int(row["rebounds"]),
@@ -178,7 +198,9 @@ if __name__ == "__main__":
     today = date.fromisoformat(sys.argv[1])
     year = int(sys.argv[2])
     with ThreadPoolExecutor(max_workers=4) as pool:
-        downloaded = dict(zip(FILES, pool.map(lambda key: download(key, year), FILES)))
+        downloaded = dict(zip(FILES, pool.map(
+            lambda key: download(key, year - 1 if key == "prior_player_ids" else year), FILES
+        )))
     print(json.dumps(make_archive(
         {key: data[0] for key, data in downloaded.items()},
         {key: data[1] for key, data in downloaded.items()}, today, year
