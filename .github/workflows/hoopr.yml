@@ -2,12 +2,12 @@ name: Daily hoopR import
 
 on:
   schedule:
-    - cron: "23 8 * * *"
+    - cron: "23 10 * * *"
       timezone: America/New_York
   workflow_dispatch:
     inputs:
       slate_date:
-        description: Eastern slate date to require (YYYY-MM-DD)
+        description: Completed Eastern slate the publication must include (YYYY-MM-DD)
         required: false
         type: string
 
@@ -27,39 +27,29 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
-      - name: Download and validate recent slates
-        env:
-          SLATE_DATE: ${{ inputs.slate_date }}
-        run: |
-          args=()
-          if [ -n "$SLATE_DATE" ]; then
-            next_date=$(python -c 'import os; from datetime import date, timedelta; print(date.fromisoformat(os.environ["SLATE_DATE"]) + timedelta(days=1))')
-            args+=(--today "$next_date")
-          fi
-          python workers/import-hoopr.py "${args[@]}" > "$RUNNER_TEMP/hoopr.json"
-          python - "$RUNNER_TEMP/hoopr.json" <<'PYTHON'
-          import json
-          import os
-          import sys
-
-          with open(sys.argv[1], encoding="utf-8") as file:
-              slates = json.load(file)["slates"]
-          expected = os.environ["SLATE_DATE"]
-          if expected and slates[0]["date"] != expected:
-              raise SystemExit(f"Expected latest slate {expected}, found {slates[0]['date']}")
-          for slate in slates:
-              print(f"Validated {slate['date']}: {len(slate['games'])} final games with player box scores")
-          PYTHON
       - uses: actions/setup-node@v6
-        if: vars.HOOPR_POC_ENABLED == 'true'
         with:
           node-version: 24
       - name: Install worker dependencies
-        if: vars.HOOPR_POC_ENABLED == 'true'
         working-directory: workers
         run: npm ci
-      - name: Publish validated snapshot
-        if: vars.HOOPR_POC_ENABLED == 'true'
+      - name: Install nba_api bridge
+        run: python -m pip install nba_api==1.11.4
+      - name: Publish and verify main database
         env:
-          DATABASE_URL: ${{ secrets.HOOPR_DATABASE_URL }}
-        run: node workers/publish-hoopr.js < "$RUNNER_TEMP/hoopr.json"
+          EXPECTED_SLATE: ${{ inputs.slate_date }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          CACHE_KEY_PREFIX: nba:serve
+          STATS_TIMEOUT_MS: "5000"
+          STATS_RETRY_MAX: "0"
+        run: |
+          set -o pipefail
+          node workers/morning.js | tee "$RUNNER_TEMP/morning-publication.jsonl"
+          {
+            echo '### Verified NBA database publication'
+            echo '```json'
+            grep '"event":"verified_publication"' "$RUNNER_TEMP/morning-publication.jsonl"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

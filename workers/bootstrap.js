@@ -33,7 +33,8 @@ function buildBoxscoreSnapshot(payload, gameId) {
   return snapshot;
 }
 
-async function upsert(client, schema, table, rows, keys) {
+async function upsert(client, schema, table, rows, keys, conflictCondition) {
+  let written = 0;
   const groups = new Map();
   for (const row of nba.dedupeRowsForConflict(rows, keys.join(","))) {
     const columns = Object.keys(row).sort();
@@ -46,8 +47,11 @@ async function upsert(client, schema, table, rows, keys) {
     const names = columns.map(quote).join(", ");
     const updates = columns.filter(column => !keys.includes(column));
     const action = updates.length ? `DO UPDATE SET ${updates.map(c => `${quote(c)}=EXCLUDED.${quote(c)}`).join(",")}` : "DO NOTHING";
-    await client.query(`INSERT INTO ${target} (${names}) SELECT ${names} FROM jsonb_populate_recordset(NULL::${target}, $1::jsonb) ON CONFLICT (${keys.map(quote).join(",")}) ${action}`, [JSON.stringify(group)]);
+    const condition = updates.length && conflictCondition ? ` WHERE ${conflictCondition}` : "";
+    const result = await client.query(`INSERT INTO ${target} AS stored (${names}) SELECT ${names} FROM jsonb_populate_recordset(NULL::${target}, $1::jsonb) ON CONFLICT (${keys.map(quote).join(",")}) ${action}${condition}`, [JSON.stringify(group)]);
+    written += result.rowCount;
   }
+  return written;
 }
 
 class BootstrapStore {
@@ -262,4 +266,4 @@ async function main() {
   }
 }
 if (require.main === module) main().catch(error => { console.error(JSON.stringify({ error: error.message })); process.exitCode = 1; }).finally(() => nba.closeWorkerResources());
-module.exports = { runBootstrap, BootstrapStore, upsert, checkSources, SEASON };
+module.exports = { runBootstrap, BootstrapStore, upsert, checkSources, buildBoxscoreSnapshot, SEASON };

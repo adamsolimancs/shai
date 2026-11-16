@@ -248,31 +248,37 @@ also publish `:observation:v1` metadata with the same fresh/stale TTLs as the da
 cache writes never use their own write time as an observation. Apply the
 `202609070002_source_observations.sql` migration before deploying this worker.
 
-## Daily hoopR import
+## Morning database import
 
-`import-hoopr.py` checks the current-season hoopR schedule, team totals and player
-lines, then emits one snapshot containing up to three recent completed Eastern
-slates. The snapshot uses ESPN IDs and is stored separately under
-`api_snapshots.cache_key = 'hoopr:last-night'`. It requires the existing
-`api_snapshots` table and leaves the NBA-ID tables and Redis keys alone.
+The **Daily hoopR import** GitHub workflow starts at 10:23 a.m. Eastern, after
+the observed release time of the NBA standings and player-stat archives. It
+uses the same `DATABASE_URL` and Upstash writer lease as the main ingestion
+worker. A manual run can require a specific completed slate date.
 
-To replay a known import with local source files named `nba_schedule.csv`,
-`player_box.csv` and `team_box.csv`:
+The morning worker tries NBA Stats with a five-second request timeout and
+zero retries. If a fetch fails or the full batch cannot be validated, it
+uses hoopR's NBA standings and season-stat archives and ESPN-backed final
+scores and traditional box scores. The latest three completed regular-season
+slates must reconcile. ESPN games must match one NBA schedule game by date
+and home/away teams, and played lines need an unambiguous NBA player ID.
+
+The job writes games, box scores, standings and player season stats in a
+single database transaction. It retains reconciled stored finals when the
+archive agrees or the stored source is newer. Archive standings and player
+stats cannot replace rows with more games played. Successful runs read back
+the committed rows, invalidate their serving caches, and print a publication
+receipt with written and verified counts. The workflow fails if it cannot
+verify publication. A receipt is also written to the existing
+`ingestion_state` table under `bootstrap:v1` for the season's `morning` entity.
+
+To validate the latest files without writing to a database:
 
 ```sh
-python3 workers/import-hoopr.py --csv-dir /path/to/files --today 2026-11-14 > /tmp/hoopr.json
+node workers/morning.js --archive-only --check
 ```
 
-The **Daily hoopR import** GitHub workflow validates at 8:23 a.m. Eastern and can
-also be dispatched manually. To publish into a private demo database, set the
-repository variable `HOOPR_POC_ENABLED=true` and add the
-`HOOPR_DATABASE_URL` secret with write access to that database's snapshot table.
-Point the demo backend at the same database and set `HOOPR_POC_ENABLED=true`
-in the demo frontend. The environment switch enables Stats Search and uses the validated results
-and box scores on the existing Scores page. Use deployment-level access controls to keep the demo private.
-A failed validation preserves the last good snapshot, whose slate and import
-timestamps are visible in the UI. Confirm publication rights before enabling
-the feature on a publicly accessible deployment.
+The isolated hoopR preview importer remains available for Stats Search. It
+uses ESPN IDs and can be run locally from CSV with `workers/import-hoopr.py`.
 
 ### One-time player season backfill
 
